@@ -1,0 +1,13 @@
+-Iinclude
+-Isrc
+-Ifreebsdsrc/include
+-Ifreebsdsrc/sys
+-Ifreebsdsrc/sys/contrib/ck/include
+-Ifreebsdsrc/sys/compat/linuxkpi/common/include
+-Ifreebsdsrc/sys/compat/linuxkpi/dummy/include
+-D_KERNEL
+-D_KERNEL
+-DKLD_MODULE
+-D__printf__=__freebsd_kprintf__
+-D__FreeBSD__
+--target=x86_64-unknown-freebsd15.0
