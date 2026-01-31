@@ -9,7 +9,16 @@ SRCS = \
 	src/brcmfmac.zig \
 	src/main.c
 
+# LinuxKPI generated sources
+SRCS+= ${LINUXKPI_GENSRCS}
+
+# Include paths - must come before LINUXKPI_INCLUDES for header override
+CFLAGS+= -I${.CURDIR}
 CFLAGS+= -I${.CURDIR}/src
+CFLAGS+= -I${.CURDIR}/include
+
+# LinuxKPI includes come after our local includes
+CFLAGS+= ${LINUXKPI_INCLUDES}
 
 .include <bsd.kmod.mk>
 

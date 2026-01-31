@@ -74,8 +74,7 @@ const M_TEMP = @extern(*c.struct_malloc_type, .{ .name = "M_TEMP", .visibility =
 Zig's C translator demotes structs with bitfields to opaque types (ref "[Translation failures][1]"). FreeBSD headers
 use bitfields in `struct user_segment_descriptor` and `struct gate_descriptor`, which are embedded in `struct pcpu`.
 
-The `include/hack.h` header provides bitfield-free replacements. It must be
-included before other system headers in `@cImport`.
+The `hack.h` header provides bitfield-free replacements. It must be included before other system headers in `@cImport`.
 
 [1]: https://ziglang.org/documentation/master/#Translation-failures
 
