@@ -7,18 +7,14 @@ KMOD = if_brcmfmac
 
 SRCS = \
 	src/brcmfmac.zig \
-	src/main.c
+	src/debug.c \
+	src/main.c \
+	src/pcie.c
 
-# LinuxKPI generated sources
-SRCS+= ${LINUXKPI_GENSRCS}
+SRCS+= device_if.h bus_if.h pci_if.h
 
-# Include paths - must come before LINUXKPI_INCLUDES for header override
 CFLAGS+= -I${.CURDIR}
 CFLAGS+= -I${.CURDIR}/src
-CFLAGS+= -I${.CURDIR}/include
-
-# LinuxKPI includes come after our local includes
-CFLAGS+= ${LINUXKPI_INCLUDES}
 
 .include <bsd.kmod.mk>
 
