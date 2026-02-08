@@ -34,15 +34,20 @@ struct brcmf_commonring {
     u16 depth;           // Ring size (max items)
     u16 item_len;        // Size per item
     void *buf_addr;      // Ring buffer (DMA memory)
-    spinlock_t lock;
 
-    // Callbacks
     int (*cr_ring_bell)(void *ctx);
     int (*cr_update_rptr)(void *ctx);
     int (*cr_update_wptr)(void *ctx);
     int (*cr_write_rptr)(void *ctx);
     int (*cr_write_wptr)(void *ctx);
     void *cr_ctx;
+
+    spinlock_t lock;
+    unsigned long flags;             // saved IRQ flags
+    bool inited;
+    bool was_full;                   // hysteresis: suppresses writes until 1/8 depth is free
+
+    atomic_t outstanding_tx;         // per-ring outstanding TX count (flow control)
 };
 ```
 
@@ -50,26 +55,45 @@ struct brcmf_commonring {
 
 ```c
 void *brcmf_commonring_reserve_for_write(struct brcmf_commonring *ring) {
-    // Check space (one slot is always left empty)
+    bool retry = true;
+again:
     if (ring->r_ptr <= ring->w_ptr)
         available = ring->depth - ring->w_ptr + ring->r_ptr;
     else
         available = ring->r_ptr - ring->w_ptr;
-    if (available <= 1)
-        return NULL;
 
-    // Return pointer to next slot
-    ret_ptr = ring->buf_addr + (ring->w_ptr * ring->item_len);
-    ring->w_ptr++;
-    if (ring->w_ptr == ring->depth)
-        ring->w_ptr = 0;
-    return ret_ptr;
+    if (available > 1) {
+        ret_ptr = ring->buf_addr + (ring->w_ptr * ring->item_len);
+        ring->w_ptr++;
+        if (ring->w_ptr == ring->depth)
+            ring->w_ptr = 0;
+        return ret_ptr;
+    }
+
+    if (retry) {
+        ring->cr_update_rptr(ring->cr_ctx);
+        retry = false;
+        goto again;
+    }
+
+    ring->was_full = true;
+    return NULL;
 }
 
+// Multi-slot variant used by RX buffer posting
+void *brcmf_commonring_reserve_for_write_multiple(
+        struct brcmf_commonring *ring, u16 n_items, u16 *alloced);
+// Same retry logic; *alloced may be less than n_items (wraps at ring end)
+
 int brcmf_commonring_write_complete(struct brcmf_commonring *ring) {
+    ring->f_ptr = ring->w_ptr;
     ring->cr_write_wptr(ring->cr_ctx);  // Update firmware's view
     ring->cr_ring_bell(ring->cr_ctx);   // Signal firmware
 }
+
+// Check if ring has space. Uses hysteresis: after was_full, requires 1/8 depth
+// free before returning true. Retries once by updating rptr from firmware.
+bool brcmf_commonring_write_available(struct brcmf_commonring *ring);
 ```
 
 ### Consumer operations (e.g., host reading from D2H)

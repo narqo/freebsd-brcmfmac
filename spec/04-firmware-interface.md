@@ -39,6 +39,17 @@ s32 brcmf_fil_bsscfg_int_set(struct brcmf_if *ifp, const char *name, u32 data);
 s32 brcmf_fil_bsscfg_int_get(struct brcmf_if *ifp, const char *name, u32 *data);
 ```
 
+### XTLV IOVARs
+
+For IOVARs that use eXtended TLV encoding (name + XTLV header + data):
+
+```c
+s32 brcmf_fil_xtlv_data_set(struct brcmf_if *ifp, const char *name, u16 id, void *data, u32 len);
+s32 brcmf_fil_xtlv_data_get(struct brcmf_if *ifp, const char *name, u16 id, void *data, u32 len);
+```
+
+Buffer format: `[name\0][xtlv_header][data]` where the XTLV header contains the `id`, length, and data, 32-bit aligned.
+
 ## Buffer encoding
 
 ### IOVAR format
@@ -107,8 +118,12 @@ static s32 brcmf_fil_cmd_data(struct brcmf_if *ifp, u32 cmd, void *data, u32 len
 
     // Handle firmware errors
     if (err == 0 && fwerr < 0) {
-        err = -EBADE;  // Firmware returned error
+        err = -EBADE;
     }
+
+    // If ifp->fwil_fwerr is set, return raw firmware error instead of -EBADE
+    if (ifp->fwil_fwerr)
+        return fwerr;
 
     return err;
 }

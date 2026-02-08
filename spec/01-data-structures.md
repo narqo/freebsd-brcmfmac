@@ -27,11 +27,24 @@ struct brcmf_pub {
 
     struct brcmf_fweh_info *fweh;       // Event handling state
 
+    struct brcmf_ampdu_rx_reorder
+        *reorder_flows[BRCMF_AMPDU_RX_REORDER_MAXFLOWS]; // 256 entries
+
     u32 feat_flags;                     // Feature flags
     u32 chip_quirks;                    // Hardware quirks
 
     struct brcmf_rev_info revinfo;      // Chip revision info
+
+    struct notifier_block inetaddr_notifier;
+    struct notifier_block inet6addr_notifier;
     struct brcmf_mp_device *settings;   // Module parameters
+
+    struct work_struct bus_reset;
+
+    u8 clmver[BRCMF_DCMD_SMLEN];       // CLM version string (256 bytes)
+    u8 sta_mac_idx;
+    const struct brcmf_fwvid_ops *vops; // Vendor-specific ops
+    void *vdata;                        // Vendor-specific data
 };
 ```
 
@@ -136,6 +149,8 @@ struct brcmf_bus {
 
     const struct brcmf_bus_ops *ops;         // Bus callbacks
     struct brcmf_bus_msgbuf *msgbuf;         // msgbuf rings (PCIe only)
+
+    struct list_head list;                   // global bus list
 };
 ```
 
@@ -192,7 +207,7 @@ cfg80211 subsystem state.
 ```c
 struct brcmf_cfg80211_info {
     struct wiphy *wiphy;
-    struct brcmf_cfg80211_conf *conf;
+    struct brcmf_cfg80211_conf *conf;   // frag/rts thresholds, retry limits
     struct brcmf_p2p_info p2p;
     struct brcmf_btcoex_info *btcoex;
     struct cfg80211_scan_request *scan_request;

@@ -172,13 +172,18 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops) {
     struct brcmf_bus *bus_if = drvr->bus_if;
     struct brcmf_if *ifp;
 
-    // Create primary interface
-    ifp = brcmf_add_if(drvr, 0, 0, false, "wlan%d", drvr->settings->mac);
+    // Create primary interface (MAC passed only if valid, otherwise NULL)
+    ifp = brcmf_add_if(drvr, 0, 0, false, "wlan%d",
+                        is_valid_ether_addr(drvr->settings->mac)
+                            ? drvr->settings->mac : NULL);
 
     // Signal bus ready
     brcmf_bus_change_state(bus_if, BRCMF_BUS_UP);
 
-    // Bus-specific pre-init (enable interrupts, signal host ready)
+    // Bus-specific pre-init:
+    //   PCIe: brcmf_pcie_preinit() enables interrupts and calls
+    //   brcmf_pcie_hostready() (writes 1 to h2d_mailbox_1 only if
+    //   HOSTRDY_DB1 flag is set; no-op otherwise)
     brcmf_bus_preinit(bus_if);
 
     // Firmware pre-init commands
@@ -199,9 +204,15 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops) {
     // Register network interface
     brcmf_net_attach(ifp, false);
 
+    // If P2P enabled and iflist[1] exists, attach P2P net interface
+    if (drvr->settings->p2p_enable && drvr->iflist[1])
+        brcmf_net_p2p_attach(drvr->iflist[1]);
+
     // Register notifiers for IP address changes
     register_inetaddr_notifier(&drvr->inetaddr_notifier);
     register_inet6addr_notifier(&drvr->inet6addr_notifier);
+
+    INIT_WORK(&drvr->bus_reset, brcmf_core_bus_reset);
 
     return 0;
 }
@@ -211,29 +222,42 @@ static int brcmf_bus_started(struct brcmf_pub *drvr, struct cfg80211_ops *ops) {
 
 ```c
 int brcmf_c_preinit_dcmds(struct brcmf_if *ifp) {
-    struct brcmf_pub *drvr = ifp->drvr;
+    // 1. MAC address: set if valid, otherwise get from firmware.
+    //    If firmware returns default MAC, randomize and set.
+    if (is_valid_ether_addr(ifp->mac_addr))
+        brcmf_c_set_cur_etheraddr(ifp, ifp->mac_addr);
+    else
+        brcmf_fil_iovar_data_get(ifp, "cur_etheraddr", ifp->mac_addr, ...);
 
-    // Get firmware version
-    brcmf_fil_iovar_data_get(ifp, "ver", buf, sizeof(buf));
+    // 2. Revision info
+    brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_REVINFO, &revinfo, sizeof(revinfo));
 
-    // Get MAC address
-    brcmf_fil_iovar_data_get(ifp, "cur_etheraddr", drvr->mac, sizeof(drvr->mac));
-    memcpy(ifp->mac_addr, drvr->mac, ETH_ALEN);
+    // 3. Download CLM blob (brcmf_c_process_clm_blob)
+    // 4. Download TxCap blob if available
+    // 5. Download calibration blob if available
 
-    // Get revision info
-    brcmf_fil_cmd_data_get(ifp, BRCMF_C_GET_REVINFO, &drvr->revinfo, sizeof(drvr->revinfo));
+    // 6. Get firmware version string ("ver" iovar)
+    // 7. Get CLM version string ("clmver" iovar)
 
-    // Set country code
-    brcmf_fil_iovar_data_set(ifp, "country", &ccreq, sizeof(ccreq));
+    // 8. Enable MPC
+    brcmf_fil_iovar_int_set(ifp, "mpc", 1);
 
-    // Set bus throttle
-    brcmf_fil_iovar_int_set(ifp, "bus:txglomalign", 4);
-    brcmf_fil_iovar_int_set(ifp, "ampdu_ba_wsize", 64);
+    // 9. Set default join preferences (RSSI-based)
+    brcmf_c_set_joinpref_default(ifp);
 
-    // Disable MPC (minimum power consumption) initially
-    brcmf_fil_iovar_int_set(ifp, "mpc", 0);
+    // 10. Read event_msgs, enable E_IF bit, write back
+    brcmf_fil_iovar_data_get(ifp, "event_msgs", ...);
+    setbit(event_mask, BRCMF_E_IF);
+    brcmf_fil_iovar_data_set(ifp, "event_msgs", ...);
 
-    return 0;
+    // 11. Default scan times
+    brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_CHANNEL_TIME,
+                          BRCMF_DEFAULT_SCAN_CHANNEL_TIME);
+    brcmf_fil_cmd_int_set(ifp, BRCMF_C_SET_SCAN_UNASSOC_TIME,
+                          BRCMF_DEFAULT_SCAN_UNASSOC_TIME);
+
+    // 12. Enable TX beamforming (errors ignored)
+    brcmf_fil_iovar_int_set(ifp, "txbf", 1);
 }
 ```
 
@@ -304,14 +328,24 @@ static void brcmf_register_event_handlers(struct brcmf_cfg80211_info *cfg) {
     brcmf_fweh_register(drvr, BRCMF_E_ASSOC_IND, brcmf_notify_connect_status);
     brcmf_fweh_register(drvr, BRCMF_E_REASSOC_IND, brcmf_notify_connect_status);
     brcmf_fweh_register(drvr, BRCMF_E_ROAM, brcmf_notify_roaming_status);
+    brcmf_fweh_register(drvr, BRCMF_E_MIC_ERROR, brcmf_notify_mic_status);
     brcmf_fweh_register(drvr, BRCMF_E_SET_SSID, brcmf_notify_connect_status);
-    brcmf_fweh_register(drvr, BRCMF_E_PSK_SUP, brcmf_notify_connect_status);
-    brcmf_fweh_register(drvr, BRCMF_E_ESCAN_RESULT, brcmf_cfg80211_escan_handler);
-    brcmf_fweh_register(drvr, BRCMF_E_ACTION_FRAME_RX, brcmf_p2p_notify_action_frame_rx);
+    brcmf_fweh_register(drvr, BRCMF_E_PFN_NET_FOUND, brcmf_notify_sched_scan_results);
+    brcmf_fweh_register(drvr, BRCMF_E_IF, brcmf_notify_vif_event);
+    brcmf_fweh_register(drvr, BRCMF_E_P2P_PROBEREQ_MSG, brcmf_p2p_notify_rx_mgmt_p2p_probereq);
     brcmf_fweh_register(drvr, BRCMF_E_P2P_DISC_LISTEN_COMPLETE,
                         brcmf_p2p_notify_listen_complete);
+    brcmf_fweh_register(drvr, BRCMF_E_ACTION_FRAME_RX, brcmf_p2p_notify_action_frame_rx);
+    brcmf_fweh_register(drvr, BRCMF_E_ACTION_FRAME_COMPLETE,
+                        brcmf_p2p_notify_action_tx_complete);
+    brcmf_fweh_register(drvr, BRCMF_E_ACTION_FRAME_OFF_CHAN_COMPLETE,
+                        brcmf_p2p_notify_action_tx_complete);
+    brcmf_fweh_register(drvr, BRCMF_E_PSK_SUP, brcmf_notify_connect_status);
     brcmf_fweh_register(drvr, BRCMF_E_RSSI, brcmf_notify_rssi);
 }
+
+// Additionally, brcmf_init_escan() (called from wl_init_priv after the above):
+brcmf_fweh_register(drvr, BRCMF_E_ESCAN_RESULT, brcmf_cfg80211_escan_handler);
 ```
 
 ## Network interface attach

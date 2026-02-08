@@ -142,19 +142,23 @@ typedef int (*brcmf_fweh_handler_t)(struct brcmf_if *ifp,
                                     void *data);
 ```
 
-Example registration (from `cfg80211.c`):
+### Event code mapping
+
+Event codes used by the driver (`enum brcmf_fweh_event_code`) may differ from firmware event codes. The `brcmf_fweh_event_map` (provided by vendor-specific module) translates between them. Abstract events (bit 31 set) are used for vendor-specific events that have different numeric codes across firmware vendors:
 
 ```c
-brcmf_fweh_register(drvr, BRCMF_E_LINK, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_DEAUTH, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_DEAUTH_IND, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_DISASSOC_IND, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_SET_SSID, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_ESCAN_RESULT, brcmf_cfg80211_escan_handler);
-brcmf_fweh_register(drvr, BRCMF_E_ROAM, brcmf_notify_roaming_status);
-brcmf_fweh_register(drvr, BRCMF_E_PSK_SUP, brcmf_notify_connect_status);
-brcmf_fweh_register(drvr, BRCMF_E_RSSI, brcmf_notify_rssi);
+#define BRCMF_ABSTRACT_EVENT_BIT    BIT(31)
+
+// Abstract events
+BRCMF_E_EXT_AUTH_REQ         = BRCMF_ABSTRACT_EVENT_BIT | 0
+BRCMF_E_EXT_AUTH_FRAME_RX    = BRCMF_ABSTRACT_EVENT_BIT | 1
+BRCMF_E_MGMT_FRAME_TXSTATUS  = BRCMF_ABSTRACT_EVENT_BIT | 2
+BRCMF_E_MGMT_FRAME_OFFCHAN_DONE = BRCMF_ABSTRACT_EVENT_BIT | 3
 ```
+
+`brcmf_fweh_register()` and `brcmf_fweh_unregister()` use `brcmf_fweh_map_event_code()` (driver code → firmware index) to determine the handler array slot. `brcmf_fweh_activate_events()` iterates handler indices directly and uses `brcmf_fweh_map_fwevt_code()` (firmware index → driver code) only for debug logging.
+
+The full registration list is in [07-initialization.md](07-initialization.md#event-handler-registration). It is called from `wl_init_priv()` → `brcmf_register_event_handlers()` during `brcmf_cfg80211_attach()`. Additional handlers (e.g., `BRCMF_E_TDLS_PEER_EVENT`) may be registered later based on feature detection.
 
 ## Event activation
 
@@ -171,6 +175,10 @@ int brcmf_fweh_activate_events(struct brcmf_if *ifp) {
 
     // Always enable IF event
     setbit(fweh->event_mask, BRCMF_E_IF);
+
+    // Allow vendor-specific activation method
+    if (!brcmf_fwvid_activate_events(ifp))
+        return 0;
 
     // Send to firmware
     return brcmf_fil_iovar_data_set(ifp, "event_msgs", fweh->event_mask,
@@ -216,8 +224,15 @@ void brcmf_fweh_process_event(struct brcmf_pub *drvr, struct brcmf_event *event_
     fwevt_idx = get_unaligned_be32(&event_packet->msg.event_type);
     datalen = get_unaligned_be32(&event_packet->msg.datalen);
 
+    if (fwevt_idx >= fweh->num_event_codes)
+        return;
+
     // Check if handler registered
     if (fwevt_idx != BRCMF_E_IF && !fweh->evt_handler[fwevt_idx])
+        return;
+
+    if (datalen > BRCMF_DCMD_MAXLEN ||
+        datalen + sizeof(*event_packet) > packet_len)
         return;
 
     // Allocate queue item
@@ -257,8 +272,11 @@ static void brcmf_fweh_event_worker(struct work_struct *work) {
             goto event_free;
         }
 
-        // Lookup interface
-        ifp = drvr->iflist[emsg.bsscfgidx];
+        // TDLS events always use iflist[0]
+        if (event->code == BRCMF_E_TDLS_PEER_EVENT)
+            ifp = drvr->iflist[0];
+        else
+            ifp = drvr->iflist[emsg.bsscfgidx];
 
         // Call registered handler
         brcmf_fweh_call_event_handler(drvr, ifp, event->code, &emsg, event->data);

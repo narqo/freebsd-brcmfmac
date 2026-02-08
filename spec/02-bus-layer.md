@@ -67,11 +67,12 @@ Common cores:
 
 1. Enter download state (halt CPU)
 2. Copy firmware binary to TCM at `ram_base`
-3. Copy NVRAM to end of RAM (adjusted for size)
-4. Optionally provide random seed buffer
-5. Clear last 4 bytes of RAM (shared RAM address placeholder)
-6. Exit download state (release CPU reset)
-7. Poll for shared RAM address (firmware writes it when ready)
+3. Save reset vector from first 4 bytes of firmware
+4. Clear last 4 bytes of RAM (shared RAM address placeholder)
+5. Copy NVRAM to end of RAM (`rambase + ramsize - nvram_len`)
+6. If `fwseed`: write random seed footer + random data just before NVRAM
+7. Exit download state (release CPU reset, using reset vector)
+8. Poll for shared RAM address (firmware writes it to last 4 bytes when ready)
 
 ```c
 int brcmf_pcie_download_fw_nvram(devinfo, fw, nvram, nvram_len) {
@@ -91,17 +92,21 @@ int brcmf_pcie_download_fw_nvram(devinfo, fw, nvram, nvram_len) {
     address = devinfo->ci->rambase + devinfo->ci->ramsize - nvram_len;
     memcpy_toio(devinfo->tcm + address, nvram, nvram_len);
 
+    // Read current value before starting ARM (may be non-zero garbage)
+    sharedram_addr_written = brcmf_pcie_read_ram32(devinfo, ramsize - 4);
+
     // Start ARM
     brcmf_pcie_exit_download_state(devinfo, resetintr);
 
-    // Wait for firmware to write shared RAM address
-    while (loop_counter--) {
+    // Wait for firmware to change the shared RAM address
+    sharedram_addr = sharedram_addr_written;
+    loop_counter = BRCMF_PCIE_FW_UP_TIMEOUT / 50;
+    while ((sharedram_addr == sharedram_addr_written) && loop_counter--) {
         msleep(50);
         sharedram_addr = brcmf_pcie_read_ram32(devinfo, ramsize - 4);
-        if (sharedram_addr != 0)
-            break;
     }
 
+    // Validate: must be within RAM range
     return brcmf_pcie_init_share_ram_info(devinfo, sharedram_addr);
 }
 ```
@@ -112,6 +117,7 @@ After firmware boots, it writes a shared RAM address to the last 4 bytes of RAM.
 
 ```c
 // Offsets from shared RAM base (firmware-defined)
+#define BRCMF_SHARED_CONSOLE_ADDR_OFFSET       20
 #define BRCMF_SHARED_MAX_RXBUFPOST_OFFSET      34
 #define BRCMF_SHARED_RX_DATAOFFSET_OFFSET      36
 #define BRCMF_SHARED_HTOD_MB_DATA_ADDR_OFFSET  40
@@ -126,16 +132,38 @@ After firmware boots, it writes a shared RAM address to the last 4 bytes of RAM.
 
 First word contains version and flags:
 ```c
+#define BRCMF_PCIE_MIN_SHARED_VERSION      5
+#define BRCMF_PCIE_MAX_SHARED_VERSION      7     // BRCMF_PCIE_SHARED_VERSION_7
 #define BRCMF_PCIE_SHARED_VERSION_MASK     0x00FF
 #define BRCMF_PCIE_SHARED_DMA_INDEX        0x10000    // DMA index supported
 #define BRCMF_PCIE_SHARED_DMA_2B_IDX       0x100000   // Use 16-bit indices
 #define BRCMF_PCIE_SHARED_HOSTRDY_DB1      0x10000000 // Use doorbell 1 for host ready
+
+#define BRCMF_PCIE_FLAGS_HTOD_SPLIT        0x4000
+#define BRCMF_PCIE_FLAGS_DTOH_SPLIT        0x8000
 ```
+
+`max_rxbufpost` is read from TCM at offset 34 (16-bit). If zero, defaults to `BRCMF_DEF_MAX_RXBUFPOST` (255).
 
 Notes:
 - The Linux implementation treats `BRCMF_SHARED_RING_BASE_OFFSET` and `BRCMF_SHARED_DMA_SCRATCH_LEN_OFFSET` as aliases at offset 52. Keep both names to match the code.
 - `BRCMF_PCIE_SHARED_DMA_INDEX` and `BRCMF_PCIE_SHARED_DMA_2B_IDX` select host-memory index mode and 16-bit index size; in this mode the driver allocates an index buffer, writes host addresses into `brcmf_pcie_dhi_ringinfo`, and writes the updated ringinfo back to TCM.
 - `max_flowrings`/`max_submissionrings`/`max_completionrings` semantics depend on shared version (v6+ uses the explicit fields; older versions derive them from `max_flowrings`).
+
+### Scratch and ring-update buffers
+
+After reading shared info, the driver allocates DMA-coherent buffers and writes their addresses to TCM:
+
+```c
+#define BRCMF_DMA_D2H_SCRATCH_BUF_LEN     8
+#define BRCMF_DMA_D2H_RINGUPD_BUF_LEN     1024
+```
+
+The scratch buffer address goes at `BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET` (56) and the ringupd buffer at `BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET` (68). The lengths are written at offsets 52 and 64 respectively.
+
+### Host ready notification
+
+After ring setup, if `BRCMF_PCIE_SHARED_HOSTRDY_DB1` is set in shared flags, the driver writes 1 to `h2d_mailbox_1` to signal host readiness. If the flag is not set, no host-ready write occurs. (`h2d_mailbox_0` is used for ring doorbell, not host-ready.)
 
 ## DMA ring setup
 
@@ -157,6 +185,26 @@ struct brcmf_pcie_dhi_ringinfo {
     __le16 max_completionrings;              // Max D2H rings
 };
 ```
+
+### Ring info version handling
+
+For shared version >= 6, `max_submissionrings`, `max_flowrings`, and `max_completionrings` are read directly from the ringinfo structure. For version < 6:
+```c
+max_submissionrings = ringinfo.max_flowrings;  // overloaded field
+max_flowrings = max_submissionrings - BRCMF_NROF_H2D_COMMON_MSGRINGS;
+max_completionrings = BRCMF_NROF_D2H_COMMON_MSGRINGS;
+```
+
+### DMA index mode
+
+When `BRCMF_PCIE_SHARED_DMA_INDEX` is set in shared flags, the driver allocates a single DMA-coherent buffer for all ring indices and writes its sub-region addresses into the `ringinfo` host address fields. The buffer layout is:
+```
+h2d_w_idx[max_submissionrings] | h2d_r_idx[max_submissionrings] |
+d2h_w_idx[max_completionrings] | d2h_r_idx[max_completionrings]
+```
+Each index is `dma_idx_sz` bytes (2 for `DMA_2B_IDX`, 4 otherwise). The updated ringinfo is written back to TCM. In this mode, `read_ptr`/`write_ptr` access host memory instead of TCM.
+
+When DMA index mode is not available, indices are stored in TCM. Each index slot in TCM is 4 bytes wide (`sizeof(u32)`), but only the lower 16 bits are used.
 
 ### Ring allocation
 
@@ -194,7 +242,15 @@ Ring memory layout in TCM per ring:
 | 3 | D2H | TX complete | 1024 |
 | 4 | D2H | RX complete | 1024 |
 
-Additional flow rings (H2D) are created dynamically for TX data.
+Additional flow rings (H2D) are created dynamically for TX data. Flow ring depth is `BRCMF_H2D_TXFLOWRING_MAX_ITEM` (512) with item size `BRCMF_H2D_TXFLOWRING_ITEMSIZE` (48).
+
+### Item size selection
+
+Ring item sizes depend on shared version (from TCM):
+- Version < 7: TX complete = 16, RX complete = 32
+- Version >= 7: TX complete = 24, RX complete = 40
+
+Control submit (40), RX post (32), and control complete (24) are the same across all versions.
 
 ## Interrupt handling
 
@@ -228,6 +284,24 @@ For core rev >= 64 (newer chips):
 #define BRCMF_PCIE_MB_INT_FN0_0      0x0100
 #define BRCMF_PCIE_MB_INT_FN0_1      0x0200
 ```
+
+### Register abstraction
+
+Register offsets differ between core rev < 64 and >= 64. The driver uses a `brcmf_pcie_reginfo` struct to abstract this:
+
+```c
+struct brcmf_pcie_reginfo {
+    u32 intmask;
+    u32 mailboxint;
+    u32 mailboxmask;
+    u32 h2d_mailbox_0;
+    u32 h2d_mailbox_1;
+    u32 int_d2h_db;        // combined mask for all D2H doorbell bits
+    u32 int_fn0;           // FN0 interrupt mask (0 for rev >= 64)
+};
+```
+
+Selected at probe time based on core revision.
 
 ### ISR flow
 

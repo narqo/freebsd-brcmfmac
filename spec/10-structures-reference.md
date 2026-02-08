@@ -160,9 +160,9 @@ struct brcmf_wsec_key {
     u32 pad_1[18];
     u32 algo;                       // CRYPTO_ALGO_*
     u32 flags;                      // Key flags
-    u32 pad_2[2];
-    s32 iv_initialized;
-    s32 pad_3;
+    u32 pad_2[3];
+    u32 iv_initialized;
+    u32 pad_3;
     struct {
         u32 hi;
         u16 lo;
@@ -328,23 +328,98 @@ struct msgbuf_buf_addr {
 ### Message sizes
 
 ```c
-// Control rings
+// Ring depths (max items)
 #define BRCMF_H2D_MSGRING_CONTROL_SUBMIT_MAX_ITEM   64
-#define BRCMF_D2H_MSGRING_CONTROL_COMPLETE_MAX_ITEM 64
+#define BRCMF_H2D_MSGRING_RXPOST_SUBMIT_MAX_ITEM    1024
+#define BRCMF_D2H_MSGRING_CONTROL_COMPLETE_MAX_ITEM  64
+#define BRCMF_D2H_MSGRING_TX_COMPLETE_MAX_ITEM       1024
+#define BRCMF_D2H_MSGRING_RX_COMPLETE_MAX_ITEM       1024
+#define BRCMF_H2D_TXFLOWRING_MAX_ITEM                512
 
-// RX post ring
-#define BRCMF_H2D_MSGRING_RXPOST_SUBMIT_MAX_ITEM    512
+// Item sizes (shared version < 7)
+#define BRCMF_H2D_MSGRING_CONTROL_SUBMIT_ITEMSIZE        40
+#define BRCMF_H2D_MSGRING_RXPOST_SUBMIT_ITEMSIZE         32
+#define BRCMF_D2H_MSGRING_CONTROL_COMPLETE_ITEMSIZE      24
+#define BRCMF_D2H_MSGRING_TX_COMPLETE_ITEMSIZE_PRE_V7    16
+#define BRCMF_D2H_MSGRING_RX_COMPLETE_ITEMSIZE_PRE_V7    32
 
-// Completion rings
-#define BRCMF_D2H_MSGRING_TX_COMPLETE_MAX_ITEM      1024
-#define BRCMF_D2H_MSGRING_RX_COMPLETE_MAX_ITEM      512
+// Item sizes (shared version >= 7)
+#define BRCMF_D2H_MSGRING_TX_COMPLETE_ITEMSIZE            24
+#define BRCMF_D2H_MSGRING_RX_COMPLETE_ITEMSIZE            40
 
-// Item sizes
-#define BRCMF_H2D_MSGRING_CONTROL_SUBMIT_ITEMSIZE   40
-#define BRCMF_H2D_MSGRING_RXPOST_SUBMIT_ITEMSIZE    32
-#define BRCMF_D2H_MSGRING_CONTROL_COMPLETE_ITEMSIZE 24
-#define BRCMF_D2H_MSGRING_TX_COMPLETE_ITEMSIZE      16
-#define BRCMF_D2H_MSGRING_RX_COMPLETE_ITEMSIZE      32
+#define BRCMF_H2D_TXFLOWRING_ITEMSIZE                    48
+```
+
+The driver selects pre-v7 or v7+ item sizes based on `shared.version` read from TCM at init.
+
+## msgbuf protocol state
+
+```c
+struct brcmf_msgbuf {
+    struct brcmf_pub *drvr;
+
+    struct brcmf_commonring **commonrings;
+    struct brcmf_commonring **flowrings;
+    dma_addr_t *flowring_dma_handle;
+
+    u16 max_flowrings;
+    u16 max_submissionrings;
+    u16 max_completionrings;
+
+    u16 rx_dataoffset;
+    u32 max_rxbufpost;
+    u16 rx_metadata_offset;
+    u32 rxbufpost;                      // current count of posted RX buffers
+
+    u32 max_ioctlrespbuf;               // BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST (8)
+    u32 cur_ioctlrespbuf;
+    u32 max_eventbuf;                   // BRCMF_MSGBUF_MAX_EVENTBUF_POST (8)
+    u32 cur_eventbuf;
+
+    void *ioctbuf;                      // DMA-coherent IOCTL buffer
+    dma_addr_t ioctbuf_handle;
+    u32 ioctbuf_phys_hi;
+    u32 ioctbuf_phys_lo;
+    int ioctl_resp_status;
+    u32 ioctl_resp_ret_len;
+    u32 ioctl_resp_pktid;
+
+    u16 data_seq_no;
+    u16 ioctl_seq_no;
+    u32 reqid;                          // IOCTL transaction ID counter
+    wait_queue_head_t ioctl_resp_wait;
+    bool ctl_completed;
+
+    struct brcmf_msgbuf_pktids *tx_pktids;  // NR_TX_PKTIDS (2048)
+    struct brcmf_msgbuf_pktids *rx_pktids;  // NR_RX_PKTIDS (1024)
+    struct brcmf_flowring *flow;
+
+    struct workqueue_struct *txflow_wq;
+    struct work_struct txflow_work;
+    unsigned long *flow_map;            // bitmap of flowrings needing TX
+    unsigned long *txstatus_done_map;   // bitmap of flowrings with completed TX
+
+    struct work_struct flowring_work;
+    spinlock_t flowring_work_lock;
+    struct list_head work_queue;        // pending flowring create/delete items
+};
+```
+
+Key constants:
+```c
+#define NR_TX_PKTIDS                        2048
+#define NR_RX_PKTIDS                        1024
+#define BRCMF_IOCTL_REQ_PKTID              0xFFFE
+#define BRCMF_MSGBUF_MAX_PKT_SIZE          2048
+#define BRCMF_MSGBUF_MAX_CTL_PKT_SIZE      8192
+#define BRCMF_MSGBUF_RXBUFPOST_THRESHOLD   32
+#define BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST 8
+#define BRCMF_MSGBUF_MAX_EVENTBUF_POST     8
+#define BRCMF_MSGBUF_TX_FLUSH_CNT1         32
+#define BRCMF_MSGBUF_TX_FLUSH_CNT2         96
+#define BRCMF_MSGBUF_DELAY_TXWORKER_THRS   96
+#define BRCMF_MSGBUF_TRICKLE_TXWORKER_THRS 32
+#define BRCMF_MSGBUF_IOCTL_RESP_TIMEOUT    msecs_to_jiffies(2000)
 ```
 
 ## Endianness notes
