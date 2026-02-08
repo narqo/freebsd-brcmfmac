@@ -63,9 +63,20 @@ struct brcmf_pcie_ringbuf {
 	bus_dmamap_t dma_map;
 	uint32_t w_idx_addr;	  /* TCM offset for write index */
 	uint32_t r_idx_addr;	  /* TCM offset for read index */
+	uint16_t w_ptr;		  /* local write pointer */
+	uint16_t r_ptr;		  /* local read pointer */
 	uint16_t id;
 	uint16_t depth;		  /* max items */
 	uint16_t item_len;	  /* bytes per item */
+};
+
+/* Control buffer tracking */
+struct brcmf_ctrlbuf {
+	void *buf;
+	bus_addr_t paddr;
+	bus_dma_tag_t dma_tag;
+	bus_dmamap_t dma_map;
+	uint32_t pktid;
 };
 
 /* Per-device softc */
@@ -121,6 +132,36 @@ struct brcmf_softc {
 	bus_addr_t ringupd_dma;
 	bus_dma_tag_t ringupd_dma_tag;
 	bus_dmamap_t ringupd_dma_map;
+
+	/* Interrupt */
+	struct resource *irq_res;
+	int irq_rid;
+	void *irq_handle;
+
+	/* IOCTL buffer */
+	void *ioctlbuf;
+	bus_addr_t ioctlbuf_dma;
+	bus_dma_tag_t ioctlbuf_dma_tag;
+	bus_dmamap_t ioctlbuf_dma_map;
+
+	/* Control response/event buffers */
+	struct brcmf_ctrlbuf *ioctlresp_buf;
+	struct brcmf_ctrlbuf *event_buf;
+	uint32_t cur_ioctlrespbuf;
+	uint32_t cur_eventbuf;
+
+	/* RX data buffers */
+	struct brcmf_ctrlbuf *rxbuf;
+	uint32_t rxbufpost;
+
+	/* Request ID counter */
+	uint16_t reqid;
+
+	/* IOCTL state */
+	uint16_t ioctl_trans_id;
+	int ioctl_status;
+	uint32_t ioctl_resp_len;
+	int ioctl_completed;
 };
 
 /* PCIe bus functions */

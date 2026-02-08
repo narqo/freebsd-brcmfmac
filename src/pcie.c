@@ -126,6 +126,149 @@ MALLOC_DEFINE(M_BRCMFMAC, "brcmfmac", "Broadcom FullMAC WiFi driver");
 #define BRCMF_DMA_D2H_SCRATCH_BUF_LEN	8
 #define BRCMF_DMA_D2H_RINGUPD_BUF_LEN	1024
 
+/* Interrupt bits */
+#define BRCMF_PCIE_MB_INT_D2H0_DB0 0x10000
+#define BRCMF_PCIE_MB_INT_D2H0_DB1 0x20000
+#define BRCMF_PCIE_MB_INT_D2H1_DB0 0x40000
+#define BRCMF_PCIE_MB_INT_D2H1_DB1 0x80000
+#define BRCMF_PCIE_MB_INT_D2H2_DB0 0x100000
+#define BRCMF_PCIE_MB_INT_D2H2_DB1 0x200000
+#define BRCMF_PCIE_MB_INT_D2H3_DB0 0x400000
+#define BRCMF_PCIE_MB_INT_D2H3_DB1 0x800000
+#define BRCMF_PCIE_MB_INT_FN0_0	   0x0100
+#define BRCMF_PCIE_MB_INT_FN0_1	   0x0200
+
+#define BRCMF_PCIE_MB_INT_D2H_DB \
+	(BRCMF_PCIE_MB_INT_D2H0_DB0 | BRCMF_PCIE_MB_INT_D2H0_DB1 | \
+	 BRCMF_PCIE_MB_INT_D2H1_DB0 | BRCMF_PCIE_MB_INT_D2H1_DB1 | \
+	 BRCMF_PCIE_MB_INT_D2H2_DB0 | BRCMF_PCIE_MB_INT_D2H2_DB1 | \
+	 BRCMF_PCIE_MB_INT_D2H3_DB0 | BRCMF_PCIE_MB_INT_D2H3_DB1)
+
+#define BRCMF_PCIE_MB_INT_FN0 \
+	(BRCMF_PCIE_MB_INT_FN0_0 | BRCMF_PCIE_MB_INT_FN0_1)
+
+/* Mailbox data bits */
+#define BRCMF_D2H_DEV_D3_ACK	   0x00000001
+#define BRCMF_D2H_DEV_DS_ENTER_REQ 0x00000002
+#define BRCMF_D2H_DEV_DS_EXIT_NOTE 0x00000004
+#define BRCMF_D2H_DEV_FWHALT	   0x10000000
+
+/* msgbuf message types */
+#define MSGBUF_TYPE_GEN_STATUS		   0x01
+#define MSGBUF_TYPE_RING_STATUS		   0x02
+#define MSGBUF_TYPE_FLOW_RING_CREATE	   0x03
+#define MSGBUF_TYPE_FLOW_RING_CREATE_CMPLT 0x04
+#define MSGBUF_TYPE_FLOW_RING_DELETE	   0x05
+#define MSGBUF_TYPE_FLOW_RING_DELETE_CMPLT 0x06
+#define MSGBUF_TYPE_FLOW_RING_FLUSH	   0x07
+#define MSGBUF_TYPE_FLOW_RING_FLUSH_CMPLT  0x08
+#define MSGBUF_TYPE_IOCTLPTR_REQ	   0x09
+#define MSGBUF_TYPE_IOCTLPTR_REQ_ACK	   0x0a
+#define MSGBUF_TYPE_IOCTLRESP_BUF_POST	   0x0b
+#define MSGBUF_TYPE_IOCTL_CMPLT		   0x0c
+#define MSGBUF_TYPE_EVENT_BUF_POST	   0x0d
+#define MSGBUF_TYPE_WL_EVENT		   0x0e
+#define MSGBUF_TYPE_TX_POST		   0x0f
+#define MSGBUF_TYPE_TX_STATUS		   0x10
+#define MSGBUF_TYPE_RXBUF_POST		   0x11
+#define MSGBUF_TYPE_RX_CMPLT		   0x12
+
+/* Buffer sizes */
+#define BRCMF_MSGBUF_MAX_CTL_PKT_SIZE	    8192
+#define BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST  8
+#define BRCMF_MSGBUF_MAX_EVENTBUF_POST	    8
+#define BRCMF_MSGBUF_MAX_PKT_SIZE	    2048
+#define BRCMF_MSGBUF_RXBUFPOST_THRESHOLD    32
+
+/* IOCTL */
+#define BRCMF_IOCTL_REQ_PKTID		    0xFFFE
+#define BRCMF_IOCTL_TIMEOUT_MS		    2000
+
+/*
+ * msgbuf structures (must be before functions that use them)
+ */
+struct msgbuf_common_hdr {
+	uint8_t msgtype;
+	uint8_t ifidx;
+	uint8_t flags;
+	uint8_t rsvd0;
+	uint32_t request_id;
+} __packed;
+
+struct msgbuf_buf_addr {
+	uint32_t low_addr;
+	uint32_t high_addr;
+} __packed;
+
+struct msgbuf_completion_hdr {
+	uint16_t status;
+	uint16_t flow_ring_id;
+} __packed;
+
+struct msgbuf_rx_ioctl_resp_or_event {
+	struct msgbuf_common_hdr msg;
+	uint16_t host_buf_len;
+	uint16_t rsvd0[3];
+	struct msgbuf_buf_addr host_buf_addr;
+	uint32_t rsvd1[4];
+} __packed;
+
+struct msgbuf_rx_bufpost {
+	struct msgbuf_common_hdr msg;
+	uint16_t metadata_buf_len;
+	uint16_t data_buf_len;
+	uint32_t rsvd0;
+	struct msgbuf_buf_addr metadata_buf_addr;
+	struct msgbuf_buf_addr data_buf_addr;
+} __packed;
+
+struct msgbuf_ioctl_req_hdr {
+	struct msgbuf_common_hdr msg;
+	uint32_t cmd;
+	uint16_t trans_id;
+	uint16_t input_buf_len;
+	uint16_t output_buf_len;
+	uint16_t rsvd0[3];
+	struct msgbuf_buf_addr req_buf_addr;
+	uint32_t rsvd1[2];
+} __packed;
+
+struct msgbuf_ioctl_resp_hdr {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t resp_len;
+	uint16_t trans_id;
+	uint32_t cmd;
+	uint32_t rsvd0;
+} __packed;
+
+struct msgbuf_tx_status {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t metadata_len;
+	uint16_t tx_status;
+} __packed;
+
+struct msgbuf_rx_complete {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t metadata_len;
+	uint16_t data_len;
+	uint16_t data_offset;
+	uint16_t flags;
+	uint32_t rx_status_0;
+	uint32_t rx_status_1;
+	uint32_t rsvd0;
+} __packed;
+
+struct msgbuf_rx_event {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t event_data_len;
+	uint16_t seqnum;
+	uint16_t rsvd0[4];
+} __packed;
+
 /* Firmware polling */
 #define BRCMF_FW_READY_TIMEOUT_MS 5000
 #define BRCMF_FW_READY_POLL_MS	  50
@@ -1082,6 +1225,768 @@ brcmf_pcie_free_rings(struct brcmf_softc *sc)
 }
 
 /*
+ * Ring the H2D doorbell to notify firmware.
+ */
+static void
+brcmf_pcie_ring_doorbell(struct brcmf_softc *sc)
+{
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_H2D_MAILBOX_0, 1);
+}
+
+/*
+ * Update write index in TCM after writing to ring.
+ */
+static void
+brcmf_ring_write_wptr(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	brcmf_tcm_write16(sc, ring->w_idx_addr, ring->w_ptr);
+}
+
+/*
+ * Read current read index from TCM.
+ */
+static uint16_t
+brcmf_ring_read_rptr(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	ring->r_ptr = brcmf_tcm_read16(sc, ring->r_idx_addr);
+	return (ring->r_ptr);
+}
+
+/*
+ * Read current write index from TCM (for D2H rings).
+ */
+static uint16_t
+brcmf_ring_read_wptr(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	ring->w_ptr = brcmf_tcm_read16(sc, ring->w_idx_addr);
+	return (ring->w_ptr);
+}
+
+/*
+ * Update read index in TCM after reading from ring.
+ */
+static void
+brcmf_ring_write_rptr(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	brcmf_tcm_write16(sc, ring->r_idx_addr, ring->r_ptr);
+}
+
+/*
+ * Reserve space in a ring for writing.
+ * Returns pointer to item or NULL if ring is full.
+ */
+static void *
+brcmf_ring_reserve(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	uint16_t available;
+	void *ret;
+
+	brcmf_ring_read_rptr(sc, ring);
+
+	if (ring->r_ptr <= ring->w_ptr)
+		available = ring->depth - ring->w_ptr + ring->r_ptr;
+	else
+		available = ring->r_ptr - ring->w_ptr;
+
+	if (available < 2)
+		return (NULL);
+
+	ret = (char *)ring->buf + ring->w_ptr * ring->item_len;
+	ring->w_ptr++;
+	if (ring->w_ptr >= ring->depth)
+		ring->w_ptr = 0;
+
+	return (ret);
+}
+
+/*
+ * Commit writes to ring and notify firmware.
+ */
+static void
+brcmf_ring_submit(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring)
+{
+	brcmf_ring_write_wptr(sc, ring);
+	brcmf_pcie_ring_doorbell(sc);
+}
+
+/*
+ * Enable/disable interrupts.
+ */
+static void
+brcmf_pcie_intr_enable(struct brcmf_softc *sc)
+{
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXMASK,
+	    BRCMF_PCIE_MB_INT_D2H_DB | BRCMF_PCIE_MB_INT_FN0);
+}
+
+static void
+brcmf_pcie_intr_disable(struct brcmf_softc *sc)
+{
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXMASK, 0);
+}
+
+/*
+ * Handle mailbox data from firmware (power management).
+ */
+static void
+brcmf_pcie_handle_mb_data(struct brcmf_softc *sc)
+{
+	uint32_t dtoh_mb;
+
+	dtoh_mb = brcmf_tcm_read32(sc, sc->shared.dtoh_mb_data_addr);
+	if (dtoh_mb == 0)
+		return;
+
+	brcmf_tcm_write32(sc, sc->shared.dtoh_mb_data_addr, 0);
+
+	if (dtoh_mb & BRCMF_D2H_DEV_FWHALT)
+		device_printf(sc->dev, "firmware halted\n");
+}
+
+/*
+ * Process control complete ring.
+ */
+static void
+brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	struct msgbuf_common_hdr *msg;
+	struct msgbuf_ioctl_resp_hdr *ioctl_resp;
+	uint32_t pktid;
+	uint16_t avail, i, resp_len;
+
+	ring = sc->commonrings[BRCMF_D2H_MSGRING_CONTROL_COMPLETE];
+
+	brcmf_ring_read_wptr(sc, ring);
+
+	if (ring->w_ptr >= ring->r_ptr)
+		avail = ring->w_ptr - ring->r_ptr;
+	else
+		avail = ring->depth - ring->r_ptr;
+
+	if (avail == 0)
+		return;
+
+	for (i = 0; i < avail; i++) {
+		msg = (struct msgbuf_common_hdr *)((char *)ring->buf +
+		    ring->r_ptr * ring->item_len);
+
+		switch (msg->msgtype) {
+		case MSGBUF_TYPE_IOCTL_CMPLT:
+			ioctl_resp = (struct msgbuf_ioctl_resp_hdr *)msg;
+			sc->ioctl_status = le16toh(ioctl_resp->compl_hdr.status);
+			resp_len = le16toh(ioctl_resp->resp_len);
+			sc->ioctl_resp_len = resp_len;
+
+			/*
+			 * Response data is in the posted IOCTL response buffer.
+			 * The request_id tells us which buffer (pktid 0x10000+idx).
+			 */
+			pktid = le32toh(msg->request_id);
+			if (pktid >= 0x10000 && pktid < 0x10000 + BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST) {
+				int idx = pktid - 0x10000;
+				if (resp_len > 0 && resp_len <= BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+					memcpy(sc->ioctlbuf, sc->ioctlresp_buf[idx].buf, resp_len);
+			}
+
+			sc->ioctl_completed = 1;
+			wakeup(&sc->ioctl_completed);
+			break;
+
+		case MSGBUF_TYPE_WL_EVENT:
+			/* TODO: handle events */
+			break;
+
+		case MSGBUF_TYPE_IOCTLPTR_REQ_ACK:
+			/* Firmware acknowledges IOCTL, nothing to do */
+			break;
+
+		default:
+			printf("brcmfmac: ctrl complete unknown msgtype 0x%x\n",
+			    msg->msgtype);
+			break;
+		}
+
+		ring->r_ptr++;
+		if (ring->r_ptr >= ring->depth)
+			ring->r_ptr = 0;
+	}
+
+	brcmf_ring_write_rptr(sc, ring);
+}
+
+/*
+ * Process TX complete ring.
+ */
+static void
+brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	uint16_t avail;
+
+	ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
+
+	brcmf_ring_read_wptr(sc, ring);
+
+	if (ring->w_ptr >= ring->r_ptr)
+		avail = ring->w_ptr - ring->r_ptr;
+	else
+		avail = ring->depth - ring->r_ptr;
+
+	if (avail == 0)
+		return;
+
+	/* TODO: process TX completions, free TX buffers */
+	ring->r_ptr = ring->w_ptr;
+	brcmf_ring_write_rptr(sc, ring);
+}
+
+/*
+ * Process RX complete ring.
+ */
+static void
+brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	uint16_t avail;
+
+	ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
+
+	brcmf_ring_read_wptr(sc, ring);
+
+	if (ring->w_ptr >= ring->r_ptr)
+		avail = ring->w_ptr - ring->r_ptr;
+	else
+		avail = ring->depth - ring->r_ptr;
+
+	if (avail == 0)
+		return;
+
+	/* TODO: process RX completions, deliver packets */
+	ring->r_ptr = ring->w_ptr;
+	brcmf_ring_write_rptr(sc, ring);
+}
+
+/*
+ * Process D2H completion rings.
+ */
+static void
+brcmf_pcie_process_d2h(struct brcmf_softc *sc)
+{
+	brcmf_msgbuf_process_ctrl_complete(sc);
+	brcmf_msgbuf_process_tx_complete(sc);
+	brcmf_msgbuf_process_rx_complete(sc);
+}
+
+/*
+ * Interrupt handler.
+ */
+static int
+brcmf_pcie_intr(void *arg)
+{
+	struct brcmf_softc *sc = arg;
+	uint32_t status;
+
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	status = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
+	if (status == 0 || status == 0xffffffff)
+		return (FILTER_STRAY);
+
+	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT, status);
+
+	if (status & BRCMF_PCIE_MB_INT_FN0)
+		brcmf_pcie_handle_mb_data(sc);
+
+	if (status & BRCMF_PCIE_MB_INT_D2H_DB)
+		brcmf_pcie_process_d2h(sc);
+
+	return (FILTER_HANDLED);
+}
+
+/*
+ * Set up MSI interrupt.
+ */
+static int
+brcmf_pcie_setup_irq(struct brcmf_softc *sc)
+{
+	int count, error;
+
+	count = 1;
+	if (pci_alloc_msi(sc->dev, &count) != 0) {
+		device_printf(sc->dev, "failed to allocate MSI\n");
+		return (ENXIO);
+	}
+
+	sc->irq_rid = 1;
+	sc->irq_res = bus_alloc_resource_any(sc->dev, SYS_RES_IRQ,
+	    &sc->irq_rid, RF_ACTIVE);
+	if (sc->irq_res == NULL) {
+		device_printf(sc->dev, "failed to allocate IRQ resource\n");
+		pci_release_msi(sc->dev);
+		return (ENXIO);
+	}
+
+	error = bus_setup_intr(sc->dev, sc->irq_res,
+	    INTR_TYPE_NET | INTR_MPSAFE, brcmf_pcie_intr, NULL, sc,
+	    &sc->irq_handle);
+	if (error != 0) {
+		device_printf(sc->dev, "failed to setup interrupt: %d\n",
+		    error);
+		bus_release_resource(sc->dev, SYS_RES_IRQ, sc->irq_rid,
+		    sc->irq_res);
+		pci_release_msi(sc->dev);
+		return (error);
+	}
+
+	printf("brcmfmac: MSI interrupt enabled\n");
+	return (0);
+}
+
+/*
+ * Tear down MSI interrupt.
+ */
+static void
+brcmf_pcie_free_irq(struct brcmf_softc *sc)
+{
+	if (sc->irq_handle != NULL) {
+		brcmf_pcie_intr_disable(sc);
+		bus_teardown_intr(sc->dev, sc->irq_res, sc->irq_handle);
+		sc->irq_handle = NULL;
+	}
+	if (sc->irq_res != NULL) {
+		bus_release_resource(sc->dev, SYS_RES_IRQ, sc->irq_rid,
+		    sc->irq_res);
+		sc->irq_res = NULL;
+	}
+	pci_release_msi(sc->dev);
+}
+
+/*
+ * Allocate IOCTL buffer.
+ */
+static int
+brcmf_pcie_alloc_ioctlbuf(struct brcmf_softc *sc)
+{
+	return brcmf_alloc_dma_buf(sc->dev, BRCMF_MSGBUF_MAX_CTL_PKT_SIZE,
+	    &sc->ioctlbuf_dma_tag, &sc->ioctlbuf_dma_map,
+	    &sc->ioctlbuf, &sc->ioctlbuf_dma);
+}
+
+/*
+ * Free IOCTL buffer.
+ */
+static void
+brcmf_pcie_free_ioctlbuf(struct brcmf_softc *sc)
+{
+	brcmf_free_dma_buf(sc->ioctlbuf_dma_tag, sc->ioctlbuf_dma_map,
+	    sc->ioctlbuf);
+	sc->ioctlbuf_dma_tag = NULL;
+	sc->ioctlbuf = NULL;
+}
+
+/*
+ * Allocate a single control buffer.
+ */
+static int
+brcmf_alloc_ctrlbuf(struct brcmf_softc *sc, struct brcmf_ctrlbuf *cb,
+    size_t size, uint32_t pktid)
+{
+	int error;
+
+	error = brcmf_alloc_dma_buf(sc->dev, size, &cb->dma_tag, &cb->dma_map,
+	    &cb->buf, &cb->paddr);
+	if (error != 0)
+		return (error);
+
+	cb->pktid = pktid;
+	return (0);
+}
+
+/*
+ * Free a single control buffer.
+ */
+static void
+brcmf_free_ctrlbuf(struct brcmf_ctrlbuf *cb)
+{
+	brcmf_free_dma_buf(cb->dma_tag, cb->dma_map, cb->buf);
+	cb->dma_tag = NULL;
+	cb->buf = NULL;
+}
+
+/*
+ * Post a single IOCTL response or event buffer to control submit ring.
+ */
+static int
+brcmf_msgbuf_post_ctrlbuf(struct brcmf_softc *sc, uint8_t msgtype,
+    struct brcmf_ctrlbuf *cb)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	struct msgbuf_rx_ioctl_resp_or_event *msg;
+
+	ring = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+	msg = brcmf_ring_reserve(sc, ring);
+	if (msg == NULL)
+		return (ENOBUFS);
+
+	memset(msg, 0, sizeof(*msg));
+	msg->msg.msgtype = msgtype;
+	msg->msg.request_id = htole32(cb->pktid);
+	msg->host_buf_len = htole16(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE);
+	msg->host_buf_addr.low_addr = htole32((uint32_t)cb->paddr);
+	msg->host_buf_addr.high_addr = htole32((uint32_t)(cb->paddr >> 32));
+
+	brcmf_ring_submit(sc, ring);
+	return (0);
+}
+
+/*
+ * Allocate and post initial IOCTL response buffers.
+ */
+static int
+brcmf_msgbuf_init_ioctlresp(struct brcmf_softc *sc)
+{
+	int i, error;
+
+	sc->ioctlresp_buf = malloc(
+	    BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST * sizeof(struct brcmf_ctrlbuf),
+	    M_BRCMFMAC, M_NOWAIT | M_ZERO);
+	if (sc->ioctlresp_buf == NULL)
+		return (ENOMEM);
+
+	for (i = 0; i < BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST; i++) {
+		error = brcmf_alloc_ctrlbuf(sc, &sc->ioctlresp_buf[i],
+		    BRCMF_MSGBUF_MAX_CTL_PKT_SIZE, 0x10000 + i);
+		if (error != 0)
+			return (error);
+
+		error = brcmf_msgbuf_post_ctrlbuf(sc,
+		    MSGBUF_TYPE_IOCTLRESP_BUF_POST, &sc->ioctlresp_buf[i]);
+		if (error != 0)
+			return (error);
+	}
+
+	sc->cur_ioctlrespbuf = BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST;
+	printf("brcmfmac: posted %d IOCTL response buffers\n",
+	    BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST);
+	return (0);
+}
+
+/*
+ * Allocate and post initial event buffers.
+ */
+static int
+brcmf_msgbuf_init_event(struct brcmf_softc *sc)
+{
+	int i, error;
+
+	sc->event_buf = malloc(
+	    BRCMF_MSGBUF_MAX_EVENTBUF_POST * sizeof(struct brcmf_ctrlbuf),
+	    M_BRCMFMAC, M_NOWAIT | M_ZERO);
+	if (sc->event_buf == NULL)
+		return (ENOMEM);
+
+	for (i = 0; i < BRCMF_MSGBUF_MAX_EVENTBUF_POST; i++) {
+		error = brcmf_alloc_ctrlbuf(sc, &sc->event_buf[i],
+		    BRCMF_MSGBUF_MAX_CTL_PKT_SIZE, 0x20000 + i);
+		if (error != 0)
+			return (error);
+
+		error = brcmf_msgbuf_post_ctrlbuf(sc,
+		    MSGBUF_TYPE_EVENT_BUF_POST, &sc->event_buf[i]);
+		if (error != 0)
+			return (error);
+	}
+
+	sc->cur_eventbuf = BRCMF_MSGBUF_MAX_EVENTBUF_POST;
+	printf("brcmfmac: posted %d event buffers\n",
+	    BRCMF_MSGBUF_MAX_EVENTBUF_POST);
+	return (0);
+}
+
+/*
+ * Post a single RX data buffer to RX post ring.
+ */
+static int
+brcmf_msgbuf_post_rxbuf(struct brcmf_softc *sc, struct brcmf_ctrlbuf *cb)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	struct msgbuf_rx_bufpost *msg;
+
+	ring = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+	msg = brcmf_ring_reserve(sc, ring);
+	if (msg == NULL)
+		return (ENOBUFS);
+
+	memset(msg, 0, sizeof(*msg));
+	msg->msg.msgtype = MSGBUF_TYPE_RXBUF_POST;
+	msg->msg.request_id = htole32(cb->pktid);
+	msg->data_buf_len = htole16(BRCMF_MSGBUF_MAX_PKT_SIZE);
+	msg->data_buf_addr.low_addr = htole32((uint32_t)cb->paddr);
+	msg->data_buf_addr.high_addr = htole32((uint32_t)(cb->paddr >> 32));
+
+	return (0);
+}
+
+/*
+ * Allocate and post initial RX data buffers.
+ */
+static int
+brcmf_msgbuf_init_rxbuf(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	uint32_t count;
+	int i, error;
+
+	count = sc->shared.max_rxbufpost;
+	if (count == 0)
+		count = 255;
+
+	sc->rxbuf = malloc(count * sizeof(struct brcmf_ctrlbuf),
+	    M_BRCMFMAC, M_NOWAIT | M_ZERO);
+	if (sc->rxbuf == NULL)
+		return (ENOMEM);
+
+	ring = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+
+	for (i = 0; i < (int)count; i++) {
+		error = brcmf_alloc_ctrlbuf(sc, &sc->rxbuf[i],
+		    BRCMF_MSGBUF_MAX_PKT_SIZE, 0x30000 + i);
+		if (error != 0)
+			return (error);
+
+		error = brcmf_msgbuf_post_rxbuf(sc, &sc->rxbuf[i]);
+		if (error != 0)
+			return (error);
+	}
+
+	brcmf_ring_submit(sc, ring);
+
+	sc->rxbufpost = count;
+	printf("brcmfmac: posted %u RX data buffers\n", count);
+	return (0);
+}
+
+/*
+ * Send IOCTL request to firmware.
+ */
+static int
+brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+    void *buf, uint32_t len)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	struct msgbuf_ioctl_req_hdr *req;
+	uint32_t buflen;
+
+	if (len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		len = BRCMF_MSGBUF_MAX_CTL_PKT_SIZE;
+
+	ring = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+	req = brcmf_ring_reserve(sc, ring);
+	if (req == NULL)
+		return (ENOBUFS);
+
+	buflen = len;
+	if (buf != NULL && len > 0)
+		memcpy(sc->ioctlbuf, buf, len);
+	else
+		buflen = 0;
+
+	memset(req, 0, sizeof(*req));
+	req->msg.msgtype = MSGBUF_TYPE_IOCTLPTR_REQ;
+	req->msg.ifidx = 0;
+	req->msg.request_id = htole32(BRCMF_IOCTL_REQ_PKTID);
+	req->cmd = htole32(cmd);
+	req->trans_id = htole16(sc->ioctl_trans_id++);
+	req->input_buf_len = htole16(buflen);
+	req->output_buf_len = htole16(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE);
+	req->req_buf_addr.low_addr = htole32((uint32_t)sc->ioctlbuf_dma);
+	req->req_buf_addr.high_addr = htole32((uint32_t)(sc->ioctlbuf_dma >> 32));
+
+	sc->ioctl_completed = 0;
+	brcmf_ring_submit(sc, ring);
+
+	return (0);
+}
+
+/*
+ * Execute IOCTL and wait for response.
+ */
+static int
+brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+    void *buf, uint32_t len, uint32_t *resp_len)
+{
+	int error, timeout;
+
+	error = brcmf_msgbuf_tx_ioctl(sc, cmd, buf, len);
+	if (error != 0)
+		return (error);
+
+	timeout = BRCMF_IOCTL_TIMEOUT_MS;
+	while (!sc->ioctl_completed && timeout > 0) {
+		error = tsleep(&sc->ioctl_completed, PCATCH, "brcmioctl", hz / 10);
+		if (error != 0 && error != EWOULDBLOCK)
+			return (error);
+		timeout -= 100;
+	}
+
+	if (!sc->ioctl_completed) {
+		device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
+		return (ETIMEDOUT);
+	}
+
+	if (resp_len != NULL)
+		*resp_len = sc->ioctl_resp_len;
+
+	if (sc->ioctl_status != 0)
+		return (EIO);
+
+	if (buf != NULL && sc->ioctl_resp_len > 0) {
+		if (sc->ioctl_resp_len > len)
+			sc->ioctl_resp_len = len;
+		memcpy(buf, sc->ioctlbuf, sc->ioctl_resp_len);
+	}
+
+	return (0);
+}
+
+/* FWIL command codes */
+#define BRCMF_C_GET_VAR		262
+#define BRCMF_C_SET_VAR		263
+
+/*
+ * Get an IOVAR value from firmware.
+ */
+static int
+brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
+    void *data, uint32_t len)
+{
+	uint32_t namelen;
+
+	namelen = strlen(name) + 1;
+	if (namelen + len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		return (EINVAL);
+
+	memset(sc->ioctlbuf, 0, namelen + len);
+	memcpy(sc->ioctlbuf, name, namelen);
+
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_GET_VAR, sc->ioctlbuf,
+	    namelen + len, NULL);
+}
+
+/*
+ * Set an IOVAR value in firmware.
+ */
+static int
+brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
+    const void *data, uint32_t len)
+{
+	uint32_t namelen;
+
+	namelen = strlen(name) + 1;
+	if (namelen + len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		return (EINVAL);
+
+	memcpy(sc->ioctlbuf, name, namelen);
+	if (data != NULL && len > 0)
+		memcpy((char *)sc->ioctlbuf + namelen, data, len);
+
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_SET_VAR, sc->ioctlbuf,
+	    namelen + len, NULL);
+}
+
+/*
+ * Set an integer IOVAR.
+ */
+static int
+brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name, uint32_t val)
+{
+	uint32_t le_val = htole32(val);
+	return brcmf_fil_iovar_data_set(sc, name, &le_val, sizeof(le_val));
+}
+
+/*
+ * Free control buffers.
+ */
+static void
+brcmf_msgbuf_free_ctrlbufs(struct brcmf_softc *sc)
+{
+	uint32_t i;
+
+	if (sc->ioctlresp_buf != NULL) {
+		for (i = 0; i < BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST; i++)
+			brcmf_free_ctrlbuf(&sc->ioctlresp_buf[i]);
+		free(sc->ioctlresp_buf, M_BRCMFMAC);
+		sc->ioctlresp_buf = NULL;
+	}
+
+	if (sc->event_buf != NULL) {
+		for (i = 0; i < BRCMF_MSGBUF_MAX_EVENTBUF_POST; i++)
+			brcmf_free_ctrlbuf(&sc->event_buf[i]);
+		free(sc->event_buf, M_BRCMFMAC);
+		sc->event_buf = NULL;
+	}
+
+	if (sc->rxbuf != NULL) {
+		for (i = 0; i < sc->rxbufpost; i++)
+			brcmf_free_ctrlbuf(&sc->rxbuf[i]);
+		free(sc->rxbuf, M_BRCMFMAC);
+		sc->rxbuf = NULL;
+	}
+}
+
+/*
+ * Initialize msgbuf protocol.
+ */
+static int
+brcmf_msgbuf_init(struct brcmf_softc *sc)
+{
+	int error;
+
+	error = brcmf_pcie_alloc_ioctlbuf(sc);
+	if (error != 0) {
+		device_printf(sc->dev, "failed to allocate IOCTL buffer\n");
+		return (error);
+	}
+
+	printf("brcmfmac: IOCTL buffer at 0x%lx\n",
+	    (unsigned long)sc->ioctlbuf_dma);
+
+	error = brcmf_msgbuf_init_ioctlresp(sc);
+	if (error != 0) {
+		device_printf(sc->dev,
+		    "failed to post IOCTL response buffers\n");
+		return (error);
+	}
+
+	error = brcmf_msgbuf_init_event(sc);
+	if (error != 0) {
+		device_printf(sc->dev, "failed to post event buffers\n");
+		return (error);
+	}
+
+	error = brcmf_msgbuf_init_rxbuf(sc);
+	if (error != 0) {
+		device_printf(sc->dev, "failed to post RX buffers\n");
+		return (error);
+	}
+
+	return (0);
+}
+
+/*
+ * Cleanup msgbuf protocol.
+ */
+static void
+brcmf_msgbuf_cleanup(struct brcmf_softc *sc)
+{
+	brcmf_msgbuf_free_ctrlbufs(sc);
+	brcmf_pcie_free_ioctlbuf(sc);
+}
+
+/*
  * Download firmware to device
  */
 static int
@@ -1195,7 +2100,39 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	printf("brcmfmac: DMA rings initialized\n");
 
-	/* TODO: interrupt setup, msgbuf init */
+	/* Set up MSI interrupt */
+	error = brcmf_pcie_setup_irq(sc);
+	if (error != 0)
+		return (error);
+
+	/* Initialize msgbuf protocol */
+	error = brcmf_msgbuf_init(sc);
+	if (error != 0)
+		return (error);
+
+	/* Enable interrupts */
+	brcmf_pcie_intr_enable(sc);
+
+	printf("brcmfmac: msgbuf protocol initialized\n");
+
+	/* Test IOCTLs */
+	{
+		/* Get firmware version string */
+		error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
+		if (error == 0 && sc->ioctl_resp_len > 0) {
+			char *ver = sc->ioctlbuf;
+			char *nl = strchr(ver, '\n');
+			if (nl)
+				*nl = '\0';
+			printf("brcmfmac: firmware: %s\n", ver);
+		}
+
+		/* Disable minimum power consumption mode */
+		error = brcmf_fil_iovar_int_set(sc, "mpc", 0);
+		if (error != 0)
+			printf("brcmfmac: set 'mpc' failed: %d\n", error);
+	}
+
 	return (0);
 }
 
@@ -1320,6 +2257,8 @@ brcmf_pcie_detach(device_t dev)
 
 	sc = device_get_softc(dev);
 
+	brcmf_pcie_free_irq(sc);
+	brcmf_msgbuf_cleanup(sc);
 	brcmf_pcie_free_rings(sc);
 
 	if (sc->nvram != NULL)

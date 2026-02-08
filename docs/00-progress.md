@@ -65,16 +65,28 @@ Goal: Initialize DMA rings for msgbuf protocol.
 Tested: max_flowrings=40, max_submission=42, max_completion=3.
 DMA_INDEX flag not set (flags=0x20005), indices stored in TCM.
 
-### Milestone 4: Interrupt and msgbuf init (NEXT)
+### Milestone 4: Interrupt and msgbuf init (DONE)
 
-- [ ] MSI interrupt setup
-- [ ] Post initial RX buffers to RX post ring
-- [ ] Post IOCTL response and event buffers
-- [ ] Basic IOCTL command support
+- [x] MSI interrupt setup
+- [x] Post IOCTL response buffers (8)
+- [x] Post event buffers (8)
+- [x] Post initial RX data buffers (255)
+- [x] Basic IOCTL command support
+- [x] Process D2H completion rings (control complete ring)
+- [x] IOVAR support (brcmf_fil_iovar_data_get/set)
+- [x] Query firmware version string
+
+Tested: Firmware version 7.35.180.133 (Nov 26 2015).
+
+### Milestone 5: Interface initialization (NEXT)
+
+- [ ] Get MAC address from firmware
+- [ ] Create net80211 interface (ieee80211com)
+- [ ] Basic ifconfig support
+- [ ] Event handling for link state
 
 ### Future milestones
 
-- Firmware command interface (FWIL)
-- Event handling
-- net80211 integration
+- Scan support
+- Association
 - Data path (TX/RX)
