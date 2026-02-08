@@ -32,6 +32,42 @@ struct brcmf_chipinfo {
 	uint32_t socitype;
 };
 
+/* Shared RAM info parsed from firmware */
+struct brcmf_pcie_shared_info {
+	uint32_t tcm_base_address;
+	uint32_t flags;
+	uint8_t  version;
+	uint16_t max_rxbufpost;
+	uint32_t rx_dataoffset;
+	uint32_t htod_mb_data_addr;
+	uint32_t dtoh_mb_data_addr;
+	uint32_t ring_info_addr;
+	uint32_t dma_idx_sz;
+};
+
+/* Ring IDs */
+#define BRCMF_H2D_MSGRING_CONTROL_SUBMIT   0
+#define BRCMF_H2D_MSGRING_RXPOST_SUBMIT    1
+#define BRCMF_D2H_MSGRING_CONTROL_COMPLETE 2
+#define BRCMF_D2H_MSGRING_TX_COMPLETE      3
+#define BRCMF_D2H_MSGRING_RX_COMPLETE      4
+#define BRCMF_NROF_H2D_COMMON_MSGRINGS     2
+#define BRCMF_NROF_D2H_COMMON_MSGRINGS     3
+#define BRCMF_NROF_COMMON_MSGRINGS         5
+
+/* Ring buffer */
+struct brcmf_pcie_ringbuf {
+	void *buf;		  /* DMA buffer virtual address */
+	bus_addr_t dma_handle;	  /* DMA buffer physical address */
+	bus_dma_tag_t dma_tag;
+	bus_dmamap_t dma_map;
+	uint32_t w_idx_addr;	  /* TCM offset for write index */
+	uint32_t r_idx_addr;	  /* TCM offset for read index */
+	uint16_t id;
+	uint16_t depth;		  /* max items */
+	uint16_t item_len;	  /* bytes per item */
+};
+
 /* Per-device softc */
 struct brcmf_softc {
 	device_t dev;
@@ -49,8 +85,42 @@ struct brcmf_softc {
 	uint32_t ram_size;
 	struct brcmf_coreinfo armcore;
 	struct brcmf_coreinfo ramcore;
+	struct brcmf_coreinfo d11core;
+	struct brcmf_coreinfo pciecore;
+	struct brcmf_pcie_shared_info shared;
 	void *nvram;
 	uint32_t nvram_len;
+
+	/* Ring info from firmware */
+	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
+	uint32_t h2d_w_idx_addr;  /* TCM address of H2D write indices */
+	uint32_t h2d_r_idx_addr;  /* TCM address of H2D read indices */
+	uint32_t d2h_w_idx_addr;  /* TCM address of D2H write indices */
+	uint32_t d2h_r_idx_addr;  /* TCM address of D2H read indices */
+	uint16_t max_flowrings;
+	uint16_t max_submissionrings;
+	uint16_t max_completionrings;
+
+	/* Common rings */
+	struct brcmf_pcie_ringbuf *commonrings[BRCMF_NROF_COMMON_MSGRINGS];
+
+	/* DMA index buffers (when DMA_INDEX flag is set) */
+	void *idx_buf;
+	bus_addr_t idx_buf_dma;
+	bus_dma_tag_t idx_dma_tag;
+	bus_dmamap_t idx_dma_map;
+	uint32_t idx_buf_sz;
+
+	/* Scratch and ring update buffers */
+	void *scratch_buf;
+	bus_addr_t scratch_dma;
+	bus_dma_tag_t scratch_dma_tag;
+	bus_dmamap_t scratch_dma_map;
+
+	void *ringupd_buf;
+	bus_addr_t ringupd_dma;
+	bus_dma_tag_t ringupd_dma_tag;
+	bus_dmamap_t ringupd_dma_map;
 };
 
 /* PCIe bus functions */

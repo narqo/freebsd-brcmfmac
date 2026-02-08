@@ -139,8 +139,50 @@ Successfully parsed EROM at `0x1810d000`:
 - Base: `0x18004000`
 - Wrapper: `0x18104000`
 
+## Firmware download init sequence (resolved)
+
+The firmware boot failure was caused by missing initialization steps.
+The working Linux driver does the following before firmware download:
+
+1. **Watchdog reset** - ChipCommon watchdog register write resets the whole chip
+2. **ASPM disable/restore** - around the watchdog reset
+3. **Mailbox interrupt clear** - after chip reset
+4. **set_passive** - `resetcore(arm, val, CPUHALT, CPUHALT)` + `coredisable(d11, ...)`
+5. **Firmware copy** to TCM at ram_base
+6. **NVRAM copy** to end of RAM (overlapping shared RAM address location)
+7. **set_active** - write reset vector (first firmware word) to TCM[0], then `resetcore(arm, CPUHALT, 0, 0)`
+
+Key differences from our original code:
+- Missing watchdog reset entirely
+- Using `ram_base` as reset vector instead of first firmware word
+- Only 8-bit core IDs in EROM parser (need 12-bit DMP part numbers)
+- Missing D11 core disable
+- Missing PCIe core enumeration
+
+## EROM parsing
+
+**Decision**: Use proper DMP (Dotted Map Protocol) descriptor parsing.
+
+The initial EROM parser used ad-hoc pattern matching on descriptor bytes.
+This broke when looking for cores with IDs > 0xFF (D11=0x812, PCIE2=0x83c).
+
+DMP descriptors use:
+- `DMP_COMP_PARTNUM` bits[19:8] for 12-bit core ID (not 8-bit)
+- Two-word component descriptors (CI + CIB)
+- Explicit address descriptor types for slave ports vs wrapper ports
+- Size type field to distinguish 4K/8K/descriptor-based sizes
+
+## Firmware file selection (resolved)
+
+Linux uses a revision bitmask table (`BRCMF_FW_ENTRY`) for firmware selection:
+- BCM4350 rev 0-7 (mask `0x000000FF`): `brcmfmac4350c2-pcie.bin`
+- BCM4350 rev 8+ (mask `0xFFFFFF00`): `brcmfmac4350-pcie.bin`
+
+The original code used `chiprev >= 6` for the C2 variant, which was wrong.
+Rev 5 (our hardware) got the base firmware, which doesn't boot on this chip.
+
 ## Next steps
 
-1. Debug firmware boot issue
-2. Compare with working driver's initialization sequence
-3. Check if PCIe core needs configuration before firmware start
+1. DMA ring initialization
+2. Interrupt setup
+3. msgbuf protocol
