@@ -1,8 +1,11 @@
+/* Broadcom FullMAC WiFi driver for FreeBSD */
+
 #ifndef _BRCMFMAC_H_
 #define _BRCMFMAC_H_
 
 #include <sys/types.h>
 #include <sys/bus.h>
+#include <sys/malloc.h>
 
 #include <machine/bus.h>
 
@@ -164,11 +167,57 @@ struct brcmf_softc {
 	int ioctl_completed;
 };
 
-/* PCIe bus functions */
+MALLOC_DECLARE(M_BRCMFMAC);
+
+/* pcie.c - PCIe bus layer */
 int brcmf_pcie_attach(device_t dev);
 int brcmf_pcie_detach(device_t dev);
 
-/* Zig functions */
+/* Bus access functions (used by other modules) */
+uint32_t brcmf_reg_read(struct brcmf_softc *sc, uint32_t off);
+void brcmf_reg_write(struct brcmf_softc *sc, uint32_t off, uint32_t val);
+uint32_t brcmf_tcm_read32(struct brcmf_softc *sc, uint32_t off);
+uint16_t brcmf_tcm_read16(struct brcmf_softc *sc, uint32_t off);
+void brcmf_tcm_write32(struct brcmf_softc *sc, uint32_t off, uint32_t val);
+void brcmf_tcm_write16(struct brcmf_softc *sc, uint32_t off, uint16_t val);
+uint32_t brcmf_bp_read32(struct brcmf_softc *sc, uint32_t addr);
+void brcmf_bp_write32(struct brcmf_softc *sc, uint32_t addr, uint32_t val);
+void brcmf_pcie_select_core(struct brcmf_softc *sc, struct brcmf_coreinfo *core);
+
+/* DMA helpers */
+int brcmf_alloc_dma_buf(device_t dev, size_t size, bus_dma_tag_t *tag,
+    bus_dmamap_t *map, void **buf, bus_addr_t *paddr);
+void brcmf_free_dma_buf(bus_dma_tag_t tag, bus_dmamap_t map, void *buf);
+
+/* core.c - Chip core management and firmware download */
+int brcmf_chip_enumerate_cores(struct brcmf_softc *sc);
+void brcmf_chip_reset(struct brcmf_softc *sc);
+int brcmf_chip_enter_download(struct brcmf_softc *sc);
+void brcmf_chip_exit_download(struct brcmf_softc *sc, uint32_t resetintr);
+
+/* msgbuf.c - Message buffer protocol */
+void brcmf_msgbuf_ring_doorbell(struct brcmf_softc *sc);
+void *brcmf_msgbuf_ring_reserve(struct brcmf_softc *sc,
+    struct brcmf_pcie_ringbuf *ring);
+void brcmf_msgbuf_ring_submit(struct brcmf_softc *sc,
+    struct brcmf_pcie_ringbuf *ring);
+void brcmf_msgbuf_process_d2h(struct brcmf_softc *sc);
+int brcmf_msgbuf_init(struct brcmf_softc *sc);
+void brcmf_msgbuf_cleanup(struct brcmf_softc *sc);
+int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+    void *buf, uint32_t len, uint32_t *resp_len);
+
+/* fwil.c - Firmware interface layer */
+int brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
+    void *data, uint32_t len);
+int brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
+    const void *data, uint32_t len);
+int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
+    uint32_t val);
+int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
+    uint32_t *val);
+
+/* Zig functions (brcmfmac.zig) */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);
 bool brcmf_chip_supported(uint32_t chip);
 const char *brcmf_socitype_name(uint32_t socitype);

@@ -7,8 +7,11 @@ KMOD = if_brcmfmac
 
 SRCS = \
 	src/brcmfmac.zig \
+	src/core.c \
 	src/debug.c \
+	src/fwil.c \
 	src/main.c \
+	src/msgbuf.c \
 	src/pcie.c
 
 SRCS+= device_if.h bus_if.h pci_if.h
