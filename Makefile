@@ -7,6 +7,7 @@ KMOD = if_brcmfmac
 
 SRCS = \
 	src/brcmfmac.zig \
+	src/cfg.c \
 	src/core.c \
 	src/debug.c \
 	src/fwil.c \

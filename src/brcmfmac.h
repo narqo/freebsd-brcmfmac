@@ -6,8 +6,18 @@
 #include <sys/types.h>
 #include <sys/bus.h>
 #include <sys/malloc.h>
+#include <sys/socket.h>
 
 #include <machine/bus.h>
+
+#include <net/if.h>
+#include <net/if_media.h>
+#include <net/ethernet.h>
+
+#include <net80211/ieee80211_var.h>
+
+/* Ethernet address length */
+#define ETHER_ADDR_LEN 6
 
 /* PCI IDs */
 #define PCI_VENDOR_BROADCOM 0x14e4
@@ -165,6 +175,11 @@ struct brcmf_softc {
 	int ioctl_status;
 	uint32_t ioctl_resp_len;
 	int ioctl_completed;
+
+	/* net80211 */
+	struct ieee80211com ic;
+	uint8_t macaddr[ETHER_ADDR_LEN];
+	int running;
 };
 
 MALLOC_DECLARE(M_BRCMFMAC);
@@ -216,6 +231,10 @@ int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
     uint32_t val);
 int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
     uint32_t *val);
+
+/* cfg.c - net80211 interface */
+int brcmf_cfg_attach(struct brcmf_softc *sc);
+void brcmf_cfg_detach(struct brcmf_softc *sc);
 
 /* Zig functions (brcmfmac.zig) */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);

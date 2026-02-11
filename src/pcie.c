@@ -995,21 +995,18 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	printf("brcmfmac: msgbuf protocol initialized\n");
 
-	/* Test IOCTLs */
-	{
-		error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
-		if (error == 0 && sc->ioctl_resp_len > 0) {
-			char *ver = sc->ioctlbuf;
-			char *nl = strchr(ver, '\n');
-			if (nl)
-				*nl = '\0';
-			printf("brcmfmac: firmware: %s\n", ver);
-		}
-
-		error = brcmf_fil_iovar_int_set(sc, "mpc", 0);
-		if (error != 0)
-			printf("brcmfmac: set 'mpc' failed: %d\n", error);
+	/* Get firmware version */
+	error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
+	if (error == 0 && sc->ioctl_resp_len > 0) {
+		char *ver = sc->ioctlbuf;
+		char *nl = strchr(ver, '\n');
+		if (nl)
+			*nl = '\0';
+		printf("brcmfmac: firmware: %s\n", ver);
 	}
+
+	/* Disable MPC during init */
+	brcmf_fil_iovar_int_set(sc, "mpc", 0);
 
 	return (0);
 }
@@ -1116,6 +1113,10 @@ brcmf_pcie_attach(device_t dev)
 	if (error != 0)
 		goto fail;
 
+	error = brcmf_cfg_attach(sc);
+	if (error != 0)
+		goto fail;
+
 	return (0);
 
 fail:
@@ -1130,6 +1131,7 @@ brcmf_pcie_detach(device_t dev)
 
 	sc = device_get_softc(dev);
 
+	brcmf_cfg_detach(sc);
 	brcmf_pcie_free_irq(sc);
 	brcmf_msgbuf_cleanup(sc);
 	brcmf_pcie_free_rings(sc);

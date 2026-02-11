@@ -2,30 +2,11 @@
 
 ## Current status
 
-**Milestone 1: PCI device probe** - DONE
-**Milestone 2: Firmware download** - DONE
-**Milestone 3: DMA ring setup** - IN PROGRESS
+**Milestone 5: Interface initialization** - DONE
 
 ## Build and test
 
-Cannot build or test locally. Requires FreeBSD 15 host with kernel headers.
-
-```sh
-cd /path/to/brcmfmac2
-make clean; make
-sudo kldload ./brcmfmac.ko
-dmesg | tail -40
-sudo kldunload brcmfmac
-```
-
-## Recent changes
-
-Implemented DMA ring setup:
-- Read ring info structure from TCM
-- Allocate DMA-coherent buffers for 5 common rings
-- Write ring descriptors (base addr, depth, item size) to TCM
-- DMA index buffer allocation when DMA_INDEX flag set
-- Scratch and ring update buffer allocation
+See docs/02-build-test.md for full workflow.
 
 ## Milestones
 
@@ -49,21 +30,14 @@ Implemented DMA ring setup:
 - [x] Signal host ready
 
 Firmware boots in ~100ms. Shared RAM at 0x1dcf10.
-Shared info: max_rxbufpost=255, ring_info_addr=0x23b374.
 
 ### Milestone 3: DMA ring setup (DONE)
-
-Goal: Initialize DMA rings for msgbuf protocol.
 
 - [x] Read ring info from TCM (ringmem, index pointers, max rings)
 - [x] Allocate DMA-coherent buffers for common rings (5 rings)
 - [x] Write ring descriptors to TCM (base addr, max items, item size)
 - [x] Set up DMA index buffers if DMA_INDEX flag set
 - [x] Allocate scratch and ring-update DMA buffers
-- [x] Test on hardware
-
-Tested: max_flowrings=40, max_submission=42, max_completion=3.
-DMA_INDEX flag not set (flags=0x20005), indices stored in TCM.
 
 ### Milestone 4: Interrupt and msgbuf init (DONE)
 
@@ -71,22 +45,42 @@ DMA_INDEX flag not set (flags=0x20005), indices stored in TCM.
 - [x] Post IOCTL response buffers (8)
 - [x] Post event buffers (8)
 - [x] Post initial RX data buffers (255)
-- [x] Basic IOCTL command support
-- [x] Process D2H completion rings (control complete ring)
-- [x] IOVAR support (brcmf_fil_iovar_data_get/set)
+- [x] IOCTL request/response via control submit/complete rings
+- [x] IOVAR support (brcmf_fil_iovar_data_get/set, brcmf_fil_iovar_int_set/get)
 - [x] Query firmware version string
 
 Tested: Firmware version 7.35.180.133 (Nov 26 2015).
 
-### Milestone 5: Interface initialization (NEXT)
+### Milestone 5: Interface initialization (DONE)
 
-- [ ] Get MAC address from firmware
-- [ ] Create net80211 interface (ieee80211com)
-- [ ] Basic ifconfig support
-- [ ] Event handling for link state
+- [x] Get MAC address from firmware (`cur_etheraddr` iovar)
+- [x] Create net80211 interface (ieee80211com)
+- [x] Basic ifconfig support (VAP create, interface up)
+- [x] State change callbacks (INIT, SCAN, AUTH, ASSOC, RUN)
+
+Tested: MAC address f4:0f:24:2a:72:e3, wlan0 created and brought up.
+
+### Milestone 6: Scan support (NEXT)
+
+- [ ] Implement escan (enhanced scan) via firmware
+- [ ] Process BRCMF_E_ESCAN_RESULT events
+- [ ] Report scan results to net80211
+- [ ] Scan abort handling
 
 ### Future milestones
 
-- Scan support
-- Association
-- Data path (TX/RX)
+- Association (BRCMF_C_SET_SSID, security config)
+- Data path (TX/RX flowrings)
+- Power management
+- WPA/WPA2 support
+
+## Code structure
+
+| Module | Purpose |
+|--------|---------|
+| pcie.c | PCIe bus layer: BAR mapping, DMA, ring allocation, interrupts, firmware load |
+| msgbuf.c | Message buffer protocol: ring operations, D2H processing, IOCTL handling |
+| core.c | Chip core management: enumeration, reset, firmware download state |
+| fwil.c | Firmware interface layer: IOVAR get/set operations |
+| cfg.c | net80211 interface: VAP management, scan, connect |
+| brcmfmac.zig | EROM parser (pure Zig, no TLS/kernel deps) |
