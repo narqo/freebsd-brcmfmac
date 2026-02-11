@@ -2,7 +2,7 @@
 
 ## Current status
 
-**Milestone 5: Interface initialization** - DONE
+**Milestone 6: Scan support** - IN PROGRESS
 
 ## Build and test
 
@@ -60,12 +60,20 @@ Tested: Firmware version 7.35.180.133 (Nov 26 2015).
 
 Tested: MAC address f4:0f:24:2a:72:e3, wlan0 created and brought up.
 
-### Milestone 6: Scan support (NEXT)
+### Milestone 6: Scan support (DONE)
 
-- [ ] Implement escan (enhanced scan) via firmware
-- [ ] Process BRCMF_E_ESCAN_RESULT events
-- [ ] Report scan results to net80211
+- [x] Implement escan (enhanced scan) via firmware
+- [x] Configure firmware event mask (`event_msgs` iovar)
+- [x] Process BRCMF_E_ESCAN_RESULT events
+- [x] Parse BSS info structures from scan results
+- [x] Chanspec decoding for correct channel numbers (2.4GHz and 5GHz)
+- [x] RSSI extraction from scan results
+- [x] Deferred scan completion via taskqueue
+- [ ] Report scan results to net80211 (ieee80211_add_scan)
+- [ ] Event buffer re-posting after consumption
 - [ ] Scan abort handling
+
+Tested: Finding BSSes with correct channels (1, 6, 48, 60) and RSSI values (-45 to -92 dBm).
 
 ### Future milestones
 

@@ -88,6 +88,46 @@ struct msgbuf_ioctl_resp_hdr {
 	uint32_t rsvd0;
 } __packed;
 
+struct msgbuf_rx_event {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t event_data_len;
+	uint16_t seqnum;
+	uint16_t rsvd0[4];
+} __packed;
+
+/* Event packet structures */
+struct brcmf_event_msg_be {
+	uint16_t version;
+	uint16_t flags;
+	uint32_t event_type;
+	uint32_t status;
+	uint32_t reason;
+	uint32_t auth_type;
+	uint32_t datalen;
+	uint8_t addr[6];
+	char ifname[16];
+	uint8_t ifidx;
+	uint8_t bsscfgidx;
+} __packed;
+
+#define BRCM_OUI "\x00\x10\x18"
+
+struct brcmf_event {
+	uint8_t dst[6];
+	uint8_t src[6];
+	uint16_t ether_type;
+	uint16_t subtype;
+	uint16_t length;
+	uint8_t version;
+	uint8_t oui[3];
+	uint16_t usr_subtype;
+	struct brcmf_event_msg_be msg;
+} __packed;
+
+/* Event codes */
+#define BRCMF_E_ESCAN_RESULT 69
+
 /*
  * Ring the H2D doorbell to notify firmware.
  */
@@ -174,6 +214,58 @@ brcmf_msgbuf_ring_submit(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring
 }
 
 /*
+ * Process firmware event from event buffer.
+ */
+static void
+brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg)
+{
+	struct brcmf_ctrlbuf *cb;
+	struct brcmf_event *event;
+	uint32_t pktid, event_code, datalen;
+	int idx;
+
+	pktid = le32toh(msg->request_id);
+
+	if (pktid < 0x20000 || pktid >= 0x20000 + BRCMF_MSGBUF_MAX_EVENTBUF_POST) {
+		printf("brcmfmac: event with invalid pktid 0x%x\n", pktid);
+		return;
+	}
+
+	idx = pktid - 0x20000;
+	cb = &sc->event_buf[idx];
+
+	if (cb->buf == NULL) {
+		printf("brcmfmac: event buffer %d is NULL\n", idx);
+		return;
+	}
+
+	/* Sync DMA before reading */
+	bus_dmamap_sync(cb->dma_tag, cb->dma_map, BUS_DMASYNC_POSTREAD);
+
+	event = cb->buf;
+
+	if (memcmp(event->oui, BRCM_OUI, 3) != 0) {
+		printf("brcmfmac: event with invalid OUI %02x:%02x:%02x\n",
+		    event->oui[0], event->oui[1], event->oui[2]);
+		return;
+	}
+
+	event_code = be32toh(event->msg.event_type);
+	datalen = be32toh(event->msg.datalen);
+
+	switch (event_code) {
+	case BRCMF_E_ESCAN_RESULT:
+		if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))
+			brcmf_escan_result(sc, (uint8_t *)cb->buf + sizeof(*event), datalen);
+		break;
+	default:
+		printf("brcmfmac: event %u status=%u\n",
+		    event_code, be32toh(event->msg.status));
+		break;
+	}
+}
+
+/*
  * Process control complete ring.
  */
 static void
@@ -223,7 +315,7 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 			break;
 
 		case MSGBUF_TYPE_WL_EVENT:
-			/* TODO: handle events */
+			brcmf_msgbuf_process_event(sc, msg);
 			break;
 
 		case MSGBUF_TYPE_IOCTLPTR_REQ_ACK:

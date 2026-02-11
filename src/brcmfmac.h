@@ -180,6 +180,12 @@ struct brcmf_softc {
 	struct ieee80211com ic;
 	uint8_t macaddr[ETHER_ADDR_LEN];
 	int running;
+
+	/* Scan state */
+	uint16_t escan_sync_id;
+	int scan_active;
+	int scan_complete;
+	struct task scan_task;
 };
 
 MALLOC_DECLARE(M_BRCMFMAC);
@@ -231,10 +237,13 @@ int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
     uint32_t val);
 int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
     uint32_t *val);
+int brcmf_fil_bss_up(struct brcmf_softc *sc);
+int brcmf_fil_bss_down(struct brcmf_softc *sc);
 
 /* cfg.c - net80211 interface */
 int brcmf_cfg_attach(struct brcmf_softc *sc);
 void brcmf_cfg_detach(struct brcmf_softc *sc);
+void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
 
 /* Zig functions (brcmfmac.zig) */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);

@@ -6,6 +6,8 @@
 #include "brcmfmac.h"
 
 /* FWIL command codes */
+#define BRCMF_C_UP   2
+#define BRCMF_C_DOWN 3
 #define BRCMF_C_GET_VAR 262
 #define BRCMF_C_SET_VAR 263
 
@@ -77,4 +79,26 @@ brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name, uint32_t *val)
 		*val = le32toh(*(uint32_t *)sc->ioctlbuf);
 
 	return (error);
+}
+
+/*
+ * Bring firmware interface up.
+ */
+int
+brcmf_fil_bss_up(struct brcmf_softc *sc)
+{
+	uint32_t val = 0;
+
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_UP, &val, sizeof(val), NULL);
+}
+
+/*
+ * Bring firmware interface down.
+ */
+int
+brcmf_fil_bss_down(struct brcmf_softc *sc)
+{
+	uint32_t val = 1;
+
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_DOWN, &val, sizeof(val), NULL);
 }
