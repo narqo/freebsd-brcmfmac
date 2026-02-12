@@ -69,18 +69,31 @@ Tested: MAC address f4:0f:24:2a:72:e3, wlan0 created and brought up.
 - [x] Chanspec decoding for correct channel numbers (2.4GHz and 5GHz)
 - [x] RSSI extraction from scan results
 - [x] Deferred scan completion via taskqueue
-- [ ] Report scan results to net80211 (ieee80211_add_scan)
+- [x] Scan result caching
+- [ ] Report scan results to net80211 (ieee80211_add_scan causes crashes)
 - [ ] Event buffer re-posting after consumption
-- [ ] Scan abort handling
 
-Tested: Finding BSSes with correct channels (1, 6, 48, 60) and RSSI values (-45 to -92 dBm).
+Tested: Finding BSSes with correct channels (1, 6, 60) and RSSI values (-45 to -72 dBm).
+Known issue: ieee80211_add_scan crashes, needs investigation.
+Known issue: Subsequent escans may timeout.
+
+### Milestone 7: Association (NEXT)
+
+- [ ] Handle IEEE80211_S_AUTH state transition
+- [ ] Handle IEEE80211_S_ASSOC state transition
+- [ ] Set SSID via BRCMF_C_SET_SSID ioctl
+- [ ] Handle BRCMF_E_LINK and BRCMF_E_SET_SSID events
+- [ ] Transition to IEEE80211_S_RUN on successful association
 
 ### Future milestones
 
-- Association (BRCMF_C_SET_SSID, security config)
 - Data path (TX/RX flowrings)
+- WPA/WPA2 support (key management)
 - Power management
-- WPA/WPA2 support
+
+## Known issues
+
+See docs/03-known-issues.md for tracked bugs.
 
 ## Code structure
 

@@ -4,7 +4,9 @@
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/mutex.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
 #include <sys/taskqueue.h>
@@ -152,6 +154,106 @@ struct brcmf_escan_result_le {
 } __packed;
 
 /*
+ * Add cached scan result to net80211.
+ */
+/* Default rates IE for 2.4GHz (11b/g rates) */
+static const uint8_t default_rates_ie[] = {
+	IEEE80211_ELEMID_RATES, 8,
+	0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
+};
+
+static void
+brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
+{
+	struct ieee80211com *ic = &sc->ic;
+	struct ieee80211vap *vap;
+	struct ieee80211_scanparams sp;
+	struct ieee80211_frame wh;
+	struct ieee80211_channel *chan;
+	uint8_t ssid_ie[2 + 32];
+
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap == NULL)
+		return;
+
+	/* Find channel */
+	chan = ieee80211_find_channel(ic, sr->chan,
+	    sr->chan <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
+	if (chan == NULL)
+		chan = &ic->ic_channels[0];
+
+	/* Build SSID IE */
+	ssid_ie[0] = IEEE80211_ELEMID_SSID;
+	ssid_ie[1] = sr->ssid_len;
+	memcpy(&ssid_ie[2], sr->ssid, sr->ssid_len);
+
+	memset(&sp, 0, sizeof(sp));
+	sp.ssid = ssid_ie;
+	sp.rates = __DECONST(uint8_t *, default_rates_ie);
+	sp.chan = sr->chan;
+	sp.bchan = sr->chan;
+	sp.capinfo = sr->capinfo;
+	sp.bintval = sr->bintval;
+
+	/* Parse IEs */
+	if (sr->ie_len > 0) {
+		uint8_t *p = sr->ie;
+		uint8_t *end = sr->ie + sr->ie_len;
+
+		while (p + 2 <= end) {
+			uint8_t id = p[0];
+			uint8_t len = p[1];
+
+			if (p + 2 + len > end)
+				break;
+
+			switch (id) {
+			case IEEE80211_ELEMID_RATES:
+				sp.rates = p;
+				break;
+			case IEEE80211_ELEMID_XRATES:
+				sp.xrates = p;
+				break;
+			case IEEE80211_ELEMID_COUNTRY:
+				sp.country = p;
+				break;
+			case IEEE80211_ELEMID_RSN:
+				sp.rsn = p;
+				break;
+			case IEEE80211_ELEMID_HTCAP:
+				sp.htcap = p;
+				break;
+			case IEEE80211_ELEMID_HTINFO:
+				sp.htinfo = p;
+				break;
+			case IEEE80211_ELEMID_VENDOR:
+				if (len >= 4 &&
+				    p[2] == 0x00 && p[3] == 0x50 &&
+				    p[4] == 0xf2 && p[5] == 0x01)
+					sp.wpa = p;
+				if (len >= 4 &&
+				    p[2] == 0x00 && p[3] == 0x50 &&
+				    p[4] == 0xf2 && p[5] == 0x02)
+					sp.wme = p;
+				break;
+			}
+			p += 2 + len;
+		}
+		sp.ies = sr->ie;
+		sp.ies_len = sr->ie_len;
+	}
+
+	/* Build frame header */
+	memset(&wh, 0, sizeof(wh));
+	wh.i_fc[0] = IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_BEACON;
+	IEEE80211_ADDR_COPY(wh.i_addr2, sr->bssid);
+	IEEE80211_ADDR_COPY(wh.i_addr3, sr->bssid);
+
+	printf("brcmfmac: add_scan ch=%d, skipping ieee80211_add_scan\n", sr->chan);
+	/* ieee80211_add_scan crashes - disabled for now */
+}
+
+/*
  * Scan completion task - runs in process context.
  */
 static void
@@ -160,12 +262,32 @@ brcmf_scan_complete_task(void *arg, int pending)
 	struct brcmf_softc *sc = arg;
 	struct ieee80211com *ic = &sc->ic;
 	struct ieee80211vap *vap;
+	int i, n;
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap != NULL && sc->scan_complete) {
-		sc->scan_complete = 0;
-		ieee80211_scan_done(vap);
+	if (vap == NULL)
+		return;
+
+	/* Only process results when scan is complete */
+	if (!sc->scan_complete)
+		return;
+
+	sc->scan_complete = 0;
+	n = sc->scan_nresults;
+	sc->scan_nresults = 0;
+
+	printf("brcmfmac: scan complete, %d results\n", n);
+
+	for (i = 0; i < n; i++) {
+		struct brcmf_scan_result *sr = &sc->scan_results[i];
+		printf("brcmfmac: BSS %02x:%02x:%02x:%02x:%02x:%02x ch=%d rssi=%d \"%.*s\"\n",
+		    sr->bssid[0], sr->bssid[1], sr->bssid[2],
+		    sr->bssid[3], sr->bssid[4], sr->bssid[5],
+		    sr->chan, sr->rssi, sr->ssid_len, sr->ssid);
+		brcmf_add_scan_result(sc, sr);
 	}
+
+	ieee80211_scan_done(vap);
 }
 
 /*
@@ -436,8 +558,9 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	uint32_t buflen;
 	uint16_t bss_count;
 
-	if (datalen < sizeof(*result)) {
-		printf("brcmfmac: escan result too short\n");
+	/* Minimum size is just the header (buflen, version, sync_id, bss_count) */
+	if (datalen < 12) {
+		printf("brcmfmac: escan result too short: %u\n", datalen);
 		return;
 	}
 
@@ -460,17 +583,44 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	while (bss_count > 0 && (uint8_t *)bi < (uint8_t *)data + buflen) {
 		uint32_t bi_len = le32toh(bi->length);
 		uint8_t *raw = (uint8_t *)bi;
-		uint16_t chanspec;
+		struct brcmf_scan_result *sr;
+		uint16_t chanspec, ie_off;
+		uint32_t ie_len;
 		int16_t rssi;
+		int8_t noise;
 		int chan;
 
 		if (bi_len < 80 || bi_len > buflen)
 			break;
 
-		/* Use raw offsets verified from firmware data */
+		/* Extract fields using verified raw offsets */
 		chanspec = le16toh(*(uint16_t *)&raw[72]);
 		rssi = (int16_t)le16toh(*(uint16_t *)&raw[78]);
+		noise = (int8_t)raw[80];
+		ie_off = le16toh(*(uint16_t *)&raw[110]);
+		ie_len = le32toh(*(uint32_t *)&raw[112]);
 		chan = brcmf_chanspec_to_channel(chanspec);
+
+		/* Cache result for deferred processing (no locking for now) */
+		if (sc->scan_nresults < BRCMF_SCAN_RESULTS_MAX) {
+			sr = &sc->scan_results[sc->scan_nresults++];
+			memcpy(sr->bssid, bi->BSSID, 6);
+			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
+			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
+			sr->chan = chan;
+			sr->rssi = rssi;
+			sr->noise = noise;
+			sr->capinfo = le16toh(bi->capability);
+			sr->bintval = le16toh(bi->beacon_period);
+			if (ie_len > BRCMF_SCAN_IE_MAX)
+				ie_len = BRCMF_SCAN_IE_MAX;
+			if (ie_off + ie_len <= bi_len) {
+				sr->ie_len = ie_len;
+				memcpy(sr->ie, raw + ie_off, ie_len);
+			} else {
+				sr->ie_len = 0;
+			}
+		}
 
 		printf("brcmfmac: BSS %02x:%02x:%02x:%02x:%02x:%02x ch=%d rssi=%d \"%.*s\"\n",
 		    bi->BSSID[0], bi->BSSID[1], bi->BSSID[2],
@@ -480,6 +630,9 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		bi = (struct brcmf_bss_info_le *)((uint8_t *)bi + bi_len);
 		bss_count--;
 	}
+
+	/* Schedule task to process cached results */
+	taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
 }
 
 /*
@@ -684,6 +837,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	brcmf_setup_events(sc);
 
+	/* mtx_init(&sc->scan_mtx, "brcmf_scan", NULL, MTX_SPIN); */
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
 
 	ic->ic_softc = sc;

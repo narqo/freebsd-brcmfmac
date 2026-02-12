@@ -186,6 +186,24 @@ struct brcmf_softc {
 	int scan_active;
 	int scan_complete;
 	struct task scan_task;
+
+	/* Scan result cache */
+#define BRCMF_SCAN_RESULTS_MAX	64
+#define BRCMF_SCAN_IE_MAX	512
+	struct brcmf_scan_result {
+		uint8_t bssid[6];
+		uint8_t ssid[32];
+		uint8_t ssid_len;
+		uint8_t chan;
+		int16_t rssi;
+		int8_t noise;
+		uint16_t capinfo;
+		uint16_t bintval;
+		uint16_t ie_len;
+		uint8_t ie[BRCMF_SCAN_IE_MAX];
+	} scan_results[BRCMF_SCAN_RESULTS_MAX];
+	int scan_nresults;
+	struct mtx scan_mtx;
 };
 
 MALLOC_DECLARE(M_BRCMFMAC);
