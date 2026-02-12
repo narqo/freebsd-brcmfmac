@@ -27,8 +27,21 @@ struct brcmf_vap {
 #define BRCMF_VAP(vap) ((struct brcmf_vap *)(vap))
 
 /* Event codes */
+#define BRCMF_E_SET_SSID	0
+#define BRCMF_E_LINK		16
 #define BRCMF_E_IF		54
 #define BRCMF_E_ESCAN_RESULT	69
+
+/* Event status codes */
+#define BRCMF_E_STATUS_SUCCESS	0
+
+/* Event flags */
+#define BRCMF_EVENT_MSG_LINK	0x01
+
+/* IOCTL commands */
+#define BRCMF_C_SET_INFRA	20
+#define BRCMF_C_GET_BSSID	23
+#define BRCMF_C_SET_SSID	26
 
 /* Event mask: 128 bits (16 bytes) for 128 event codes */
 #define BRCMF_EVENTING_MASK_LEN	16
@@ -153,6 +166,19 @@ struct brcmf_escan_result_le {
 	struct brcmf_bss_info_le bss_info_le;
 } __packed;
 
+/* Join parameters for BRCMF_C_SET_SSID */
+struct brcmf_assoc_params_le {
+	uint8_t bssid[6];
+	uint16_t bssid_cnt;
+	uint32_t chanspec_num;
+	uint16_t chanspec_list[1];
+} __packed;
+
+struct brcmf_join_params {
+	struct brcmf_ssid_le ssid_le;
+	struct brcmf_assoc_params_le params_le;
+} __packed;
+
 /*
  * Add cached scan result to net80211.
  */
@@ -249,7 +275,6 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	IEEE80211_ADDR_COPY(wh.i_addr2, sr->bssid);
 	IEEE80211_ADDR_COPY(wh.i_addr3, sr->bssid);
 
-	printf("brcmfmac: add_scan ch=%d, skipping ieee80211_add_scan\n", sr->chan);
 	/* ieee80211_add_scan crashes - disabled for now */
 }
 
@@ -276,18 +301,89 @@ brcmf_scan_complete_task(void *arg, int pending)
 	n = sc->scan_nresults;
 	sc->scan_nresults = 0;
 
-	printf("brcmfmac: scan complete, %d results\n", n);
-
-	for (i = 0; i < n; i++) {
-		struct brcmf_scan_result *sr = &sc->scan_results[i];
-		printf("brcmfmac: BSS %02x:%02x:%02x:%02x:%02x:%02x ch=%d rssi=%d \"%.*s\"\n",
-		    sr->bssid[0], sr->bssid[1], sr->bssid[2],
-		    sr->bssid[3], sr->bssid[4], sr->bssid[5],
-		    sr->chan, sr->rssi, sr->ssid_len, sr->ssid);
-		brcmf_add_scan_result(sc, sr);
-	}
+	for (i = 0; i < n; i++)
+		brcmf_add_scan_result(sc, &sc->scan_results[i]);
 
 	ieee80211_scan_done(vap);
+}
+
+/*
+ * Handle link and association events from firmware.
+ */
+void
+brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
+    uint32_t status, uint16_t flags)
+{
+	struct ieee80211com *ic = &sc->ic;
+	struct ieee80211vap *vap;
+
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap == NULL)
+		return;
+
+	switch (event_code) {
+	case BRCMF_E_SET_SSID:
+		if (status == BRCMF_E_STATUS_SUCCESS) {
+			printf("brcmfmac: SET_SSID success\n");
+		} else {
+			printf("brcmfmac: SET_SSID failed, status=%u\n", status);
+			/* Association failed - go back to SCAN state */
+			ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+		}
+		break;
+
+	case BRCMF_E_LINK:
+		if (flags & BRCMF_EVENT_MSG_LINK) {
+			printf("brcmfmac: link up\n");
+			/* Association complete - transition to RUN */
+			ieee80211_new_state(vap, IEEE80211_S_RUN, -1);
+		} else {
+			printf("brcmfmac: link down\n");
+			/* Disconnected - go back to SCAN state */
+			ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+		}
+		break;
+
+	default:
+		break;
+	}
+}
+
+/*
+ * Initiate association to a BSS.
+ */
+static int
+brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
+{
+	struct brcmf_join_params join;
+	int error;
+
+	printf("brcmfmac: joining BSS %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\"\n",
+	    ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
+	    ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
+	    ni->ni_esslen, ni->ni_essid);
+
+	/* Set infrastructure mode */
+	error = brcmf_fil_iovar_int_set(sc, "infra", 1);
+	if (error != 0) {
+		printf("brcmfmac: failed to set infra mode: %d\n", error);
+		return error;
+	}
+
+	/* Build join parameters */
+	memset(&join, 0, sizeof(join));
+	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
+	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
+	memcpy(join.params_le.bssid, ni->ni_bssid, 6);
+
+	/* Initiate association */
+	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
+	if (error != 0) {
+		printf("brcmfmac: SET_SSID failed: %d\n", error);
+		return error;
+	}
+
+	return 0;
 }
 
 /*
@@ -336,6 +432,10 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	/* Enable ESCAN_RESULT event */
 	evmask[BRCMF_E_ESCAN_RESULT / 8] |= 1 << (BRCMF_E_ESCAN_RESULT % 8);
 
+	/* Enable association events */
+	evmask[BRCMF_E_SET_SSID / 8] |= 1 << (BRCMF_E_SET_SSID % 8);
+	evmask[BRCMF_E_LINK / 8] |= 1 << (BRCMF_E_LINK % 8);
+
 	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask, sizeof(evmask));
 	if (error != 0)
 		device_printf(sc->dev, "failed to set event_msgs: %d\n", error);
@@ -360,7 +460,7 @@ brcmf_get_macaddr(struct brcmf_softc *sc)
 	}
 
 	memcpy(sc->macaddr, sc->ioctlbuf, ETHER_ADDR_LEN);
-	printf("brcmfmac: MAC address: %02x:%02x:%02x:%02x:%02x:%02x\n",
+	device_printf(sc->dev, "MAC address %02x:%02x:%02x:%02x:%02x:%02x\n",
 	    sc->macaddr[0], sc->macaddr[1], sc->macaddr[2],
 	    sc->macaddr[3], sc->macaddr[4], sc->macaddr[5]);
 
@@ -430,119 +530,11 @@ brcmf_do_escan(struct brcmf_softc *sc)
 
 	error = brcmf_fil_iovar_data_set(sc, "escan", params, params_size);
 	if (error != 0) {
-		printf("brcmfmac: escan failed: %d\n", error);
 		sc->scan_active = 0;
-	} else {
-		printf("brcmfmac: escan started, sync_id=%u\n",
-		    le16toh(params->sync_id));
 	}
 
 	free(params, M_BRCMFMAC);
 	return (error);
-}
-
-/*
- * Process a single BSS from scan results.
- */
-static void
-brcmf_process_bss(struct brcmf_softc *sc, struct brcmf_bss_info_le *bi)
-{
-	struct ieee80211com *ic = &sc->ic;
-	struct ieee80211_scanparams sp;
-	struct ieee80211_frame wh;
-	uint8_t ssid_ie[2 + 32];
-	uint8_t *ie;
-	uint32_t ie_len;
-	int chan;
-
-	ie_len = le32toh(bi->ie_length);
-	ie = (uint8_t *)bi + le16toh(bi->ie_offset);
-
-	/* Build SSID IE (element header + data) */
-	ssid_ie[0] = IEEE80211_ELEMID_SSID;
-	ssid_ie[1] = bi->SSID_len;
-	memcpy(&ssid_ie[2], bi->SSID, bi->SSID_len);
-
-	chan = bi->ctl_ch;
-	if (chan == 0) {
-		uint16_t chanspec = le16toh(bi->chanspec);
-		chan = chanspec & BRCMF_CHANSPEC_CHAN_MASK;
-	}
-
-	printf("brcmfmac: found BSS %02x:%02x:%02x:%02x:%02x:%02x "
-	    "ch=%d rssi=%d ssid=\"%.*s\"\n",
-	    bi->BSSID[0], bi->BSSID[1], bi->BSSID[2],
-	    bi->BSSID[3], bi->BSSID[4], bi->BSSID[5],
-	    chan, (int16_t)le16toh(bi->RSSI),
-	    bi->SSID_len, bi->SSID);
-
-	memset(&sp, 0, sizeof(sp));
-	sp.ssid = ssid_ie;
-	sp.chan = chan;
-	sp.bchan = chan;
-	sp.capinfo = le16toh(bi->capability);
-	sp.bintval = le16toh(bi->beacon_period);
-
-	/* Build minimal frame header for ieee80211_add_scan */
-	memset(&wh, 0, sizeof(wh));
-	wh.i_fc[0] = IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_BEACON;
-	IEEE80211_ADDR_COPY(wh.i_addr2, bi->BSSID);
-	IEEE80211_ADDR_COPY(wh.i_addr3, bi->BSSID);
-
-	/* Parse IEs - pointers include element header (id + len) */
-	if (ie_len > 0) {
-		uint8_t *p = ie;
-		uint8_t *end = ie + ie_len;
-
-		while (p + 2 <= end) {
-			uint8_t id = p[0];
-			uint8_t len = p[1];
-
-			if (p + 2 + len > end)
-				break;
-
-			switch (id) {
-			case IEEE80211_ELEMID_RATES:
-				sp.rates = p;
-				break;
-			case IEEE80211_ELEMID_XRATES:
-				sp.xrates = p;
-				break;
-			case IEEE80211_ELEMID_TIM:
-				sp.tim = p;
-				break;
-			case IEEE80211_ELEMID_COUNTRY:
-				sp.country = p;
-				break;
-			case IEEE80211_ELEMID_RSN:
-				sp.rsn = p;
-				break;
-			case IEEE80211_ELEMID_HTCAP:
-				sp.htcap = p;
-				break;
-			case IEEE80211_ELEMID_HTINFO:
-				sp.htinfo = p;
-				break;
-			case IEEE80211_ELEMID_VENDOR:
-				if (len >= 4 &&
-				    p[2] == 0x00 && p[3] == 0x50 &&
-				    p[4] == 0xf2 && p[5] == 0x01)
-					sp.wpa = p;
-				if (len >= 4 &&
-				    p[2] == 0x00 && p[3] == 0x50 &&
-				    p[4] == 0xf2 && p[5] == 0x02)
-					sp.wme = p;
-				break;
-			}
-			p += 2 + len;
-		}
-
-		sp.ies = ie;
-		sp.ies_len = ie_len;
-	}
-
-	ieee80211_add_scan(TAILQ_FIRST(&ic->ic_vaps), ic->ic_curchan,
-	    &sp, &wh, 0, (int16_t)le16toh(bi->RSSI), bi->phy_noise);
 }
 
 /*
@@ -622,11 +614,6 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			}
 		}
 
-		printf("brcmfmac: BSS %02x:%02x:%02x:%02x:%02x:%02x ch=%d rssi=%d \"%.*s\"\n",
-		    bi->BSSID[0], bi->BSSID[1], bi->BSSID[2],
-		    bi->BSSID[3], bi->BSSID[4], bi->BSSID[5],
-		    chan, rssi, bi->SSID_len, bi->SSID);
-
 		bi = (struct brcmf_bss_info_le *)((uint8_t *)bi + bi_len);
 		bss_count--;
 	}
@@ -643,24 +630,24 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 {
 	struct brcmf_vap *bvap = BRCMF_VAP(vap);
 	struct ieee80211com *ic = vap->iv_ic;
+	struct brcmf_softc *sc = ic->ic_softc;
 
 	IEEE80211_UNLOCK(ic);
 
 	switch (nstate) {
 	case IEEE80211_S_INIT:
-		printf("brcmfmac: state -> INIT\n");
 		break;
 	case IEEE80211_S_SCAN:
-		printf("brcmfmac: state -> SCAN\n");
 		break;
 	case IEEE80211_S_AUTH:
-		printf("brcmfmac: state -> AUTH\n");
+		/* FullMAC: initiate association on AUTH state */
+		if (vap->iv_bss != NULL)
+			brcmf_join_bss(sc, vap->iv_bss);
 		break;
 	case IEEE80211_S_ASSOC:
-		printf("brcmfmac: state -> ASSOC\n");
 		break;
 	case IEEE80211_S_RUN:
-		printf("brcmfmac: state -> RUN\n");
+		sc->running = 1;
 		break;
 	default:
 		break;
@@ -755,7 +742,7 @@ brcmf_scan_start(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
 
-	printf("brcmfmac: scan_start\n");
+
 	brcmf_do_escan(sc);
 }
 
@@ -765,17 +752,16 @@ brcmf_scan_start(struct ieee80211com *ic)
 static void
 brcmf_scan_end(struct ieee80211com *ic)
 {
-	printf("brcmfmac: scan_end\n");
+
 }
 
 /*
- * Set channel.
+ * Set channel (called by net80211 during scan).
  */
 static void
 brcmf_set_channel(struct ieee80211com *ic)
 {
-	printf("brcmfmac: set_channel %d\n",
-	    ieee80211_chan2ieee(ic, ic->ic_curchan));
+	/* FullMAC: firmware handles channel switching during scan */
 }
 
 /*

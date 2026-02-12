@@ -82,6 +82,38 @@ brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name, uint32_t *val)
 }
 
 /*
+ * Send a command with data to firmware.
+ */
+int
+brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
+    const void *data, uint32_t len)
+{
+	if (len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		return (EINVAL);
+
+	if (data != NULL && len > 0)
+		memcpy(sc->ioctlbuf, data, len);
+
+	return brcmf_msgbuf_ioctl(sc, cmd, sc->ioctlbuf, len, NULL);
+}
+
+/*
+ * Get data from firmware via command.
+ */
+int
+brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
+    void *data, uint32_t len)
+{
+	int error;
+
+	error = brcmf_msgbuf_ioctl(sc, cmd, sc->ioctlbuf, len, NULL);
+	if (error == 0 && data != NULL && len > 0)
+		memcpy(data, sc->ioctlbuf, len);
+
+	return error;
+}
+
+/*
  * Bring firmware interface up.
  */
 int

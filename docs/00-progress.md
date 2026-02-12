@@ -77,13 +77,15 @@ Tested: Finding BSSes with correct channels (1, 6, 60) and RSSI values (-45 to -
 Known issue: ieee80211_add_scan crashes, needs investigation.
 Known issue: Subsequent escans may timeout.
 
-### Milestone 7: Association (NEXT)
+### Milestone 7: Association (IN PROGRESS)
 
-- [ ] Handle IEEE80211_S_AUTH state transition
-- [ ] Handle IEEE80211_S_ASSOC state transition
-- [ ] Set SSID via BRCMF_C_SET_SSID ioctl
-- [ ] Handle BRCMF_E_LINK and BRCMF_E_SET_SSID events
-- [ ] Transition to IEEE80211_S_RUN on successful association
+- [x] Handle IEEE80211_S_AUTH state transition (calls brcmf_join_bss)
+- [x] Set SSID via BRCMF_C_SET_SSID ioctl
+- [x] Enable BRCMF_E_LINK and BRCMF_E_SET_SSID events
+- [x] Handle link events in brcmf_link_event()
+- [ ] Test with open network
+- [ ] Handle IEEE80211_S_RUN transition on link up
+- [ ] Handle disconnection
 
 ### Future milestones
 

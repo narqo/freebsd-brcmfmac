@@ -30,6 +30,10 @@
 #define MSGBUF_TYPE_WL_EVENT		 0x0e
 #define MSGBUF_TYPE_RXBUF_POST		 0x11
 
+/* Event codes (for brcmf_link_event) */
+#define BRCMF_E_SET_SSID	0
+#define BRCMF_E_LINK		16
+
 /*
  * msgbuf structures
  */
@@ -254,13 +258,18 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	datalen = be32toh(event->msg.datalen);
 
 	switch (event_code) {
+	case BRCMF_E_SET_SSID:
+	case BRCMF_E_LINK:
+		brcmf_link_event(sc, event_code, be32toh(event->msg.status),
+		    be16toh(event->msg.flags));
+		break;
 	case BRCMF_E_ESCAN_RESULT:
 		if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))
 			brcmf_escan_result(sc, (uint8_t *)cb->buf + sizeof(*event), datalen);
 		break;
+	case 54: /* BRCMF_E_IF - interface event, ignored */
+		break;
 	default:
-		printf("brcmfmac: event %u status=%u\n",
-		    event_code, be32toh(event->msg.status));
 		break;
 	}
 }
@@ -480,7 +489,7 @@ brcmf_msgbuf_init_ioctlresp(struct brcmf_softc *sc)
 	}
 
 	sc->cur_ioctlrespbuf = BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST;
-	printf("brcmfmac: posted %d IOCTL response buffers\n",
+	device_printf(sc->dev, "posted %d IOCTL response buffers\n",
 	    BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST);
 	return (0);
 }
@@ -512,7 +521,7 @@ brcmf_msgbuf_init_event(struct brcmf_softc *sc)
 	}
 
 	sc->cur_eventbuf = BRCMF_MSGBUF_MAX_EVENTBUF_POST;
-	printf("brcmfmac: posted %d event buffers\n",
+	device_printf(sc->dev, "posted %d event buffers\n",
 	    BRCMF_MSGBUF_MAX_EVENTBUF_POST);
 	return (0);
 }
@@ -576,7 +585,7 @@ brcmf_msgbuf_init_rxbuf(struct brcmf_softc *sc)
 	brcmf_msgbuf_ring_submit(sc, ring);
 
 	sc->rxbufpost = count;
-	printf("brcmfmac: posted %u RX data buffers\n", count);
+	device_printf(sc->dev, "posted %u RX data buffers\n", count);
 	return (0);
 }
 
@@ -731,8 +740,7 @@ brcmf_msgbuf_init(struct brcmf_softc *sc)
 		return (error);
 	}
 
-	printf("brcmfmac: IOCTL buffer at 0x%lx\n",
-	    (unsigned long)sc->ioctlbuf_dma);
+
 
 	error = brcmf_msgbuf_init_ioctlresp(sc);
 	if (error != 0) {

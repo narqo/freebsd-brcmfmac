@@ -247,6 +247,10 @@ int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len);
 
 /* fwil.c - Firmware interface layer */
+int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
+    const void *data, uint32_t len);
+int brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
+    void *data, uint32_t len);
 int brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
     void *data, uint32_t len);
 int brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
@@ -262,6 +266,8 @@ int brcmf_fil_bss_down(struct brcmf_softc *sc);
 int brcmf_cfg_attach(struct brcmf_softc *sc);
 void brcmf_cfg_detach(struct brcmf_softc *sc);
 void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
+void brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
+    uint32_t status, uint16_t flags);
 
 /* Zig functions (brcmfmac.zig) */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);

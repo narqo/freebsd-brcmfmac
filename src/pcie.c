@@ -374,14 +374,6 @@ brcmf_pcie_init_ringinfo(struct brcmf_softc *sc)
 		sc->max_completionrings = BRCMF_NROF_D2H_COMMON_MSGRINGS;
 	}
 
-	printf("brcmfmac: ringmem=0x%x\n", sc->ringmem_addr);
-	printf("brcmfmac: h2d_w_idx=0x%x h2d_r_idx=0x%x\n",
-	    sc->h2d_w_idx_addr, sc->h2d_r_idx_addr);
-	printf("brcmfmac: d2h_w_idx=0x%x d2h_r_idx=0x%x\n",
-	    sc->d2h_w_idx_addr, sc->d2h_r_idx_addr);
-	printf("brcmfmac: max_flowrings=%u max_submission=%u max_completion=%u\n",
-	    sc->max_flowrings, sc->max_submissionrings, sc->max_completionrings);
-
 	return (0);
 }
 
@@ -408,9 +400,6 @@ brcmf_pcie_alloc_idx_buf(struct brcmf_softc *sc)
 		device_printf(sc->dev, "failed to allocate DMA index buffer\n");
 		return (error);
 	}
-
-	printf("brcmfmac: allocated DMA index buffer %u bytes at 0x%lx\n",
-	    sz, (unsigned long)sc->idx_buf_dma);
 
 	addr = sc->shared.ring_info_addr;
 	dma64 = sc->idx_buf_dma;
@@ -452,9 +441,6 @@ brcmf_pcie_alloc_scratch_buffers(struct brcmf_softc *sc)
 	brcmf_tcm_write64(sc, addr + BRCMF_SHARED_DMA_SCRATCH_ADDR_OFFSET,
 	    sc->scratch_dma);
 
-	printf("brcmfmac: scratch buffer at 0x%lx\n",
-	    (unsigned long)sc->scratch_dma);
-
 	error = brcmf_alloc_dma_buf(sc->dev, BRCMF_DMA_D2H_RINGUPD_BUF_LEN,
 	    &sc->ringupd_dma_tag, &sc->ringupd_dma_map,
 	    &sc->ringupd_buf, &sc->ringupd_dma);
@@ -467,9 +453,6 @@ brcmf_pcie_alloc_scratch_buffers(struct brcmf_softc *sc)
 	    BRCMF_DMA_D2H_RINGUPD_BUF_LEN);
 	brcmf_tcm_write64(sc, addr + BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET,
 	    sc->ringupd_dma);
-
-	printf("brcmfmac: ringupd buffer at 0x%lx\n",
-	    (unsigned long)sc->ringupd_dma);
 
 	return (0);
 }
@@ -541,12 +524,6 @@ brcmf_pcie_alloc_common_rings(struct brcmf_softc *sc)
 			    d2h_idx * sizeof(uint32_t);
 		}
 
-		printf("brcmfmac: ring[%d]: depth=%u itemsz=%u dma=0x%lx "
-		    "w_idx=0x%x r_idx=0x%x\n",
-		    i, depth, item_len,
-		    (unsigned long)sc->commonrings[i]->dma_handle,
-		    sc->commonrings[i]->w_idx_addr,
-		    sc->commonrings[i]->r_idx_addr);
 	}
 
 	return (0);
@@ -705,7 +682,6 @@ brcmf_pcie_setup_irq(struct brcmf_softc *sc)
 		return (error);
 	}
 
-	printf("brcmfmac: MSI interrupt enabled\n");
 	return (0);
 }
 
@@ -807,7 +783,6 @@ brcmf_pcie_adjust_ramsize(struct brcmf_softc *sc, const void *data,
 		return;
 
 	newsize = le32toh(field[1]);
-	printf("brcmfmac: firmware requests ramsize 0x%x\n", newsize);
 	sc->ram_size = newsize;
 }
 
@@ -825,9 +800,6 @@ brcmf_pcie_init_shared(struct brcmf_softc *sc, uint32_t sharedram_addr)
 
 	shared->flags = brcmf_tcm_read32(sc, sharedram_addr);
 	shared->version = shared->flags & BRCMF_PCIE_SHARED_VERSION_MASK;
-
-	printf("brcmfmac: shared version %u, flags 0x%x\n",
-	    shared->version, shared->flags);
 
 	if (shared->version > BRCMF_PCIE_MAX_SHARED_VERSION ||
 	    shared->version < BRCMF_PCIE_MIN_SHARED_VERSION) {
@@ -859,12 +831,6 @@ brcmf_pcie_init_shared(struct brcmf_softc *sc, uint32_t sharedram_addr)
 
 	addr = sharedram_addr + BRCMF_SHARED_RING_INFO_ADDR_OFFSET;
 	shared->ring_info_addr = brcmf_tcm_read32(sc, addr);
-
-	printf("brcmfmac: max_rxbufpost=%u rx_dataoffset=%u\n",
-	    shared->max_rxbufpost, shared->rx_dataoffset);
-	printf("brcmfmac: ring_info_addr=0x%x\n", shared->ring_info_addr);
-	printf("brcmfmac: htod_mb=0x%x dtoh_mb=0x%x\n",
-	    shared->htod_mb_data_addr, shared->dtoh_mb_data_addr);
 
 	return (0);
 }
@@ -901,15 +867,12 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 		return (EINVAL);
 	}
 
-	printf("brcmfmac: firmware size=%zu\n", fw->datasize);
-
 	error = brcmf_chip_enumerate_cores(sc);
 	if (error != 0)
 		return (error);
 
 	brcmf_pcie_adjust_ramsize(sc, fw->data, fw->datasize);
 
-	printf("brcmfmac: resetting device\n");
 	brcmf_chip_reset(sc);
 
 	brcmf_pcie_select_core(sc, &sc->pciecore);
@@ -924,8 +887,6 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 	if (error != 0)
 		return (error);
 
-	printf("brcmfmac: copying %zu bytes to TCM offset 0x%x\n", fw->datasize,
-	    sc->ram_base);
 	resetintr = *(const uint32_t *)fw->data;
 	brcmf_tcm_copy(sc, sc->ram_base, fw->data, fw->datasize);
 
@@ -934,8 +895,6 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 	if (sc->nvram != NULL && sc->nvram_len > 0) {
 		uint32_t nvram_addr = sc->ram_base + sc->ram_size -
 		    sc->nvram_len;
-		printf("brcmfmac: copying NVRAM (%u bytes) to offset 0x%x\n",
-		    sc->nvram_len, nvram_addr);
 		brcmf_tcm_copy(sc, nvram_addr, sc->nvram, sc->nvram_len);
 	}
 
@@ -943,15 +902,11 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	brcmf_chip_exit_download(sc, resetintr);
 
-	printf("brcmfmac: waiting for firmware to boot...\n");
 	sharedaddr = sharedaddr_written;
 	for (i = 0; i < BRCMF_FW_READY_TIMEOUT_MS / BRCMF_FW_READY_POLL_MS;
 	    i++) {
 		pause_sbt("brcmfw", mstosbt(BRCMF_FW_READY_POLL_MS), 0, 0);
 		sharedaddr = brcmf_ram_read32(sc, sc->ram_size - 4);
-		if (i < 5 || (i % 10 == 0))
-			printf("brcmfmac: poll[%d]: sharedaddr=0x%x\n", i,
-			    sharedaddr);
 		if (sharedaddr != sharedaddr_written)
 			break;
 	}
@@ -969,8 +924,6 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 		return (EIO);
 	}
 
-	printf("brcmfmac: firmware booted, sharedaddr=0x%x\n", sharedaddr);
-
 	error = brcmf_pcie_init_shared(sc, sharedaddr);
 	if (error != 0)
 		return (error);
@@ -980,8 +933,6 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 		return (error);
 
 	brcmf_pcie_hostready(sc);
-
-	printf("brcmfmac: DMA rings initialized\n");
 
 	error = brcmf_pcie_setup_irq(sc);
 	if (error != 0)
@@ -993,8 +944,6 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	brcmf_pcie_intr_enable(sc);
 
-	printf("brcmfmac: msgbuf protocol initialized\n");
-
 	/* Get firmware version */
 	error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
 	if (error == 0 && sc->ioctl_resp_len > 0) {
@@ -1002,7 +951,7 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 		char *nl = strchr(ver, '\n');
 		if (nl)
 			*nl = '\0';
-		printf("brcmfmac: firmware: %s\n", ver);
+		device_printf(sc->dev, "firmware: %s\n", ver);
 	}
 
 	/* Disable MPC during init */
@@ -1073,7 +1022,7 @@ brcmf_pcie_attach(device_t dev)
 	sc->ram_base = BCM4350_RAM_BASE;
 	sc->ram_size = BCM4350_RAM_SIZE;
 
-	printf("brcmfmac: ram_base=0x%x ram_size=0x%x (%uKB)\n", sc->ram_base,
+	device_printf(sc->dev, "ram_base=0x%x ram_size=0x%x (%uKB)\n", sc->ram_base,
 	    sc->ram_size, sc->ram_size / 1024);
 
 	fwname = (sc->chiprev <= 7) ? BRCMF_FW_NAME_C2 : BRCMF_FW_NAME;
@@ -1084,7 +1033,7 @@ brcmf_pcie_attach(device_t dev)
 		error = ENOENT;
 		goto fail;
 	}
-	printf("brcmfmac: loaded firmware %s (%zu bytes)\n", fwname,
+	device_printf(sc->dev, "loaded firmware %s (%zu bytes)\n", fwname,
 	    fw->datasize);
 
 	{
@@ -1093,17 +1042,9 @@ brcmf_pcie_attach(device_t dev)
 		    BRCMF_NVRAM_NAME;
 		nvram = firmware_get(nvname);
 		if (nvram != NULL) {
-			printf("brcmfmac: loaded NVRAM %s (%zu bytes)\n",
-			    nvname, nvram->datasize);
 			sc->nvram = brcmf_nvram_parse(nvram->data,
 			    nvram->datasize, &sc->nvram_len);
-			if (sc->nvram != NULL)
-				printf("brcmfmac: parsed NVRAM: %u bytes\n",
-				    sc->nvram_len);
 			firmware_put(nvram, FIRMWARE_UNLOAD);
-		} else {
-			printf("brcmfmac: NVRAM %s not found, "
-			    "continuing without\n", nvname);
 		}
 	}
 
