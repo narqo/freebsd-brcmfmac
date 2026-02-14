@@ -187,6 +187,10 @@ struct brcmf_softc {
 	int scan_complete;
 	struct task scan_task;
 
+	/* Link state */
+	int link_up;
+	struct task link_task;
+
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
 #define BRCMF_SCAN_IE_MAX	512

@@ -22,6 +22,8 @@
 #define BRCMF_IOCTL_TIMEOUT_MS 2000
 
 /* msgbuf message types */
+#define MSGBUF_TYPE_GEN_STATUS		 0x01
+#define MSGBUF_TYPE_RING_STATUS		 0x02
 #define MSGBUF_TYPE_IOCTLPTR_REQ	 0x09
 #define MSGBUF_TYPE_IOCTLPTR_REQ_ACK	 0x0a
 #define MSGBUF_TYPE_IOCTLRESP_BUF_POST	 0x0b
@@ -98,6 +100,20 @@ struct msgbuf_rx_event {
 	uint16_t event_data_len;
 	uint16_t seqnum;
 	uint16_t rsvd0[4];
+} __packed;
+
+struct msgbuf_gen_status {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t write_idx;
+	uint32_t rsvd0[3];
+} __packed;
+
+struct msgbuf_ring_status {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t write_idx;
+	uint16_t rsvd0[5];
 } __packed;
 
 /* Event packet structures */
@@ -217,6 +233,9 @@ brcmf_msgbuf_ring_submit(struct brcmf_softc *sc, struct brcmf_pcie_ringbuf *ring
 	brcmf_msgbuf_ring_doorbell(sc);
 }
 
+static int brcmf_msgbuf_post_ctrlbuf(struct brcmf_softc *, uint8_t,
+    struct brcmf_ctrlbuf *);
+
 /*
  * Process firmware event from event buffer.
  */
@@ -251,7 +270,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	if (memcmp(event->oui, BRCM_OUI, 3) != 0) {
 		printf("brcmfmac: event with invalid OUI %02x:%02x:%02x\n",
 		    event->oui[0], event->oui[1], event->oui[2]);
-		return;
+		goto repost;
 	}
 
 	event_code = be32toh(event->msg.event_type);
@@ -272,6 +291,10 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	default:
 		break;
 	}
+
+repost:
+	/* Re-post the event buffer for reuse */
+	brcmf_msgbuf_post_ctrlbuf(sc, MSGBUF_TYPE_EVENT_BUF_POST, cb);
 }
 
 /*
@@ -317,6 +340,10 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 				    resp_len <= BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
 					memcpy(sc->ioctlbuf,
 					    sc->ioctlresp_buf[idx].buf, resp_len);
+				/* Re-post the IOCTL response buffer */
+				brcmf_msgbuf_post_ctrlbuf(sc,
+				    MSGBUF_TYPE_IOCTLRESP_BUF_POST,
+				    &sc->ioctlresp_buf[idx]);
 			}
 
 			sc->ioctl_completed = 1;
@@ -328,6 +355,11 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 			break;
 
 		case MSGBUF_TYPE_IOCTLPTR_REQ_ACK:
+			break;
+
+		case MSGBUF_TYPE_GEN_STATUS:
+		case MSGBUF_TYPE_RING_STATUS:
+			/* Firmware status messages - just consume them */
 			break;
 
 		default:
@@ -646,6 +678,10 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 	timeout = BRCMF_IOCTL_TIMEOUT_MS;
 	while (!sc->ioctl_completed && timeout > 0) {
+		/* Poll D2H rings while waiting */
+		brcmf_msgbuf_process_d2h(sc);
+		if (sc->ioctl_completed)
+			break;
 		error = tsleep(&sc->ioctl_completed, PCATCH, "brcmioctl",
 		    hz / 10);
 		if (error != 0 && error != EWOULDBLOCK)

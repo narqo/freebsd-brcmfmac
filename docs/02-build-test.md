@@ -90,3 +90,53 @@ Then on the VM:
 ```sh
 ssh -J varankinv@192.168.20.82 root@192.168.200.10 'kldunload if_brcmfmac 2>/dev/null; kldload ./if_brcmfmac.ko && dmesg | tail -50'
 ```
+
+## Crash investigation
+
+Kernel panics generate crash dumps in `/var/crash/` on the test VM. The VM auto-reboots
+after a panic and `savecore` runs during boot to save the dump.
+
+### Checking for crashes
+
+```sh
+# List crash dumps (sorted by time)
+ls -lat /var/crash/*.txt* | head -5
+
+# Check bounds file to see dump count
+cat /var/crash/bounds
+```
+
+### Analyzing a crash
+
+```sh
+# View the crash summary (includes backtrace)
+cat /var/crash/core.txt.0
+
+# Find the panic message and backtrace
+grep -A30 "Fatal trap" /var/crash/core.txt.0
+
+# View crash metadata
+cat /var/crash/info.0
+```
+
+### Key information in crash dumps
+
+- `fault virtual address` - the bad pointer that caused the crash
+- `current process` - kernel thread that crashed
+- `KDB: stack backtrace` - call stack leading to the crash
+- `#N ... at function+0xNN` - function names and offsets
+
+### Common patterns
+
+- Address `0xffff` or similar small values often indicate NULL pointer + offset
+- `page not present` means accessing unmapped memory
+- Look for our module functions (e.g., `brcmf_*`) in the backtrace
+
+### Testing tips
+
+When testing code that may crash:
+
+1. Use short SSH timeouts (`-o ConnectTimeout=10`)
+2. Run commands that may trigger crashes separately from status checks
+3. After a potential crash, wait ~30 seconds for VM to reboot and savecore to complete
+4. Check VM state from build host: `sudo vm list vm0`

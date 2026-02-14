@@ -278,6 +278,9 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	/* ieee80211_add_scan crashes - disabled for now */
 }
 
+static int brcmf_join_bss_direct(struct brcmf_softc *sc,
+    struct brcmf_scan_result *sr);
+
 /*
  * Scan completion task - runs in process context.
  */
@@ -301,10 +304,114 @@ brcmf_scan_complete_task(void *arg, int pending)
 	n = sc->scan_nresults;
 	sc->scan_nresults = 0;
 
+	/*
+	 * For FullMAC: if we have a desired SSID and BSSID, check if
+	 * we found it in scan results and directly initiate join.
+	 */
+	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0 &&
+	    !IEEE80211_ADDR_EQ(vap->iv_des_bssid, ieee80211broadcastaddr)) {
+		for (i = 0; i < n; i++) {
+			struct brcmf_scan_result *sr = &sc->scan_results[i];
+			if (sr->ssid_len == vap->iv_des_ssid[0].len &&
+			    memcmp(sr->ssid, vap->iv_des_ssid[0].ssid, sr->ssid_len) == 0 &&
+			    IEEE80211_ADDR_EQ(sr->bssid, vap->iv_des_bssid)) {
+				/* Found target BSS - initiate join */
+				brcmf_join_bss_direct(sc, sr);
+				return;
+			}
+		}
+	}
+
+	/* Not found or no specific target - report scan done */
 	for (i = 0; i < n; i++)
 		brcmf_add_scan_result(sc, &sc->scan_results[i]);
 
 	ieee80211_scan_done(vap);
+}
+
+/* IOCTL for getting channel */
+#define BRCMF_C_GET_CHANNEL	29
+
+static int brcmf_chanspec_to_channel(uint16_t chanspec);
+
+/*
+ * Link state change task - runs in process context.
+ */
+static void
+brcmf_link_task(void *arg, int pending)
+{
+	struct brcmf_softc *sc = arg;
+	struct ieee80211com *ic = &sc->ic;
+	struct ieee80211vap *vap;
+	struct ieee80211_node *ni;
+	struct ieee80211_channel *chan;
+	uint8_t bssid[6];
+	uint32_t channum;
+	int error;
+
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap == NULL)
+		return;
+
+	if (sc->link_up) {
+		/* Get BSSID from firmware */
+		error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_BSSID, bssid, 6);
+		if (error != 0) {
+			printf("brcmfmac: failed to get BSSID: %d\n", error);
+			return;
+		}
+
+		/* Get channel from firmware */
+		error = brcmf_fil_iovar_int_get(sc, "chanspec", &channum);
+		if (error != 0) {
+			/* Fallback: try BRCMF_C_GET_CHANNEL */
+			error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_CHANNEL,
+			    &channum, sizeof(channum));
+		}
+		if (error != 0)
+			channum = 1;  /* Default to channel 1 */
+		else
+			channum = brcmf_chanspec_to_channel(channum);
+
+		printf("brcmfmac: associated to %02x:%02x:%02x:%02x:%02x:%02x ch%d\n",
+		    bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
+		    channum);
+
+		/* Find the channel in our channel list */
+		chan = ieee80211_find_channel(ic, channum,
+		    channum <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
+		if (chan == NULL)
+			chan = &ic->ic_channels[0];
+
+		/* Set the current channel */
+		ic->ic_curchan = chan;
+		ic->ic_bsschan = chan;
+
+		/*
+		 * Update the BSS node with the associated BSSID.
+		 * iv_bss should already exist from VAP creation.
+		 */
+		ni = vap->iv_bss;
+		if (ni != NULL) {
+			IEEE80211_ADDR_COPY(ni->ni_bssid, bssid);
+			IEEE80211_ADDR_COPY(ni->ni_macaddr, bssid);
+			ni->ni_chan = chan;
+			/* Copy desired SSID to node */
+			if (vap->iv_des_nssid > 0) {
+				ni->ni_esslen = vap->iv_des_ssid[0].len;
+				memcpy(ni->ni_essid, vap->iv_des_ssid[0].ssid,
+				    ni->ni_esslen);
+			}
+			/* Transition to RUN */
+			ieee80211_new_state(vap, IEEE80211_S_RUN,
+			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
+		} else {
+			printf("brcmfmac: no BSS node available\n");
+		}
+	} else {
+		printf("brcmfmac: transitioning to SCAN state\n");
+		ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+	}
 }
 
 /*
@@ -314,39 +421,62 @@ void
 brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
     uint32_t status, uint16_t flags)
 {
-	struct ieee80211com *ic = &sc->ic;
-	struct ieee80211vap *vap;
-
-	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap == NULL)
-		return;
-
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
 		if (status == BRCMF_E_STATUS_SUCCESS) {
 			printf("brcmfmac: SET_SSID success\n");
 		} else {
 			printf("brcmfmac: SET_SSID failed, status=%u\n", status);
-			/* Association failed - go back to SCAN state */
-			ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+			sc->link_up = 0;
+			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
 		break;
 
 	case BRCMF_E_LINK:
 		if (flags & BRCMF_EVENT_MSG_LINK) {
 			printf("brcmfmac: link up\n");
-			/* Association complete - transition to RUN */
-			ieee80211_new_state(vap, IEEE80211_S_RUN, -1);
+			sc->link_up = 1;
+			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		} else {
 			printf("brcmfmac: link down\n");
-			/* Disconnected - go back to SCAN state */
-			ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+			sc->link_up = 0;
+			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
 		break;
 
 	default:
 		break;
 	}
+}
+
+/*
+ * Initiate association to a BSS using scan result.
+ */
+static int
+brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
+{
+	struct brcmf_join_params join;
+	int error;
+
+	printf("brcmfmac: joining BSS %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\"\n",
+	    sr->bssid[0], sr->bssid[1], sr->bssid[2],
+	    sr->bssid[3], sr->bssid[4], sr->bssid[5],
+	    sr->ssid_len, sr->ssid);
+
+	/* Build join parameters */
+	memset(&join, 0, sizeof(join));
+	join.ssid_le.SSID_len = htole32(sr->ssid_len);
+	memcpy(join.ssid_le.SSID, sr->ssid, sr->ssid_len);
+	memcpy(join.params_le.bssid, sr->bssid, 6);
+
+	/* Initiate association */
+	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
+	if (error != 0) {
+		printf("brcmfmac: SET_SSID failed: %d\n", error);
+		return error;
+	}
+
+	return 0;
 }
 
 /*
@@ -362,13 +492,6 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	    ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
 	    ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
 	    ni->ni_esslen, ni->ni_essid);
-
-	/* Set infrastructure mode */
-	error = brcmf_fil_iovar_int_set(sc, "infra", 1);
-	if (error != 0) {
-		printf("brcmfmac: failed to set infra mode: %d\n", error);
-		return error;
-	}
 
 	/* Build join parameters */
 	memset(&join, 0, sizeof(join));
@@ -489,9 +612,10 @@ brcmf_channel_to_chanspec(int channel)
 
 /*
  * Start enhanced scan.
+ * If ssid/ssid_len are non-zero, do a directed probe scan.
  */
 static int
-brcmf_do_escan(struct brcmf_softc *sc)
+brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 {
 	struct brcmf_escan_params_le *params;
 	size_t params_size;
@@ -507,8 +631,11 @@ brcmf_do_escan(struct brcmf_softc *sc)
 	params->action = htole16(WL_ESCAN_ACTION_START);
 	params->sync_id = htole16(sc->escan_sync_id++);
 
-	/* Scan all SSIDs */
-	params->params_le.ssid_le.SSID_len = 0;
+	/* Directed probe if SSID specified, otherwise wildcard */
+	if (ssid != NULL && ssid_len > 0) {
+		params->params_le.ssid_le.SSID_len = htole32(ssid_len);
+		memcpy(params->params_le.ssid_le.SSID, ssid, ssid_len);
+	}
 
 	/* Broadcast BSSID */
 	memset(params->params_le.bssid, 0xff, 6);
@@ -565,6 +692,7 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		return;
 
 	if (bss_count == 0) {
+		printf("brcmfmac: escan complete, %d results\n", sc->scan_nresults);
 		sc->scan_active = 0;
 		sc->scan_complete = 1;
 		taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
@@ -599,6 +727,10 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			memcpy(sr->bssid, bi->BSSID, 6);
 			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
 			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
+			printf("brcmfmac: scan found %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\" ch%d rssi%d\n",
+			    bi->BSSID[0], bi->BSSID[1], bi->BSSID[2],
+			    bi->BSSID[3], bi->BSSID[4], bi->BSSID[5],
+			    sr->ssid_len, sr->ssid, chan, rssi);
 			sr->chan = chan;
 			sr->rssi = rssi;
 			sr->noise = noise;
@@ -741,9 +873,22 @@ static void
 brcmf_scan_start(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
+	struct ieee80211vap *vap;
+	const uint8_t *ssid = NULL;
+	int ssid_len = 0;
 
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap != NULL && vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
+		/* Directed probe for the desired SSID (for hidden APs) */
+		ssid = vap->iv_des_ssid[0].ssid;
+		ssid_len = vap->iv_des_ssid[0].len;
+		printf("brcmfmac: directed scan for SSID \"%.*s\"\n",
+		    ssid_len, ssid);
+	} else {
+		printf("brcmfmac: broadcast scan\n");
+	}
 
-	brcmf_do_escan(sc);
+	brcmf_do_escan(sc, ssid, ssid_len);
 }
 
 /*
@@ -825,6 +970,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	/* mtx_init(&sc->scan_mtx, "brcmf_scan", NULL, MTX_SPIN); */
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
+	TASK_INIT(&sc->link_task, 0, brcmf_link_task, sc);
 
 	ic->ic_softc = sc;
 	ic->ic_name = device_get_nameunit(sc->dev);

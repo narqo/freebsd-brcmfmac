@@ -2,7 +2,7 @@
 
 ## Current status
 
-**Milestone 6: Scan support** - IN PROGRESS
+**Milestone 7: Association** - DONE (control plane)
 
 ## Build and test
 
@@ -48,6 +48,7 @@ Firmware boots in ~100ms. Shared RAM at 0x1dcf10.
 - [x] IOCTL request/response via control submit/complete rings
 - [x] IOVAR support (brcmf_fil_iovar_data_get/set, brcmf_fil_iovar_int_set/get)
 - [x] Query firmware version string
+- [x] Re-post IOCTL response and event buffers after consumption
 
 Tested: Firmware version 7.35.180.133 (Nov 26 2015).
 
@@ -70,28 +71,40 @@ Tested: MAC address f4:0f:24:2a:72:e3, wlan0 created and brought up.
 - [x] RSSI extraction from scan results
 - [x] Deferred scan completion via taskqueue
 - [x] Scan result caching
-- [ ] Report scan results to net80211 (ieee80211_add_scan causes crashes)
-- [ ] Event buffer re-posting after consumption
+- [x] Directed scan for hidden SSIDs
+- [x] Poll-based IOCTL completion (fixes timeouts)
+- [x] Handle GEN_STATUS and RING_STATUS message types
 
-Tested: Finding BSSes with correct channels (1, 6, 60) and RSSI values (-45 to -72 dBm).
-Known issue: ieee80211_add_scan crashes, needs investigation.
-Known issue: Subsequent escans may timeout.
+Tested: Finding BSSes with correct channels and RSSI values.
+Note: ieee80211_add_scan disabled (crashes); results cached internally.
 
-### Milestone 7: Association (IN PROGRESS)
+### Milestone 7: Association (DONE - control plane)
 
-- [x] Handle IEEE80211_S_AUTH state transition (calls brcmf_join_bss)
+- [x] Handle link events via taskqueue (deferred from interrupt context)
+- [x] Direct join when scan finds target BSS (bypass net80211 scan state machine)
 - [x] Set SSID via BRCMF_C_SET_SSID ioctl
-- [x] Enable BRCMF_E_LINK and BRCMF_E_SET_SSID events
-- [x] Handle link events in brcmf_link_event()
-- [ ] Test with open network
-- [ ] Handle IEEE80211_S_RUN transition on link up
-- [ ] Handle disconnection
+- [x] Process BRCMF_E_LINK and BRCMF_E_SET_SSID events
+- [x] Update iv_bss node with BSSID and channel
+- [x] Set ic_curchan/ic_bsschan before RUN transition
+- [x] Transition to IEEE80211_S_RUN state on link up
+- [x] Handle disconnection (transition to SCAN state)
+
+Tested: Successfully associated to hidden AP "TestAP" (open network).
+Interface shows `status: associated`. DHCP fails (no data path yet).
+
+### Milestone 8: Data path (NOT STARTED)
+
+- [ ] TX flowring creation
+- [ ] TX packet submission (MSGBUF_TYPE_TX_POST)
+- [ ] TX completion handling
+- [ ] RX completion handling (MSGBUF_TYPE_RX_CMPLT)
+- [ ] Packet delivery to net80211
 
 ### Future milestones
 
-- Data path (TX/RX flowrings)
-- WPA/WPA2 support (key management)
+- WPA/WPA2 support (key management, sup_wpa iovar)
 - Power management
+- Proper scan result reporting to net80211
 
 ## Known issues
 

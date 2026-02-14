@@ -1,5 +1,26 @@
 # Known Issues
 
+## Association
+
+### BSSID not correctly retrieved after association
+
+**Status:** Open  
+**Severity:** Low (cosmetic)
+
+After link up, `BRCMF_C_GET_BSSID` returns incorrect/garbage BSSID values.
+The association itself works correctly.
+
+**Symptoms:**
+- dmesg shows random BSSID like `82:e6:fc:66:1c:ce` instead of actual AP BSSID
+- ifconfig shows this incorrect BSSID
+
+**Workaround:**
+- Association still works; this is cosmetic
+
+**Next steps:**
+1. Check if BSSID ioctl needs different buffer handling
+2. Verify endianness of returned data
+
 ## Scan support
 
 ### ieee80211_add_scan crashes
@@ -8,52 +29,15 @@
 **Severity:** Medium (scan results not visible in ifconfig wlan0 scan)
 
 Calling `ieee80211_add_scan()` from taskqueue context crashes the kernel.
-The crash happens even with valid parameters (non-NULL channel, valid rates IE).
-
-**Symptoms:**
-- Kernel panic when scan results are reported to net80211
-- VM reboots immediately
-
-**Investigation notes:**
-- Channel pointer is valid (verified with debug prints)
-- Default rates IE provided (required by sta_add KASSERT)
-- Crash happens inside ieee80211_add_scan, not in our code
-- May be related to scan state machine expectations
-- Possibly needs IEEE80211_LOCK held or specific vap state
 
 **Workaround:**
-- Scan results are cached and printed to dmesg
+- Scan results are cached internally; direct join works
 - ieee80211_add_scan call is disabled
 
 **Next steps:**
-1. Check if IEEE80211_LOCK is required around ieee80211_add_scan
-2. Verify scan state machine is in correct state (ISCAN_DISCARD flag?)
-3. Compare with other drivers (iwm, rtwn) for proper usage pattern
-
-### Subsequent escan timeouts
-
-**Status:** Open  
-**Severity:** Medium
-
-After the first successful escan, subsequent escans timeout with ETIMEDOUT (60).
-
-**Symptoms:**
-- First escan works correctly
-- Second and subsequent escans fail with "IOCTL timeout cmd=0x107"
-- Error 60 (ETIMEDOUT) returned
-
-**Investigation notes:**
-- May be IOCTL queue state issue
-- Possibly need to clear/reset some firmware state between scans
-- Event buffer re-posting might be needed
-
-**Workaround:**
-- First scan works; module reload needed for subsequent scans
-
-**Next steps:**
-1. Check if event buffers need re-posting after consumption
-2. Investigate IOCTL completion state machine
-3. Check if firmware needs explicit scan abort before new scan
+1. Check if IEEE80211_LOCK is required
+2. Verify scan state machine expectations
+3. Compare with other drivers (iwm, rtwn)
 
 ## BSS info structure alignment
 
@@ -65,8 +49,3 @@ Chanspec is at offset 72 (not 71), RSSI at offset 78.
 
 **Workaround:**
 - Using raw byte offsets instead of structure fields for critical data
-- BSSID, SSID_len, SSID work correctly via structure
-
-**Next steps:**
-- Compare structure with Linux driver definition
-- May need padding bytes or different field ordering
