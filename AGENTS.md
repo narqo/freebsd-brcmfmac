@@ -128,6 +128,31 @@ The `src/hack.h` header provides bitfield-free replacements. It must be included
 
 [1]: https://ziglang.org/documentation/master/#Translation-failures
 
+## net80211 swscan private struct layout
+
+The swscan module uses a private `struct scan_state` that extends
+`ieee80211_scan_state`. The struct is not exported, but the driver needs
+access to drain scan tasks during VAP teardown. Layout (FreeBSD 15):
+
+```c
+struct scan_state {
+    struct ieee80211_scan_state base;
+    u_int ss_iflags;           // ISCAN_* flags
+    unsigned long ss_chanmindwell;
+    unsigned long ss_scanend;
+    u_int ss_duration;
+    struct task ss_scan_start;
+    struct timeout_task ss_scan_curchan;
+};
+```
+
+ISCAN flags: MINDWELL=0x01, DISCARD=0x02, INTERRUPT=0x04, CANCEL=0x08,
+ABORT=0x10, RUNNING=0x20.
+
+`scan_curchan_task` accesses `ss->ss_vap` via `IEEE80211_DPRINTF` BEFORE
+checking abort flags. If `ss_vap` is NULL, the kernel faults at address 0x6a
+(`vap->iv_debug` offset). Pre-set `ic->ic_scan->ss_vap` in vap_create.
+
 ## LLVM printf optimization
 
 Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as

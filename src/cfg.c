@@ -828,9 +828,59 @@ brcmf_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	ieee80211_vap_attach(vap, ieee80211_media_change,
 	    ieee80211_media_status, mac);
 
+	/*
+	 * Pre-set ss_vap so scan_curchan_task doesn't fault on
+	 * IEEE80211_DPRINTF(ss->ss_vap, ...) if the task fires
+	 * before ieee80211_swscan_start_scan_locked sets it.
+	 */
+	if (ic->ic_scan != NULL)
+		ic->ic_scan->ss_vap = vap;
+
 	ic->ic_opmode = opmode;
 
 	return (vap);
+}
+
+/*
+ * Match the swscan private scan state layout so we can access
+ * the scan tasks for draining.
+ */
+struct brcmf_scan_priv {
+	struct ieee80211_scan_state base;
+	u_int iflags;
+	unsigned long chanmindwell;
+	unsigned long scanend;
+	u_int duration;
+	struct task scan_start;
+	struct timeout_task scan_curchan;
+};
+
+/*
+ * Drain swscan tasks before VAP teardown. scan_curchan_task accesses
+ * ss->ss_vap which becomes NULL/freed after ieee80211_vap_detach.
+ * The kernel doesn't drain these tasks until ieee80211_scan_detach,
+ * which runs much later.
+ */
+static void
+brcmf_drain_scan_tasks(struct ieee80211com *ic)
+{
+	struct ieee80211_scan_state *ss = ic->ic_scan;
+	struct brcmf_scan_priv *priv = (struct brcmf_scan_priv *)ss;
+
+	if (ss == NULL)
+		return;
+
+	IEEE80211_LOCK(ic);
+	priv->iflags |= 0x0018; /* ISCAN_CANCEL | ISCAN_ABORT */
+	if (priv->iflags & 0x0020 /* ISCAN_RUNNING */) {
+		taskqueue_cancel_timeout(ic->ic_tq, &priv->scan_curchan,
+		    NULL);
+		taskqueue_enqueue_timeout(ic->ic_tq, &priv->scan_curchan, 0);
+	}
+	IEEE80211_UNLOCK(ic);
+
+	ieee80211_draintask(ic, &priv->scan_start);
+	taskqueue_drain_timeout(ic->ic_tq, &priv->scan_curchan);
 }
 
 /*
@@ -839,9 +889,11 @@ brcmf_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 static void
 brcmf_vap_delete(struct ieee80211vap *vap)
 {
+	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_vap *bvap = BRCMF_VAP(vap);
 
 	ieee80211_vap_detach(vap);
+	brcmf_drain_scan_tasks(ic);
 	free(bvap, M_80211_VAP);
 }
 
@@ -937,22 +989,7 @@ static void
 brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
 	struct ieee80211com *ic = ss->ss_ic;
-	/*
-	 * The swscan private state has: base (ieee80211_scan_state),
-	 * then u_int ss_iflags, unsigned long ss_chanmindwell,
-	 * unsigned long ss_scanend, u_int ss_duration,
-	 * struct task ss_scan_start, struct timeout_task ss_scan_curchan.
-	 * We need to enqueue ss_scan_curchan so the next iteration fires.
-	 */
-	struct {
-		struct ieee80211_scan_state base;
-		u_int iflags;
-		unsigned long chanmindwell;
-		unsigned long scanend;
-		u_int duration;
-		struct task scan_start;
-		struct timeout_task scan_curchan;
-	} *priv = (void *)ss;
+	struct brcmf_scan_priv *priv = (struct brcmf_scan_priv *)ss;
 
 	IEEE80211_LOCK(ic);
 	taskqueue_enqueue_timeout(ic->ic_tq, &priv->scan_curchan, maxdwell);
