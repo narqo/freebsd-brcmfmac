@@ -877,11 +877,25 @@ brcmf_scan_start(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
 	struct ieee80211vap *vap;
+	struct ieee80211_scan_state *ss;
 	const uint8_t *ssid = NULL;
 	int ssid_len = 0;
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap != NULL && vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
+	if (vap == NULL)
+		return;
+
+	/*
+	 * Prevent net80211 scan state machine from iterating channels.
+	 * We handle scanning entirely in firmware.
+	 */
+	ss = ic->ic_scan;
+	if (ss != NULL) {
+		ss->ss_next = 0;
+		ss->ss_last = 0;
+	}
+
+	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
 		/* Directed probe for the desired SSID (for hidden APs) */
 		ssid = vap->iv_des_ssid[0].ssid;
 		ssid_len = vap->iv_des_ssid[0].len;
@@ -920,6 +934,16 @@ static void
 brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
 	/* FullMAC: do nothing, firmware handles it */
+}
+
+/*
+ * Scan mindwell - called by net80211 when minimum dwell time elapsed.
+ * For FullMAC, we don't dwell on channels, firmware does it.
+ */
+static void
+brcmf_scan_mindwell(struct ieee80211_scan_state *ss)
+{
+	/* FullMAC: do nothing */
 }
 
 /*
@@ -1016,6 +1040,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	ic->ic_scan_start = brcmf_scan_start;
 	ic->ic_scan_end = brcmf_scan_end;
 	ic->ic_scan_curchan = brcmf_scan_curchan;
+	ic->ic_scan_mindwell = brcmf_scan_mindwell;
 	ic->ic_set_channel = brcmf_set_channel;
 	ic->ic_transmit = brcmf_transmit;
 	ic->ic_raw_xmit = brcmf_raw_xmit;

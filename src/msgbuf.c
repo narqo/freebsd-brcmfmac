@@ -638,6 +638,22 @@ next:
 void
 brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 {
+	struct brcmf_pcie_ringbuf *tx_ring, *rx_ring;
+	uint16_t tx_w, rx_w;
+	static int dbg_count = 0;
+
+	tx_ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
+	rx_ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
+
+	/* Read write pointers from TCM */
+	tx_w = brcmf_tcm_read16(sc, tx_ring->w_idx_addr);
+	rx_w = brcmf_tcm_read16(sc, rx_ring->w_idx_addr);
+
+	if ((tx_w != 0 || rx_w != 0) && dbg_count < 20) {
+		printf("brcmfmac: D2H TX_w=%d RX_w=%d\n", tx_w, rx_w);
+		dbg_count++;
+	}
+
 	brcmf_msgbuf_process_ctrl_complete(sc);
 	brcmf_msgbuf_process_tx_complete(sc);
 	brcmf_msgbuf_process_rx_complete(sc);
@@ -1025,6 +1041,10 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	    (uint32_t)(ring->dma_handle >> 32));
 
 	sc->flowring = ring;
+
+	printf("brcmfmac: flowring w_idx_addr=0x%x r_idx_addr=0x%x desc_addr=0x%x\n",
+	    ring->w_idx_addr, ring->r_idx_addr, desc_addr);
+	printf("brcmfmac: flowring dma_handle=0x%llx\n", (unsigned long long)ring->dma_handle);
 
 	/* Send flow ring create request */
 	ctrl = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];

@@ -376,6 +376,9 @@ brcmf_pcie_init_ringinfo(struct brcmf_softc *sc)
 
 	device_printf(sc->dev, "ringinfo: max_flowrings=%d max_sub=%d max_cmp=%d\n",
 	    sc->max_flowrings, sc->max_submissionrings, sc->max_completionrings);
+	device_printf(sc->dev, "ringinfo: ringmem=0x%x h2d_w=0x%x h2d_r=0x%x d2h_w=0x%x d2h_r=0x%x\n",
+	    sc->ringmem_addr, sc->h2d_w_idx_addr, sc->h2d_r_idx_addr,
+	    sc->d2h_w_idx_addr, sc->d2h_r_idx_addr);
 
 	return (0);
 }
@@ -834,6 +837,9 @@ brcmf_pcie_init_shared(struct brcmf_softc *sc, uint32_t sharedram_addr)
 
 	addr = sharedram_addr + BRCMF_SHARED_RING_INFO_ADDR_OFFSET;
 	shared->ring_info_addr = brcmf_tcm_read32(sc, addr);
+
+	device_printf(sc->dev, "shared: version=%d flags=0x%x max_rxbufpost=%d rx_dataoffset=%d\n",
+	    shared->version, shared->flags, shared->max_rxbufpost, shared->rx_dataoffset);
 
 	return (0);
 }
