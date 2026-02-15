@@ -2,92 +2,53 @@
 
 ## Current status
 
-**Milestone 8: Data path** - IN PROGRESS (TX/RX completions not received)
-
-## Build and test
-
-See docs/02-build-test.md for full workflow.
+**Milestone 8: Data path** - TX works, RX completions missing
 
 ## Milestones
 
 ### Milestone 1-7: DONE
 
-See git history for details on PCI probe, firmware download, DMA rings, msgbuf init,
-interface init, scan support, and association.
-
 ### Milestone 8: Data path (IN PROGRESS)
 
-**Completed:**
-- [x] Flow ring creation (MSGBUF_TYPE_FLOW_RING_CREATE)
-- [x] Flow ring ID calculation (flowid + BRCMF_NROF_H2D_COMMON_MSGRINGS)
-- [x] TCM ring descriptor setup for flow rings
-- [x] TX packet submission (MSGBUF_TYPE_TX_POST)
-- [x] TX buffer tracking with DMA mapping
-- [x] RX buffer posting structure and initial post
-- [x] Fixed scan state machine crashes (set ss_next=ss_last=0)
+**Working:**
+- [x] Flow ring creation and TX submission
+- [x] TX completions received (TX_STATUS status=0, firmware sends frames OTA)
+- [x] Flowring index slots correctly sized (4 bytes per slot)
+- [x] TX data format: DMA addr past ETH header, data_len excludes header
+- [x] Scan no longer crashes (overrode ic_scan_curchan with timeout scheduling)
 
 **Not working:**
-- [ ] TX completion handling - firmware not sending TX_STATUS messages
-- [ ] RX completion handling - firmware not sending RX_CMPLT messages
-- [ ] Packet delivery to net80211
+- [ ] RX completions - firmware consumed 255 RXPOST buffers but RX_w stays 0
+- [ ] kldunload crashes (scan_curchan_task accesses NULL ss_vap during teardown)
 
-**Current state:**
-- Flowring created successfully (status 0)
-- Ring addresses verified correct:
-  - ringmem=0x23b3ac, h2d_w=0x23b67c, h2d_r=0x23b724
-  - flowring desc at 0x23b3fc, w_idx at 0x23b680, r_idx at 0x23b728
-- TX function called, packets submitted to ring, doorbell rung
-- D2H interrupts fire (status 0x10000)
-- TX complete and RX complete ring write pointers stay at 0
-- IOCTL/event completions work fine
+**Key debug findings:**
+- RXPOST_r = 255: firmware consumed ALL posted RX buffers
+- RX_w = 0: firmware wrote zero RX completions
+- TX_STATUS status=0: packets successfully transmitted OTA
 
-**Suspected issues:**
-1. Firmware may require additional configuration before data path works
-2. May need "wlfc_mode" or similar iovar
-3. Flowring may need different parameters
-4. Data path might need explicit enable after association
+**Possible causes of RX silence:**
+1. Firmware writing RX complete write pointer to wrong address (DMA index mode?)
+2. RX complete ring address mismatch
+3. Firmware using buffers internally (beacons) without generating completions
+4. Missing iovar to enable data path RX
 
-### Future milestones
+### Scan crash fix
 
-- WPA/WPA2 support (key management, sup_wpa iovar)
-- Power management
-- Proper scan result reporting to net80211
+Root cause: `scan_curchan_task` accesses `ss->ss_vap` (at offset 0x6a) which
+is NULL. The default swscan `scan_curchan` does `IEEE80211_DPRINTF(ss->ss_vap, ...)`
+which dereferences the NULL vap pointer.
 
-## Known issues
-
-See docs/03-known-issues.md for tracked bugs.
-
-## Debug information
-
-### Ring addresses (from firmware shared memory)
-
-```
-ringmem_addr = 0x23b3ac
-h2d_w_idx_addr = 0x23b67c  (write indices for H2D rings)
-h2d_r_idx_addr = 0x23b724  (read indices for H2D rings)
-d2h_w_idx_addr = 0x23b7cc  (write indices for D2H rings)
-d2h_r_idx_addr = 0x23b7d8  (read indices for D2H rings)
-max_flowrings = 40
-max_submissionrings = 42
-max_completionrings = 3
-```
-
-### Flowring 0 addresses
-
-```
-desc_addr = 0x23b3fc  (ringmem + 5*16, after 5 common rings)
-w_idx_addr = 0x23b680 (h2d_w + 4, after 2 common H2D rings)
-r_idx_addr = 0x23b728 (h2d_r + 4, after 2 common H2D rings)
-ring_id = 2 (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid)
-```
+Fix: Override `ic_scan_curchan` with our own that skips the DPRINTF but still
+enqueues the timeout task to maintain proper scan timing. Uses knowledge of
+swscan's private `scan_state` layout to access `ss_scan_curchan` timeout_task.
 
 ## Code structure
 
 | Module | Purpose |
 |--------|---------|
-| pcie.c | PCIe bus layer: BAR mapping, DMA, ring allocation, interrupts, firmware load |
-| msgbuf.c | Message buffer protocol: ring operations, D2H processing, IOCTL handling, TX/RX |
-| core.c | Chip core management: enumeration, reset, firmware download state |
-| fwil.c | Firmware interface layer: IOVAR get/set operations |
-| cfg.c | net80211 interface: VAP management, scan, connect |
-| brcmfmac.zig | EROM parser (pure Zig, no TLS/kernel deps) |
+| pcie.c | PCIe bus: BAR mapping, DMA, ring alloc, interrupts, firmware load |
+| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX |
+| core.c | Chip core management: enumeration, reset, firmware download |
+| fwil.c | Firmware interface: IOVAR get/set |
+| cfg.c | net80211: VAP management, scan, connect |
+| brcmfmac.zig | EROM parser (pure Zig) |

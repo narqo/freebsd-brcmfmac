@@ -497,6 +497,9 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 
 		pktid = le32toh(tx->msg.request_id);
 
+		printf("brcmfmac: TX_STATUS pktid=0x%x status=%d msgtype=0x%x\n",
+		    pktid, le16toh(tx->tx_status), tx->msg.msgtype);
+
 		/* Validate and free TX buffer */
 		if (pktid >= 0x40000 && pktid < 0x40000 + BRCMF_TX_RING_SIZE) {
 			idx = pktid - 0x40000;
@@ -650,7 +653,12 @@ brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 	rx_w = brcmf_tcm_read16(sc, rx_ring->w_idx_addr);
 
 	if ((tx_w != 0 || rx_w != 0) && dbg_count < 20) {
-		printf("brcmfmac: D2H TX_w=%d RX_w=%d\n", tx_w, rx_w);
+		struct brcmf_pcie_ringbuf *rxpost;
+		uint16_t rxpost_r;
+		rxpost = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+		rxpost_r = brcmf_tcm_read16(sc, rxpost->r_idx_addr);
+		printf("brcmfmac: D2H TX_w=%d RX_w=%d RXPOST_r=%d rx_w_addr=0x%x\n",
+		    tx_w, rx_w, rxpost_r, rx_ring->w_idx_addr);
 		dbg_count++;
 	}
 
@@ -1024,11 +1032,13 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	ring->w_ptr = 0;
 	ring->r_ptr = 0;
 
-	/* Calculate index addresses in TCM (flowrings start after common H2D rings) */
+	/* Calculate index addresses in TCM (flowrings start after common H2D rings).
+	 * TCM index slots are 4 bytes each, though only lower 16 bits used.
+	 */
 	ring->w_idx_addr = sc->h2d_w_idx_addr +
-	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint16_t);
+	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint32_t);
 	ring->r_idx_addr = sc->h2d_r_idx_addr +
-	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint16_t);
+	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint32_t);
 
 	/* Write ring descriptor to TCM (flowrings start after common rings) */
 	desc_addr = sc->ringmem_addr +
@@ -1112,8 +1122,11 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 	bus_dma_segment_t seg;
 	int error, nsegs;
 	uint32_t pktid;
+	static int tx_count = 0;
 
 	if (sc->flowring == NULL) {
+		if (tx_count++ < 5)
+			printf("brcmfmac: TX called but no flowring\n");
 		m_freem(m);
 		return (ENXIO);
 	}
@@ -1192,14 +1205,28 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 		memcpy(tx->txhdr, mtod(m, void *), ETH_HLEN);
 
 	tx->flags = BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3;
+	tx->flags |= (0 & 0x07) << BRCMF_MSGBUF_PKT_FLAGS_PRIO_SHIFT;
 	tx->seg_cnt = 1;
-	tx->data_buf_addr.low_addr = htole32((uint32_t)seg.ds_addr);
-	tx->data_buf_addr.high_addr = htole32((uint32_t)(seg.ds_addr >> 32));
-	tx->data_len = htole16(m->m_pkthdr.len);
+	/* DMA address points to data after Ethernet header */
+	tx->data_buf_addr.low_addr = htole32((uint32_t)(seg.ds_addr + ETH_HLEN));
+	tx->data_buf_addr.high_addr = htole32((uint32_t)((seg.ds_addr + ETH_HLEN) >> 32));
+	/* data_len is packet length minus Ethernet header */
+	tx->data_len = htole16(m->m_pkthdr.len - ETH_HLEN);
 
 	sc->tx_pktid_next++;
 
+	printf("brcmfmac: TX submit pktid=0x%x len=%d data_len=%d dma=0x%llx w_ptr=%d\n",
+	    0x40000 + (pktid % BRCMF_TX_RING_SIZE),
+	    m->m_pkthdr.len, m->m_pkthdr.len - ETH_HLEN,
+	    (unsigned long long)(seg.ds_addr + ETH_HLEN), ring->w_ptr);
+
 	brcmf_msgbuf_ring_submit(sc, ring);
+
+	/* Check if firmware read from flowring */
+	{
+		uint16_t r_ptr = brcmf_tcm_read16(sc, ring->r_idx_addr);
+		printf("brcmfmac: flowring after submit: w=%d r=%d\n", ring->w_ptr, r_ptr);
+	}
 
 	return (0);
 }

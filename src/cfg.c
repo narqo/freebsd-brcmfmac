@@ -405,6 +405,9 @@ brcmf_link_task(void *arg, int pending)
 			/* Create flow ring for TX if not already done */
 			if (sc->flowring == NULL)
 				brcmf_msgbuf_init_flowring(sc, bssid);
+
+			/* Enable receiving all multicast + broadcast */
+			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
 		} else {
 			printf("brcmfmac: no BSS node available\n");
 		}
@@ -877,7 +880,6 @@ brcmf_scan_start(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
 	struct ieee80211vap *vap;
-	struct ieee80211_scan_state *ss;
 	const uint8_t *ssid = NULL;
 	int ssid_len = 0;
 
@@ -886,17 +888,15 @@ brcmf_scan_start(struct ieee80211com *ic)
 		return;
 
 	/*
-	 * Prevent net80211 scan state machine from iterating channels.
-	 * We handle scanning entirely in firmware.
+	 * Let swscan iterate channels normally (it populates ss_chans
+	 * from the channel list). We just kick off a parallel firmware
+	 * scan. Swscan's channel dwell prevents busy-loop restarts.
 	 */
-	ss = ic->ic_scan;
-	if (ss != NULL) {
-		ss->ss_next = 0;
-		ss->ss_last = 0;
-	}
+	if (sc->scan_active)
+		return;
+	sc->scan_active = 1;
 
 	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
-		/* Directed probe for the desired SSID (for hidden APs) */
 		ssid = vap->iv_des_ssid[0].ssid;
 		ssid_len = vap->iv_des_ssid[0].len;
 		printf("brcmfmac: directed scan for SSID \"%.*s\"\n",
@@ -914,7 +914,9 @@ brcmf_scan_start(struct ieee80211com *ic)
 static void
 brcmf_scan_end(struct ieee80211com *ic)
 {
+	struct brcmf_softc *sc = ic->ic_softc;
 
+	sc->scan_active = 0;
 }
 
 /*
@@ -923,27 +925,46 @@ brcmf_scan_end(struct ieee80211com *ic)
 static void
 brcmf_set_channel(struct ieee80211com *ic)
 {
-	/* FullMAC: firmware handles channel switching during scan */
+	/* FullMAC: firmware handles channel switching */
 }
 
 /*
- * Scan current channel - called by net80211 scan state machine.
- * For FullMAC, firmware handles active scanning. We just return immediately.
+ * Scan current channel. We must enqueue the scan_curchan timeout task
+ * to prevent swscan from completing instantly and busy-looping. The
+ * timeout_task sits right after the start task in the private scan_state.
  */
 static void
 brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
-	/* FullMAC: do nothing, firmware handles it */
+	struct ieee80211com *ic = ss->ss_ic;
+	/*
+	 * The swscan private state has: base (ieee80211_scan_state),
+	 * then u_int ss_iflags, unsigned long ss_chanmindwell,
+	 * unsigned long ss_scanend, u_int ss_duration,
+	 * struct task ss_scan_start, struct timeout_task ss_scan_curchan.
+	 * We need to enqueue ss_scan_curchan so the next iteration fires.
+	 */
+	struct {
+		struct ieee80211_scan_state base;
+		u_int iflags;
+		unsigned long chanmindwell;
+		unsigned long scanend;
+		u_int duration;
+		struct task scan_start;
+		struct timeout_task scan_curchan;
+	} *priv = (void *)ss;
+
+	IEEE80211_LOCK(ic);
+	taskqueue_enqueue_timeout(ic->ic_tq, &priv->scan_curchan, maxdwell);
+	IEEE80211_UNLOCK(ic);
 }
 
 /*
- * Scan mindwell - called by net80211 when minimum dwell time elapsed.
- * For FullMAC, we don't dwell on channels, firmware does it.
+ * Scan mindwell - no-op for FullMAC.
  */
 static void
 brcmf_scan_mindwell(struct ieee80211_scan_state *ss)
 {
-	/* FullMAC: do nothing */
 }
 
 /*
