@@ -137,6 +137,19 @@ cat /var/crash/info.0
 When testing code that may crash:
 
 1. Use short SSH timeouts (`-o ConnectTimeout=10`)
-2. Run commands that may trigger crashes separately from status checks
-3. After a potential crash, wait ~30 seconds for VM to reboot and savecore to complete
-4. Check VM state from build host: `sudo vm list vm0`
+2. **Always use `timeout` parameter (30s) on bash tool calls** - prevents agent from hanging on VM crash
+3. Run commands that may trigger crashes separately from status checks
+4. After a potential crash, wait ~15 seconds for VM to reboot and savecore to complete
+5. Check VM state from build host: `sudo vm list vm0`
+
+Example safe test pattern:
+```sh
+# Step 1: Load module (separate command)
+ssh -o ConnectTimeout=30 ... 'kldload ./if_brcmfmac.ko && echo LOADED'
+
+# Step 2: Configure (separate command)  
+ssh -o ConnectTimeout=30 ... 'ifconfig wlan0 up && echo UP'
+
+# Step 3: Check results (separate command)
+ssh -o ConnectTimeout=30 ... 'ifconfig wlan0'
+```

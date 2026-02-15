@@ -5,6 +5,15 @@
 #include <sys/bus.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/mbuf.h>
+#include <sys/socket.h>
+
+#include <net/if.h>
+#include <net/if_var.h>
+#include <net/if_media.h>
+#include <net/ethernet.h>
+
+#include <net80211/ieee80211_var.h>
 
 #include "brcmfmac.h"
 
@@ -30,7 +39,10 @@
 #define MSGBUF_TYPE_IOCTL_CMPLT		 0x0c
 #define MSGBUF_TYPE_EVENT_BUF_POST	 0x0d
 #define MSGBUF_TYPE_WL_EVENT		 0x0e
+#define MSGBUF_TYPE_TX_POST		 0x0f
+#define MSGBUF_TYPE_TX_STATUS		 0x10
 #define MSGBUF_TYPE_RXBUF_POST		 0x11
+#define MSGBUF_TYPE_RX_CMPLT		 0x12
 
 /* Event codes (for brcmf_link_event) */
 #define BRCMF_E_SET_SSID	0
@@ -115,6 +127,71 @@ struct msgbuf_ring_status {
 	uint16_t write_idx;
 	uint16_t rsvd0[5];
 } __packed;
+
+struct msgbuf_rx_complete {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t metadata_len;
+	uint16_t data_len;
+	uint16_t data_offset;
+	uint16_t flags;
+	uint32_t rx_status_0;
+	uint32_t rx_status_1;
+	uint32_t rsvd0;
+} __packed;
+
+struct msgbuf_tx_status {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint16_t metadata_len;
+	uint16_t tx_status;
+} __packed;
+
+#define BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3	0x01
+#define BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_11	0x02
+#define BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK	0x07
+#define BRCMF_MSGBUF_PKT_FLAGS_PRIO_SHIFT	5
+
+#define ETH_HLEN	14
+
+struct msgbuf_tx_msghdr {
+	struct msgbuf_common_hdr msg;
+	uint8_t txhdr[ETH_HLEN];
+	uint8_t flags;
+	uint8_t seg_cnt;
+	struct msgbuf_buf_addr metadata_buf_addr;
+	struct msgbuf_buf_addr data_buf_addr;
+	uint16_t metadata_buf_len;
+	uint16_t data_len;
+	uint32_t rsvd0;
+} __packed;
+
+struct msgbuf_flowring_create {
+	struct msgbuf_common_hdr msg;
+	uint8_t da[6];
+	uint8_t sa[6];
+	uint8_t tid;
+	uint8_t if_flags;
+	uint16_t flow_ring_id;
+	uint8_t tc;
+	uint8_t priority;
+	uint16_t int_vector;
+	uint16_t max_items;
+	uint16_t len_item;
+	struct msgbuf_buf_addr flow_ring_addr;
+} __packed;
+
+struct msgbuf_flowring_create_cmplt {
+	struct msgbuf_common_hdr msg;
+	struct msgbuf_completion_hdr compl_hdr;
+	uint32_t rsvd0;
+} __packed;
+
+#define MSGBUF_TYPE_FLOW_RING_CREATE		0x03
+#define MSGBUF_TYPE_FLOW_RING_CREATE_CMPLT	0x04
+
+#define BRCMF_FLOWRING_SIZE	512
+#define BRCMF_FLOWRING_ITEM_SIZE sizeof(struct msgbuf_tx_msghdr)
 
 /* Event packet structures */
 struct brcmf_event_msg_be {
@@ -362,6 +439,13 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 			/* Firmware status messages - just consume them */
 			break;
 
+		case MSGBUF_TYPE_FLOW_RING_CREATE_CMPLT:
+			sc->flowring_create_status =
+			    le16toh(((struct msgbuf_flowring_create_cmplt *)msg)->compl_hdr.status);
+			sc->flowring_create_done = 1;
+			wakeup(&sc->flowring_create_done);
+			break;
+
 		default:
 			printf("brcmfmac: ctrl complete unknown msgtype 0x%x\n",
 			    msg->msgtype);
@@ -383,7 +467,10 @@ static void
 brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 {
 	struct brcmf_pcie_ringbuf *ring;
-	uint16_t avail;
+	struct msgbuf_tx_status *tx;
+	uint32_t pktid;
+	uint16_t avail, i;
+	int idx;
 
 	ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
 
@@ -397,9 +484,66 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 	if (avail == 0)
 		return;
 
-	/* TODO: process TX completions, free TX buffers */
-	ring->r_ptr = ring->w_ptr;
+	for (i = 0; i < avail; i++) {
+		tx = (struct msgbuf_tx_status *)((char *)ring->buf +
+		    ring->r_ptr * ring->item_len);
+
+		if (tx->msg.msgtype != MSGBUF_TYPE_TX_STATUS) {
+			ring->r_ptr++;
+			if (ring->r_ptr >= ring->depth)
+				ring->r_ptr = 0;
+			continue;
+		}
+
+		pktid = le32toh(tx->msg.request_id);
+
+		/* Validate and free TX buffer */
+		if (pktid >= 0x40000 && pktid < 0x40000 + BRCMF_TX_RING_SIZE) {
+			idx = pktid - 0x40000;
+			if (sc->txbuf[idx].m != NULL) {
+				bus_dmamap_sync(sc->txbuf[idx].dma_tag,
+				    sc->txbuf[idx].dma_map,
+				    BUS_DMASYNC_POSTWRITE);
+				bus_dmamap_unload(sc->txbuf[idx].dma_tag,
+				    sc->txbuf[idx].dma_map);
+				m_freem(sc->txbuf[idx].m);
+				sc->txbuf[idx].m = NULL;
+			}
+		}
+
+		ring->r_ptr++;
+		if (ring->r_ptr >= ring->depth)
+			ring->r_ptr = 0;
+	}
+
 	brcmf_ring_write_rptr(sc, ring);
+}
+
+static int brcmf_msgbuf_post_rxbuf(struct brcmf_softc *, struct brcmf_ctrlbuf *);
+
+/*
+ * Deliver received Ethernet frame to net80211.
+ */
+static void
+brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
+{
+	struct ieee80211com *ic = &sc->ic;
+	struct ieee80211vap *vap;
+	struct mbuf *m;
+
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap == NULL)
+		return;
+
+	m = m_get2(len, M_NOWAIT, MT_DATA, M_PKTHDR);
+	if (m == NULL)
+		return;
+
+	m_copyback(m, 0, len, data);
+	m->m_pkthdr.len = m->m_len = len;
+
+	/* Deliver to net80211 as Ethernet frame */
+	ieee80211_vap_deliver_data(vap, m);
 }
 
 /*
@@ -408,8 +552,12 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 static void
 brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 {
-	struct brcmf_pcie_ringbuf *ring;
-	uint16_t avail;
+	struct brcmf_pcie_ringbuf *ring, *rxpost_ring;
+	struct msgbuf_rx_complete *rx;
+	struct brcmf_ctrlbuf *cb;
+	uint32_t pktid;
+	uint16_t avail, i, data_len, data_offset, flags;
+	int idx, repost_count = 0;
 
 	ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
 
@@ -423,9 +571,65 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 	if (avail == 0)
 		return;
 
-	/* TODO: process RX completions, deliver packets */
-	ring->r_ptr = ring->w_ptr;
+	for (i = 0; i < avail; i++) {
+		rx = (struct msgbuf_rx_complete *)((char *)ring->buf +
+		    ring->r_ptr * ring->item_len);
+
+		if (rx->msg.msgtype != MSGBUF_TYPE_RX_CMPLT) {
+			ring->r_ptr++;
+			if (ring->r_ptr >= ring->depth)
+				ring->r_ptr = 0;
+			continue;
+		}
+
+		pktid = le32toh(rx->msg.request_id);
+		data_len = le16toh(rx->data_len);
+		data_offset = le16toh(rx->data_offset);
+		flags = le16toh(rx->flags);
+
+		/* Validate pktid */
+		if (pktid < 0x30000 || pktid >= 0x30000 + sc->rxbufpost) {
+			printf("brcmfmac: RX with invalid pktid 0x%x\n", pktid);
+			goto next;
+		}
+
+		idx = pktid - 0x30000;
+		cb = &sc->rxbuf[idx];
+
+		if (cb->buf == NULL) {
+			printf("brcmfmac: RX buffer %d is NULL\n", idx);
+			goto next;
+		}
+
+		/* Sync DMA before reading */
+		bus_dmamap_sync(cb->dma_tag, cb->dma_map, BUS_DMASYNC_POSTREAD);
+
+		/* Only deliver 802.3 frames */
+		if ((flags & BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK) ==
+		    BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3) {
+			if (data_len > 0 && data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE) {
+				brcmf_rx_deliver(sc,
+				    (char *)cb->buf + data_offset, data_len);
+			}
+		}
+
+		/* Repost the buffer */
+		brcmf_msgbuf_post_rxbuf(sc, cb);
+		repost_count++;
+
+next:
+		ring->r_ptr++;
+		if (ring->r_ptr >= ring->depth)
+			ring->r_ptr = 0;
+	}
+
 	brcmf_ring_write_rptr(sc, ring);
+
+	/* Submit reposted buffers */
+	if (repost_count > 0) {
+		rxpost_ring = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+		brcmf_msgbuf_ring_submit(sc, rxpost_ring);
+	}
 }
 
 /*
@@ -760,6 +964,224 @@ brcmf_pcie_free_ioctlbuf(struct brcmf_softc *sc)
 	    sc->ioctlbuf);
 	sc->ioctlbuf_dma_tag = NULL;
 	sc->ioctlbuf = NULL;
+}
+
+/* Ring descriptor offsets in TCM */
+#define BRCMF_RING_MEM_BASE_ADDR_OFFSET	8
+#define BRCMF_RING_MAX_ITEM_OFFSET	4
+#define BRCMF_RING_LEN_ITEMS_OFFSET	6
+#define BRCMF_RING_MEM_SZ		16
+
+/*
+ * Allocate and create a flow ring for TX.
+ */
+int
+brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
+{
+	struct brcmf_pcie_ringbuf *ring, *ctrl;
+	struct msgbuf_flowring_create *create;
+	uint16_t flowid;
+	uint32_t desc_addr;
+	int error, timeout;
+
+	printf("brcmfmac: creating flowring for %02x:%02x:%02x:%02x:%02x:%02x\n",
+	    da[0], da[1], da[2], da[3], da[4], da[5]);
+
+	/* Allocate flow ring structure */
+	ring = malloc(sizeof(*ring), M_BRCMFMAC, M_NOWAIT | M_ZERO);
+	if (ring == NULL)
+		return (ENOMEM);
+
+	/* Allocate DMA buffer for the ring */
+	error = brcmf_alloc_dma_buf(sc->dev,
+	    BRCMF_FLOWRING_SIZE * BRCMF_FLOWRING_ITEM_SIZE,
+	    &ring->dma_tag, &ring->dma_map, &ring->buf, &ring->dma_handle);
+	if (error != 0) {
+		free(ring, M_BRCMFMAC);
+		return (error);
+	}
+
+	flowid = 0;  /* First flow ring (index into flowring array) */
+	ring->id = flowid;
+	ring->depth = BRCMF_FLOWRING_SIZE;
+	ring->item_len = BRCMF_FLOWRING_ITEM_SIZE;
+	ring->w_ptr = 0;
+	ring->r_ptr = 0;
+
+	/* Calculate index addresses in TCM (flowrings start after common H2D rings) */
+	ring->w_idx_addr = sc->h2d_w_idx_addr +
+	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint16_t);
+	ring->r_idx_addr = sc->h2d_r_idx_addr +
+	    (BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid) * sizeof(uint16_t);
+
+	/* Write ring descriptor to TCM (flowrings start after common rings) */
+	desc_addr = sc->ringmem_addr +
+	    (BRCMF_NROF_COMMON_MSGRINGS + flowid) * BRCMF_RING_MEM_SZ;
+	brcmf_tcm_write16(sc, desc_addr + BRCMF_RING_MAX_ITEM_OFFSET, ring->depth);
+	brcmf_tcm_write16(sc, desc_addr + BRCMF_RING_LEN_ITEMS_OFFSET, ring->item_len);
+	brcmf_tcm_write32(sc, desc_addr + BRCMF_RING_MEM_BASE_ADDR_OFFSET,
+	    (uint32_t)(ring->dma_handle & 0xffffffff));
+	brcmf_tcm_write32(sc, desc_addr + BRCMF_RING_MEM_BASE_ADDR_OFFSET + 4,
+	    (uint32_t)(ring->dma_handle >> 32));
+
+	sc->flowring = ring;
+
+	/* Send flow ring create request */
+	ctrl = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+	create = brcmf_msgbuf_ring_reserve(sc, ctrl);
+	if (create == NULL) {
+		device_printf(sc->dev, "no space for flowring create\n");
+		return (ENOBUFS);
+	}
+
+	memset(create, 0, sizeof(*create));
+	create->msg.msgtype = MSGBUF_TYPE_FLOW_RING_CREATE;
+	create->msg.ifidx = 0;
+	create->msg.request_id = htole32(flowid);
+	memcpy(create->da, da, 6);
+	memcpy(create->sa, sc->macaddr, 6);
+	create->tid = 0;
+	/* Flow ring ID is flowid + NROF_H2D_COMMON_MSGRINGS */
+	create->flow_ring_id = htole16(BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid);
+	create->max_items = htole16(BRCMF_FLOWRING_SIZE);
+	create->len_item = htole16(BRCMF_FLOWRING_ITEM_SIZE);
+	create->flow_ring_addr.low_addr = htole32((uint32_t)ring->dma_handle);
+	create->flow_ring_addr.high_addr = htole32((uint32_t)(ring->dma_handle >> 32));
+
+	printf("brcmfmac: flowring create: flowid=%d ring_id=%d depth=%d item_len=%d\n",
+	    flowid, BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid, BRCMF_FLOWRING_SIZE,
+	    (int)BRCMF_FLOWRING_ITEM_SIZE);
+
+	sc->flowring_create_done = 0;
+	brcmf_msgbuf_ring_submit(sc, ctrl);
+
+	/* Wait for flow ring create completion */
+	timeout = 1000;
+	while (!sc->flowring_create_done && timeout > 0) {
+		brcmf_msgbuf_process_d2h(sc);
+		if (sc->flowring_create_done)
+			break;
+		DELAY(1000);
+		timeout--;
+	}
+
+	if (!sc->flowring_create_done) {
+		device_printf(sc->dev, "flowring create timeout\n");
+		return (ETIMEDOUT);
+	}
+
+	if (sc->flowring_create_status != 0) {
+		device_printf(sc->dev, "flowring create failed: %d\n",
+		    sc->flowring_create_status);
+		return (EIO);
+	}
+
+	device_printf(sc->dev, "flowring %d created\n", flowid);
+	return (0);
+}
+
+/*
+ * TX a packet via flow ring.
+ */
+int
+brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	struct msgbuf_tx_msghdr *tx;
+	struct brcmf_txbuf *txb;
+	bus_dma_segment_t seg;
+	int error, nsegs;
+	uint32_t pktid;
+
+	if (sc->flowring == NULL) {
+		m_freem(m);
+		return (ENXIO);
+	}
+
+	ring = sc->flowring;
+
+	/* Find a free TX buffer slot */
+	pktid = sc->tx_pktid_next;
+	if (sc->txbuf[pktid % BRCMF_TX_RING_SIZE].m != NULL) {
+		/* Ring full */
+		m_freem(m);
+		return (ENOBUFS);
+	}
+
+	txb = &sc->txbuf[pktid % BRCMF_TX_RING_SIZE];
+
+	/* Create DMA tag/map if not yet done */
+	if (txb->dma_tag == NULL) {
+		error = bus_dma_tag_create(bus_get_dma_tag(sc->dev),
+		    1, 0,
+		    BUS_SPACE_MAXADDR,
+		    BUS_SPACE_MAXADDR,
+		    NULL, NULL,
+		    BRCMF_MSGBUF_MAX_PKT_SIZE,
+		    1,
+		    BRCMF_MSGBUF_MAX_PKT_SIZE,
+		    0, NULL, NULL,
+		    &txb->dma_tag);
+		if (error != 0) {
+			m_freem(m);
+			return (error);
+		}
+		error = bus_dmamap_create(txb->dma_tag, 0, &txb->dma_map);
+		if (error != 0) {
+			bus_dma_tag_destroy(txb->dma_tag);
+			txb->dma_tag = NULL;
+			m_freem(m);
+			return (error);
+		}
+	}
+
+	/* Make sure mbuf is contiguous */
+	m = m_defrag(m, M_NOWAIT);
+	if (m == NULL)
+		return (ENOMEM);
+
+	/* Map mbuf for DMA */
+	error = bus_dmamap_load_mbuf_sg(txb->dma_tag, txb->dma_map, m,
+	    &seg, &nsegs, BUS_DMA_NOWAIT);
+	if (error != 0 || nsegs != 1) {
+		m_freem(m);
+		return (error != 0 ? error : EFBIG);
+	}
+
+	txb->m = m;
+	txb->paddr = seg.ds_addr;
+
+	bus_dmamap_sync(txb->dma_tag, txb->dma_map, BUS_DMASYNC_PREWRITE);
+
+	/* Reserve space in flow ring */
+	tx = brcmf_msgbuf_ring_reserve(sc, ring);
+	if (tx == NULL) {
+		bus_dmamap_unload(txb->dma_tag, txb->dma_map);
+		txb->m = NULL;
+		m_freem(m);
+		return (ENOBUFS);
+	}
+
+	memset(tx, 0, sizeof(*tx));
+	tx->msg.msgtype = MSGBUF_TYPE_TX_POST;
+	tx->msg.ifidx = 0;
+	tx->msg.request_id = htole32(0x40000 + (pktid % BRCMF_TX_RING_SIZE));
+
+	/* Copy Ethernet header */
+	if (m->m_len >= ETH_HLEN)
+		memcpy(tx->txhdr, mtod(m, void *), ETH_HLEN);
+
+	tx->flags = BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3;
+	tx->seg_cnt = 1;
+	tx->data_buf_addr.low_addr = htole32((uint32_t)seg.ds_addr);
+	tx->data_buf_addr.high_addr = htole32((uint32_t)(seg.ds_addr >> 32));
+	tx->data_len = htole16(m->m_pkthdr.len);
+
+	sc->tx_pktid_next++;
+
+	brcmf_msgbuf_ring_submit(sc, ring);
+
+	return (0);
 }
 
 /*

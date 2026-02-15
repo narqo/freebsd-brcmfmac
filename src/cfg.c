@@ -354,12 +354,8 @@ brcmf_link_task(void *arg, int pending)
 		return;
 
 	if (sc->link_up) {
-		/* Get BSSID from firmware */
-		error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_BSSID, bssid, 6);
-		if (error != 0) {
-			printf("brcmfmac: failed to get BSSID: %d\n", error);
-			return;
-		}
+		/* Use saved BSSID from join (GET_BSSID returns garbage) */
+		memcpy(bssid, sc->join_bssid, 6);
 
 		/* Get channel from firmware */
 		error = brcmf_fil_iovar_int_get(sc, "chanspec", &channum);
@@ -405,6 +401,10 @@ brcmf_link_task(void *arg, int pending)
 			/* Transition to RUN */
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
+
+			/* Create flow ring for TX if not already done */
+			if (sc->flowring == NULL)
+				brcmf_msgbuf_init_flowring(sc, bssid);
 		} else {
 			printf("brcmfmac: no BSS node available\n");
 		}
@@ -462,6 +462,9 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	    sr->bssid[0], sr->bssid[1], sr->bssid[2],
 	    sr->bssid[3], sr->bssid[4], sr->bssid[5],
 	    sr->ssid_len, sr->ssid);
+
+	/* Save BSSID for later use (flowring creation) */
+	memcpy(sc->join_bssid, sr->bssid, 6);
 
 	/* Build join parameters */
 	memset(&join, 0, sizeof(join));
@@ -910,13 +913,24 @@ brcmf_set_channel(struct ieee80211com *ic)
 }
 
 /*
+ * Scan current channel - called by net80211 scan state machine.
+ * For FullMAC, firmware handles active scanning. We just return immediately.
+ */
+static void
+brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
+{
+	/* FullMAC: do nothing, firmware handles it */
+}
+
+/*
  * Transmit a frame.
  */
 static int
 brcmf_transmit(struct ieee80211com *ic, struct mbuf *m)
 {
-	m_freem(m);
-	return (0);
+	struct brcmf_softc *sc = ic->ic_softc;
+
+	return brcmf_msgbuf_tx(sc, m);
 }
 
 /*
@@ -979,11 +993,9 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	ic->ic_caps =
 	    IEEE80211_C_STA |
-	    IEEE80211_C_MONITOR |
 	    IEEE80211_C_WPA |
 	    IEEE80211_C_SHPREAMBLE |
 	    IEEE80211_C_SHSLOT |
-	    IEEE80211_C_BGSCAN |
 	    IEEE80211_C_WME;
 
 	ic->ic_cryptocaps =
@@ -1003,6 +1015,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	ic->ic_parent = brcmf_parent;
 	ic->ic_scan_start = brcmf_scan_start;
 	ic->ic_scan_end = brcmf_scan_end;
+	ic->ic_scan_curchan = brcmf_scan_curchan;
 	ic->ic_set_channel = brcmf_set_channel;
 	ic->ic_transmit = brcmf_transmit;
 	ic->ic_raw_xmit = brcmf_raw_xmit;

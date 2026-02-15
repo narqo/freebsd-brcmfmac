@@ -92,6 +92,16 @@ struct brcmf_ctrlbuf {
 	uint32_t pktid;
 };
 
+/* TX buffer tracking */
+#define BRCMF_TX_RING_SIZE	256
+
+struct brcmf_txbuf {
+	struct mbuf *m;
+	bus_dmamap_t dma_map;
+	bus_dma_tag_t dma_tag;
+	bus_addr_t paddr;
+};
+
 /* Per-device softc */
 struct brcmf_softc {
 	device_t dev;
@@ -167,6 +177,13 @@ struct brcmf_softc {
 	struct brcmf_ctrlbuf *rxbuf;
 	uint32_t rxbufpost;
 
+	/* TX buffers */
+	struct brcmf_txbuf txbuf[BRCMF_TX_RING_SIZE];
+	uint32_t tx_pktid_next;
+	struct brcmf_pcie_ringbuf *flowring;
+	int flowring_create_done;
+	int flowring_create_status;
+
 	/* Request ID counter */
 	uint16_t reqid;
 
@@ -190,6 +207,7 @@ struct brcmf_softc {
 	/* Link state */
 	int link_up;
 	struct task link_task;
+	uint8_t join_bssid[6];
 
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
@@ -249,6 +267,8 @@ int brcmf_msgbuf_init(struct brcmf_softc *sc);
 void brcmf_msgbuf_cleanup(struct brcmf_softc *sc);
 int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len);
+int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
+int brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da);
 
 /* fwil.c - Firmware interface layer */
 int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,

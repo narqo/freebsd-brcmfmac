@@ -374,6 +374,9 @@ brcmf_pcie_init_ringinfo(struct brcmf_softc *sc)
 		sc->max_completionrings = BRCMF_NROF_D2H_COMMON_MSGRINGS;
 	}
 
+	device_printf(sc->dev, "ringinfo: max_flowrings=%d max_sub=%d max_cmp=%d\n",
+	    sc->max_flowrings, sc->max_submissionrings, sc->max_completionrings);
+
 	return (0);
 }
 

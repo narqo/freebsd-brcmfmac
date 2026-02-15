@@ -2,7 +2,7 @@
 
 ## Current status
 
-**Milestone 7: Association** - DONE (control plane)
+**Milestone 8: Data path** - IN PROGRESS (TX works, RX not working)
 
 ## Build and test
 
@@ -74,6 +74,7 @@ Tested: MAC address f4:0f:24:2a:72:e3, wlan0 created and brought up.
 - [x] Directed scan for hidden SSIDs
 - [x] Poll-based IOCTL completion (fixes timeouts)
 - [x] Handle GEN_STATUS and RING_STATUS message types
+- [x] Override ic_scan_curchan to prevent net80211 crashes
 
 Tested: Finding BSSes with correct channels and RSSI values.
 Note: ieee80211_add_scan disabled (crashes); results cached internally.
@@ -90,15 +91,28 @@ Note: ieee80211_add_scan disabled (crashes); results cached internally.
 - [x] Handle disconnection (transition to SCAN state)
 
 Tested: Successfully associated to hidden AP "TestAP" (open network).
-Interface shows `status: associated`. DHCP fails (no data path yet).
+Interface shows `status: associated`.
 
-### Milestone 8: Data path (NOT STARTED)
+### Milestone 8: Data path (IN PROGRESS)
 
-- [ ] TX flowring creation
-- [ ] TX packet submission (MSGBUF_TYPE_TX_POST)
-- [ ] TX completion handling
-- [ ] RX completion handling (MSGBUF_TYPE_RX_CMPLT)
+- [x] Flow ring creation (MSGBUF_TYPE_FLOW_RING_CREATE)
+- [x] Flow ring ID calculation (flowid + BRCMF_NROF_H2D_COMMON_MSGRINGS)
+- [x] TCM ring descriptor setup for flow rings
+- [x] TX packet submission (MSGBUF_TYPE_TX_POST)
+- [x] TX buffer tracking with DMA mapping
+- [ ] TX completion handling - may need verification
+- [ ] RX completion handling - NOT WORKING
 - [ ] Packet delivery to net80211
+
+**Current state:**
+- Flowring created successfully (status 0)
+- TX function called, packets submitted to ring
+- No RX completions observed - firmware not sending received packets
+
+**Suspected issues:**
+1. RX buffers may not be associated with interface/flowring
+2. Need to enable data path in firmware via iovar
+3. Ring index addresses may be incorrect
 
 ### Future milestones
 
@@ -115,7 +129,7 @@ See docs/03-known-issues.md for tracked bugs.
 | Module | Purpose |
 |--------|---------|
 | pcie.c | PCIe bus layer: BAR mapping, DMA, ring allocation, interrupts, firmware load |
-| msgbuf.c | Message buffer protocol: ring operations, D2H processing, IOCTL handling |
+| msgbuf.c | Message buffer protocol: ring operations, D2H processing, IOCTL handling, TX/RX |
 | core.c | Chip core management: enumeration, reset, firmware download state |
 | fwil.c | Firmware interface layer: IOVAR get/set operations |
 | cfg.c | net80211 interface: VAP management, scan, connect |
