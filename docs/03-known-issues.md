@@ -2,26 +2,28 @@
 
 ## Data path
 
-### RX completions missing
+### High latency
 
 **Status:** Open
-**Severity:** Critical (no data connectivity)
+**Severity:** Low (functional but suboptimal)
 
-Firmware consumes all 255 RXPOST buffers (RXPOST_r=255) but never writes
-RX completions (RX_w=0). TX works (TX_STATUS status=0, OTA delivery confirmed).
-
-**Suspected causes:**
-1. RX complete ring w_idx address mismatch
-2. Firmware may use DMA index buffer instead of TCM for write pointers
-3. Missing iovar to enable RX data delivery
-4. RX buffer DMA format issue
-
-**Next steps:**
-1. Dump TCM around expected RX_w address to find where firmware writes
-2. Check shared flags 0x20000 meaning
-3. Try additional iovars (wsec, arpoe, etc.)
+Ping latency averages 35-40ms with spikes to 80-115ms. Likely causes:
+- D2H ring processing in interrupt filter context
+- Power management (SET_PM=0 may not be fully effective)
+- Interrupt coalescing in firmware
 
 ## Module lifecycle
+
+### Memory leak on unload
+
+**Status:** Open
+**Severity:** Low
+
+```
+Warning: memory type brcmfmac leaked memory on destroy (1 allocations, 64 bytes leaked).
+```
+
+One 64-byte allocation not freed. Likely a ring structure or control buffer.
 
 ### Rapid kldload/kldunload cycle crashes
 
@@ -34,39 +36,31 @@ Normal load/unload with proper teardown works reliably.
 Likely cause: firmware not fully reset between cycles, or DMA memory
 accessed by firmware after unload completes.
 
-### scan_curchan_task crash during teardown
-
-**Status:** Fixed
-**Severity:** Was High (prevented kldunload)
-
-Root cause: swscan's `scan_curchan_task` accesses `ss->ss_vap->iv_debug`
-(offset 0x6a) via `IEEE80211_DPRINTF` before checking abort flags. If
-`ss_vap` is NULL (never set by `ieee80211_swscan_start_scan_locked`),
-the kernel faults at address 0x6a.
-
-Fix (two parts):
-1. Pre-set `ic->ic_scan->ss_vap = vap` in `brcmf_vap_create` so it's
-   never NULL when scan tasks fire
-2. Drain swscan tasks (`scan_start`, `scan_curchan`) in `brcmf_vap_delete`
-   after `ieee80211_vap_detach` but before freeing VAP memory. Uses
-   knowledge of swscan private struct layout (`struct brcmf_scan_priv`).
-
 ## Association
 
 ### BSSID incorrectly retrieved
 
 **Status:** Worked around
 
-`BRCMF_C_GET_BSSID` returns garbage. Workaround: save BSSID during join.
+`BRCMF_C_GET_BSSID` returns garbage. Workaround: save BSSID at join time
+in `sc->join_bssid`.
 
 ## Scan support
+
+### ifconfig scan not supported
+
+**Status:** Open
+**Severity:** Low (association works)
+
+`ifconfig wlan0 list scan` doesn't work. Scan results are cached internally
+and used for direct join, but not fed into net80211's scan cache.
 
 ### ieee80211_add_scan crashes
 
 **Status:** Open
 
-Calling `ieee80211_add_scan()` crashes. Scan results cached internally;
-direct join works.
+Calling `ieee80211_add_scan()` crashes. Avoided by using internal scan
+result cache.
 
 ## BSS info structure
 
@@ -76,3 +70,36 @@ direct join works.
 
 `brcmf_bss_info_le` doesn't match firmware layout. Using raw byte offsets
 for chanspec (offset 72) and RSSI (offset 78).
+
+## Security
+
+### WPA/WPA2 not implemented
+
+**Status:** Open
+**Severity:** High (blocks real-world use)
+
+Only open authentication works. WPA/WPA2 requires setting wsec, wpa_auth,
+and PMK via firmware ioctls.
+
+---
+
+## Resolved issues
+
+### RX completions missing (FIXED)
+
+Was caused by net80211's `ieee80211_vap_transmit` encapsulating frames
+into 802.11 before our `ic_transmit` callback. FullMAC firmware expects
+raw ethernet. Fixed by overriding VAP's `if_transmit` to bypass net80211
+encapsulation.
+
+### scan_curchan_task crash during teardown (FIXED)
+
+Root cause: swscan's `scan_curchan_task` accesses `ss->ss_vap->iv_debug`
+before checking abort flags. Fixed by pre-setting `ss_vap` in vap_create
+and draining swscan tasks in vap_delete.
+
+### Re-join storm disrupting RX (FIXED)
+
+`brcmf_scan_complete_task` issued SET_SSID on every scan finding target
+BSS, even when already associated. Fixed with `if (sc->link_up) return`
+guard.
