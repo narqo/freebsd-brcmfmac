@@ -13,7 +13,9 @@ SRCS = \
 	src/fwil.c \
 	src/main.c \
 	src/msgbuf.c \
-	src/pcie.c
+	src/pcie.c \
+	src/scan.c \
+	src/security.c
 
 SRCS+= device_if.h bus_if.h pci_if.h
 

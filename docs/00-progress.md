@@ -42,13 +42,22 @@
 - [x] Keep error-path logging only
 - [x] Disable firmware console reader (keep code for future debug)
 
-### Milestone 10: WPA2 support (TODO)
+### Milestone 10: WPA2 support (IN PROGRESS)
 
-- [ ] Set wsec (wireless security mode)
-- [ ] Set wpa_auth (WPA authentication type)
-- [ ] Set pmk or sae_password via iovar
+- [x] Set wsec (wireless security mode) - detected from capability field
+- [x] Set wpa_auth (WPA authentication type) - WPA2_AUTH_PSK
+- [x] Add iv_key_set/iv_key_delete callbacks for key installation
+- [x] Add wsec_key IOVAR support
+- [x] Fix scan result BSSID matching (handle zero BSSID as "any")
+- [x] Fix IE offset parsing (ie_offset=0 means IEs follow fixed struct)
+- [ ] Set pmk or sae_password via iovar (needed for WPA2)
 - [ ] Test with wpa_supplicant
 - [ ] Handle 4-way handshake completion event
+
+**Current status**: Security mode (wsec/wpa_auth) is correctly set before
+association. The driver detects WPA2 from the Privacy bit in capability field.
+Key installation callbacks are in place. Remaining work is integrating with
+wpa_supplicant for the 4-way handshake.
 
 ### Milestone 11: Latency optimization (TODO)
 
@@ -75,8 +84,11 @@
 |--------|---------|-------|
 | pcie.c | PCIe bus: BAR mapping, DMA, ring alloc, interrupts, firmware load | 1161 |
 | msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX | 1469 |
-| cfg.c | net80211: VAP management, scan, connect, TX override | 1196 |
+| cfg.c | net80211: VAP lifecycle, attach/detach, link events, transmit | 566 |
+| cfg.h | Shared definitions for cfg/scan/security modules | 213 |
+| scan.c | Scan: escan requests, result processing, chanspec conversion | 327 |
+| security.c | Security: wsec/wpa_auth, key installation | 119 |
 | core.c | Chip core management: enumeration, reset, firmware download | 307 |
 | fwil.c | Firmware interface: IOVAR get/set | 136 |
 | brcmfmac.zig | EROM parser (pure Zig) | 222 |
-| **Total** | | ~4900 |
+| **Total** | | ~4520 |
