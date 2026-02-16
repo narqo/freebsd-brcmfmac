@@ -50,14 +50,15 @@
 - [x] Add wsec_key IOVAR support
 - [x] Fix scan result BSSID matching (handle zero BSSID as "any")
 - [x] Fix IE offset parsing (ie_offset=0 means IEs follow fixed struct)
-- [ ] Set pmk or sae_password via iovar (needed for WPA2)
-- [ ] Test with wpa_supplicant
-- [ ] Handle 4-way handshake completion event
+- [x] Enable firmware supplicant (`sup_wpa=1`)
+- [x] Push PSK via `BRCMF_C_SET_WSEC_PMK`
+- [x] Add sysctl `dev.brcmfmac.0.psk` for passphrase input
+- [ ] Test WPA2 association end-to-end on real hardware
 
-**Current status**: Security mode (wsec/wpa_auth) is correctly set before
-association. The driver detects WPA2 from the Privacy bit in capability field.
-Key installation callbacks are in place. Remaining work is integrating with
-wpa_supplicant for the 4-way handshake.
+**Current status**: Firmware supplicant approach implemented. Set PSK via
+`sysctl dev.brcmfmac.0.psk="passphrase"`, then `ifconfig wlan0 ssid <network>`.
+Driver enables `sup_wpa=1`, pushes PMK, then joins. Firmware handles 4-way
+handshake internally. See `docs/01-decisions.md` for rationale.
 
 ### Milestone 11: Latency optimization (TODO)
 

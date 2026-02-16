@@ -181,6 +181,50 @@ Linux uses a revision bitmask table (`BRCMF_FW_ENTRY`) for firmware selection:
 The original code used `chiprev >= 6` for the C2 variant, which was wrong.
 Rev 5 (our hardware) got the base firmware, which doesn't boot on this chip.
 
+## WPA2 supplicant approach
+
+**Decision**: Use firmware's built-in supplicant for WPA2, not host-side wpa_supplicant.
+
+**Alternatives considered**:
+
+1. **Firmware supplicant** (`sup_wpa=1` + `BRCMF_C_SET_WSEC_PMK`): firmware
+   handles the 4-way handshake internally. PSK provided via sysctl
+   `dev.brcmfmac.0.psk`. This is what Linux brcmfmac does by default.
+
+2. **Host supplicant** (wpa_supplicant): standard FreeBSD approach. wpa_supplicant
+   discovers networks via net80211 scan cache, performs 4-way handshake over
+   EAPOL, installs keys via `iv_key_set` → `wsec_key` IOVAR. Standard config
+   via `wpa_supplicant.conf`.
+
+**Why firmware supplicant (for now)**:
+
+- Host supplicant is blocked on `ieee80211_add_scan` crash — scan cache isn't
+  populated, so wpa_supplicant sees 0 networks and never initiates association.
+- Firmware supplicant works with existing direct-join path (`brcmf_join_bss_direct`),
+  no scan cache needed.
+- ~20 lines of code vs unknown debugging effort for the scan cache crash plus
+  untested EAPOL TX/RX path.
+
+**Tradeoffs**:
+
+- PSK delivery is non-standard (sysctl instead of wpa_supplicant.conf). Acceptable
+  for proving WPA2 works; not a long-term solution.
+- Bypasses net80211 crypto framework (`iv_key_set`/`iv_key_delete` unused).
+- No WPA3/SAE support (may not exist in firmware 7.35.180.133 anyway).
+- Host supplicant remains the goal for production use. The firmware supplicant
+  code stays as a fallback.
+
+**Sequence**:
+
+1. `sysctl dev.brcmfmac.0.psk="passphrase"`
+2. `ifconfig wlan0 ssid <network>`
+3. Driver scans, finds BSS, detects WPA2 from Privacy capability bit
+4. `brcmf_set_security()` — sets `wsec=AES_ENABLED`, `wpa_auth=WPA2_AUTH_PSK`
+5. `brcmf_enable_supplicant()` — sets `sup_wpa=1`
+6. `brcmf_set_pmk()` — pushes passphrase via `BRCMF_C_SET_WSEC_PMK`
+7. `BRCMF_C_SET_SSID` — firmware associates and does 4-way handshake internally
+8. `BRCMF_E_LINK` event with link-up flag → driver transitions to RUN state
+
 ## Next steps
 
 1. DMA ring initialization
