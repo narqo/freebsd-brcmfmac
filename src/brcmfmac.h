@@ -56,6 +56,7 @@ struct brcmf_pcie_shared_info {
 	uint32_t dtoh_mb_data_addr;
 	uint32_t ring_info_addr;
 	uint32_t dma_idx_sz;
+	uint32_t console_addr;
 };
 
 /* Ring IDs */
@@ -239,11 +240,13 @@ uint32_t brcmf_reg_read(struct brcmf_softc *sc, uint32_t off);
 void brcmf_reg_write(struct brcmf_softc *sc, uint32_t off, uint32_t val);
 uint32_t brcmf_tcm_read32(struct brcmf_softc *sc, uint32_t off);
 uint16_t brcmf_tcm_read16(struct brcmf_softc *sc, uint32_t off);
+uint8_t brcmf_tcm_read8(struct brcmf_softc *sc, uint32_t off);
 void brcmf_tcm_write32(struct brcmf_softc *sc, uint32_t off, uint32_t val);
 void brcmf_tcm_write16(struct brcmf_softc *sc, uint32_t off, uint16_t val);
 uint32_t brcmf_bp_read32(struct brcmf_softc *sc, uint32_t addr);
 void brcmf_bp_write32(struct brcmf_softc *sc, uint32_t addr, uint32_t val);
 void brcmf_pcie_select_core(struct brcmf_softc *sc, struct brcmf_coreinfo *core);
+void brcmf_pcie_console_read(struct brcmf_softc *sc);
 
 /* DMA helpers */
 int brcmf_alloc_dma_buf(device_t dev, size_t size, bus_dma_tag_t *tag,
@@ -269,6 +272,7 @@ int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len);
 int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
 int brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da);
+void brcmf_msgbuf_repost_rxbufs(struct brcmf_softc *sc);
 
 /* fwil.c - Firmware interface layer */
 int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,

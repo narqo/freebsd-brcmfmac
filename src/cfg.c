@@ -12,6 +12,7 @@
 #include <sys/taskqueue.h>
 
 #include <net/if.h>
+#include <net/if_var.h>
 #include <net/if_media.h>
 #include <net/ethernet.h>
 
@@ -40,6 +41,7 @@ struct brcmf_vap {
 
 /* IOCTL commands */
 #define BRCMF_C_SET_INFRA	20
+#define BRCMF_C_SET_PM		86
 #define BRCMF_C_GET_BSSID	23
 #define BRCMF_C_SET_SSID	26
 
@@ -278,6 +280,7 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	/* ieee80211_add_scan crashes - disabled for now */
 }
 
+static int brcmf_vap_transmit(if_t ifp, struct mbuf *m);
 static int brcmf_join_bss_direct(struct brcmf_softc *sc,
     struct brcmf_scan_result *sr);
 
@@ -308,6 +311,11 @@ brcmf_scan_complete_task(void *arg, int pending)
 	 * For FullMAC: if we have a desired SSID and BSSID, check if
 	 * we found it in scan results and directly initiate join.
 	 */
+	/* Don't re-join if already associated */
+	if (sc->link_up) {
+		return;
+	}
+
 	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0 &&
 	    !IEEE80211_ADDR_EQ(vap->iv_des_bssid, ieee80211broadcastaddr)) {
 		for (i = 0; i < n; i++) {
@@ -408,6 +416,23 @@ brcmf_link_task(void *arg, int pending)
 
 			/* Enable receiving all multicast + broadcast */
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
+
+			/* Repost RX buffers consumed during scan */
+			brcmf_msgbuf_repost_rxbufs(sc);
+
+			/* Debug: check firmware state after association */
+			{
+				uint32_t rate = 0, isup = 0;
+				error = brcmf_fil_cmd_data_get(sc, 12,
+				    &rate, sizeof(rate));
+				printf("brcmfmac: GET_RATE err=%d rate=%u\n",
+				    error, le32toh(rate));
+				/* Check if firmware interface is up */
+				error = brcmf_fil_cmd_data_get(sc, 2,
+				    &isup, sizeof(isup));
+				printf("brcmfmac: GET_UP err=%d val=%u\n",
+				    error, le32toh(isup));
+			}
 		} else {
 			printf("brcmfmac: no BSS node available\n");
 		}
@@ -828,6 +853,9 @@ brcmf_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	ieee80211_vap_attach(vap, ieee80211_media_change,
 	    ieee80211_media_status, mac);
 
+	/* Override VAP transmit to bypass net80211 802.11 encapsulation */
+	if_settransmitfn(vap->iv_ifp, brcmf_vap_transmit);
+
 	/*
 	 * Pre-set ss_vap so scan_curchan_task doesn't fault on
 	 * IEEE80211_DPRINTF(ss->ss_vap, ...) if the task fires
@@ -908,8 +936,25 @@ brcmf_parent(struct ieee80211com *ic)
 
 	if (ic->ic_nrunning > 0) {
 		if (!sc->running) {
+			uint32_t val;
+
 			brcmf_fil_iovar_int_set(sc, "mpc", 0);
 			brcmf_fil_bss_up(sc);
+
+			/* Set infrastructure mode */
+			val = htole32(1);
+			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
+			    &val, sizeof(val));
+
+			/* Disable power management */
+			val = htole32(0);
+			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
+			    &val, sizeof(val));
+
+			/* Disable ARP offload */
+			brcmf_fil_iovar_int_set(sc, "arp_ol", 0);
+			brcmf_fil_iovar_int_set(sc, "arpoe", 0);
+
 			sc->running = 1;
 			startall = 1;
 		}
@@ -990,9 +1035,20 @@ brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
 	struct ieee80211com *ic = ss->ss_ic;
 	struct brcmf_scan_priv *priv = (struct brcmf_scan_priv *)ss;
+	struct ieee80211vap *vap;
 
+	/*
+	 * Ensure ss_vap is set before enqueuing scan_curchan_task.
+	 * The task accesses ss_vap->iv_debug via IEEE80211_DPRINTF
+	 * before checking abort flags — NULL ss_vap causes a page fault.
+	 */
 	IEEE80211_LOCK(ic);
-	taskqueue_enqueue_timeout(ic->ic_tq, &priv->scan_curchan, maxdwell);
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap != NULL)
+		ss->ss_vap = vap;
+	if (ss->ss_vap != NULL)
+		taskqueue_enqueue_timeout(ic->ic_tq,
+		    &priv->scan_curchan, maxdwell);
 	IEEE80211_UNLOCK(ic);
 }
 
@@ -1005,14 +1061,33 @@ brcmf_scan_mindwell(struct ieee80211_scan_state *ss)
 }
 
 /*
- * Transmit a frame.
+ * VAP-level transmit: receives raw ethernet frames before
+ * net80211 encapsulation. FullMAC firmware handles 802.11.
+ */
+static int
+brcmf_vap_transmit(if_t ifp, struct mbuf *m)
+{
+	struct ieee80211vap *vap = if_getsoftc(ifp);
+	struct ieee80211com *ic = vap->iv_ic;
+	struct brcmf_softc *sc = ic->ic_softc;
+
+	if (vap->iv_state != IEEE80211_S_RUN) {
+		m_freem(m);
+		return (ENETDOWN);
+	}
+
+	return brcmf_msgbuf_tx(sc, m);
+}
+
+/*
+ * ic_transmit: called by net80211 after 802.11 encapsulation.
+ * Should not be called for data in FullMAC, but handle gracefully.
  */
 static int
 brcmf_transmit(struct ieee80211com *ic, struct mbuf *m)
 {
-	struct brcmf_softc *sc = ic->ic_softc;
-
-	return brcmf_msgbuf_tx(sc, m);
+	m_freem(m);
+	return (0);
 }
 
 /*

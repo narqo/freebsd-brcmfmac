@@ -55,6 +55,11 @@ MALLOC_DEFINE(M_BRCMFMAC, "brcmfmac", "Broadcom FullMAC WiFi driver");
 
 #define BRCMF_DEF_MAX_RXBUFPOST 255
 
+#define BRCMF_SHARED_CONSOLE_ADDR_OFFSET      20
+#define BRCMF_CONSOLE_BUFADDR_OFFSET          8
+#define BRCMF_CONSOLE_BUFSIZE_OFFSET          12
+#define BRCMF_CONSOLE_WRITEIDX_OFFSET         16
+
 /* Ring info structure offsets */
 #define BRCMF_RING_RINGMEM_OFFSET	 0
 #define BRCMF_RING_H2D_W_IDX_PTR_OFFSET	 4
@@ -136,6 +141,12 @@ uint32_t
 brcmf_tcm_read32(struct brcmf_softc *sc, uint32_t off)
 {
 	return (bus_space_read_4(sc->tcm_bst, sc->tcm_bsh, off));
+}
+
+uint8_t
+brcmf_tcm_read8(struct brcmf_softc *sc, uint32_t off)
+{
+	return (bus_space_read_1(sc->tcm_bst, sc->tcm_bsh, off));
 }
 
 uint16_t
@@ -551,11 +562,12 @@ brcmf_pcie_setup_rings(struct brcmf_softc *sc)
 	if (error != 0)
 		return (error);
 
-	error = brcmf_pcie_alloc_scratch_buffers(sc);
+	/* Linux driver order: common rings first, then scratch buffers */
+	error = brcmf_pcie_alloc_common_rings(sc);
 	if (error != 0)
 		return (error);
 
-	error = brcmf_pcie_alloc_common_rings(sc);
+	error = brcmf_pcie_alloc_scratch_buffers(sc);
 	if (error != 0)
 		return (error);
 
@@ -835,6 +847,9 @@ brcmf_pcie_init_shared(struct brcmf_softc *sc, uint32_t sharedram_addr)
 	addr = sharedram_addr + BRCMF_SHARED_DTOH_MB_DATA_ADDR_OFFSET;
 	shared->dtoh_mb_data_addr = brcmf_tcm_read32(sc, addr);
 
+	addr = sharedram_addr + BRCMF_SHARED_CONSOLE_ADDR_OFFSET;
+	shared->console_addr = brcmf_tcm_read32(sc, addr);
+
 	addr = sharedram_addr + BRCMF_SHARED_RING_INFO_ADDR_OFFSET;
 	shared->ring_info_addr = brcmf_tcm_read32(sc, addr);
 
@@ -1072,6 +1087,51 @@ brcmf_pcie_attach(device_t dev)
 fail:
 	brcmf_pcie_detach(dev);
 	return (error);
+}
+
+void
+brcmf_pcie_console_read(struct brcmf_softc *sc)
+{
+	uint32_t console_addr = sc->shared.console_addr;
+	uint32_t buf_addr, bufsize, writeidx;
+	static uint32_t readidx;
+	static int inited;
+	char line[256];
+	int pos = 0;
+
+	if (console_addr == 0)
+		return;
+
+	buf_addr = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_BUFADDR_OFFSET);
+	bufsize = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_BUFSIZE_OFFSET);
+	writeidx = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_WRITEIDX_OFFSET);
+
+	if (!inited) {
+		readidx = writeidx;
+		inited = 1;
+		return;
+	}
+
+	if (bufsize == 0 || bufsize > 0x10000)
+		return;
+
+	while (readidx != writeidx) {
+		char ch = brcmf_tcm_read8(sc, buf_addr + readidx);
+		readidx = (readidx + 1) % bufsize;
+
+		if (ch == '\n' || pos >= (int)sizeof(line) - 2) {
+			line[pos] = '\0';
+			if (pos > 0)
+				printf("FW> %s\n", line);
+			pos = 0;
+		} else if (ch >= ' ') {
+			line[pos++] = ch;
+		}
+	}
+	if (pos > 0) {
+		line[pos] = '\0';
+		printf("FW> %s\n", line);
+	}
 }
 
 int

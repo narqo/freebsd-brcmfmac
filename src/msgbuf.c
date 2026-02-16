@@ -3,6 +3,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
+#include <sys/epoch.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
@@ -532,10 +533,15 @@ brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
 {
 	struct ieee80211com *ic = &sc->ic;
 	struct ieee80211vap *vap;
+	if_t ifp;
 	struct mbuf *m;
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
+		return;
+
+	ifp = vap->iv_ifp;
+	if (ifp == NULL)
 		return;
 
 	m = m_get2(len, M_NOWAIT, MT_DATA, M_PKTHDR);
@@ -544,9 +550,28 @@ brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
 
 	m_copyback(m, 0, len, data);
 	m->m_pkthdr.len = m->m_len = len;
+	m->m_pkthdr.rcvif = ifp;
 
-	/* Deliver to net80211 as Ethernet frame */
-	ieee80211_vap_deliver_data(vap, m);
+	{
+		uint8_t *eh = data;
+		static int rx_count = 0;
+		if (rx_count < 10)
+			printf("brcmfmac: RX #%d len=%u dst=%02x:%02x:%02x:%02x:%02x:%02x "
+			    "src=%02x:%02x:%02x:%02x:%02x:%02x type=%02x%02x\n",
+			    rx_count, len,
+			    eh[0],eh[1],eh[2],eh[3],eh[4],eh[5],
+			    eh[6],eh[7],eh[8],eh[9],eh[10],eh[11],
+			    eh[12],eh[13]);
+		rx_count++;
+	}
+
+	/* Deliver as Ethernet frame */
+	{
+		struct epoch_tracker et;
+		NET_EPOCH_ENTER(et);
+		if_input(ifp, m);
+		NET_EPOCH_EXIT(et);
+	}
 }
 
 /*
@@ -648,20 +673,143 @@ brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 	tx_ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
 	rx_ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
 
+	/* Sync DMA before checking indices */
+	bus_dmamap_sync(rx_ring->dma_tag, rx_ring->dma_map,
+	    BUS_DMASYNC_POSTREAD);
+
 	/* Read write pointers from TCM */
 	tx_w = brcmf_tcm_read16(sc, tx_ring->w_idx_addr);
 	rx_w = brcmf_tcm_read16(sc, rx_ring->w_idx_addr);
 
-	if ((tx_w != 0 || rx_w != 0) && dbg_count < 20) {
-		struct brcmf_pcie_ringbuf *rxpost;
-		uint16_t rxpost_r;
-		rxpost = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
-		rxpost_r = brcmf_tcm_read16(sc, rxpost->r_idx_addr);
-		printf("brcmfmac: D2H TX_w=%d RX_w=%d RXPOST_r=%d rx_w_addr=0x%x\n",
-		    tx_w, rx_w, rxpost_r, rx_ring->w_idx_addr);
+	/* Check if firmware wrote to RX data buffers */
+	if (dbg_count < 3 && tx_w != 0 && sc->rxbuf != NULL) {
+		uint8_t *p;
+		int j;
+		for (j = 0; j < 3 && j < (int)sc->rxbufpost; j++) {
+			if (sc->rxbuf[j].buf == NULL)
+				continue;
+			bus_dmamap_sync(sc->rxbuf[j].dma_tag,
+			    sc->rxbuf[j].dma_map, BUS_DMASYNC_POSTREAD);
+			p = (uint8_t *)sc->rxbuf[j].buf;
+			if (p[0] != 0 || p[1] != 0 || p[2] != 0 || p[3] != 0) {
+				printf("brcmfmac: rxbuf[%d] has data: %02x%02x%02x%02x %02x%02x%02x%02x\n",
+				    j, p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7]);
+			}
+		}
+	}
+
+	/* Also check ringupd buffer for D2H write indices */
+	if (sc->ringupd_buf != NULL && dbg_count < 5) {
+		uint32_t *rupd = (uint32_t *)sc->ringupd_buf;
+		bus_dmamap_sync(sc->ringupd_dma_tag, sc->ringupd_dma_map,
+		    BUS_DMASYNC_POSTREAD);
+		if (rupd[0] != 0 || rupd[1] != 0 || rupd[2] != 0) {
+			printf("brcmfmac: ringupd buf[0..7]: %u %u %u %u %u %u %u %u\n",
+			    rupd[0], rupd[1], rupd[2], rupd[3],
+			    rupd[4], rupd[5], rupd[6], rupd[7]);
+		}
+	}
+	if (tx_w != 0 && dbg_count == 0) {
+		uint32_t base = sc->d2h_w_idx_addr;
+		int j;
+		printf("brcmfmac: d2h_w_idx base=0x%x, dumping 16 uint32s:\n", base);
+		for (j = 0; j < 16; j++) {
+			uint32_t v = brcmf_tcm_read32(sc, base + j * 4);
+			printf("  [%d] 0x%x+%d = 0x%08x (%u)\n",
+			    j, base, j * 4, v, v);
+		}
+		printf("brcmfmac: d2h_r_idx base=0x%x:\n", sc->d2h_r_idx_addr);
+		for (j = 0; j < 8; j++) {
+			uint32_t v = brcmf_tcm_read32(sc, sc->d2h_r_idx_addr + j * 4);
+			printf("  [%d] 0x%x+%d = 0x%08x\n",
+			    j, sc->d2h_r_idx_addr, j * 4, v);
+		}
+		printf("brcmfmac: ring addrs: ctrl_w=0x%x tx_w=0x%x rx_w=0x%x\n",
+		    sc->commonrings[BRCMF_D2H_MSGRING_CONTROL_COMPLETE]->w_idx_addr,
+		    tx_ring->w_idx_addr, rx_ring->w_idx_addr);
+		printf("brcmfmac: rx_dataoffset=%d\n", sc->shared.rx_dataoffset);
+		/* Dump first RXPOST entry to verify format */
+		{
+			struct brcmf_pcie_ringbuf *rp =
+			    sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+			uint8_t *p = (uint8_t *)rp->buf;
+			printf("brcmfmac: RXPOST buf[0..31]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x\n",
+			    p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+			    p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
+			    p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
+			    p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
+		}
+		/* Dump first entry of TX_COMPLETE ring */
+		{
+			uint8_t *p = (uint8_t *)tx_ring->buf;
+			printf("brcmfmac: TX_CMPLT buf[0..15]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x\n",
+			    p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+			    p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15]);
+		}
+		/* Dump first entry of CTRL_COMPLETE ring */
+		{
+			struct brcmf_pcie_ringbuf *cr =
+			    sc->commonrings[BRCMF_D2H_MSGRING_CONTROL_COMPLETE];
+			uint8_t *p = (uint8_t *)cr->buf;
+			printf("brcmfmac: CTRL_CMPLT buf[0..23]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x\n",
+			    p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+			    p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
+			    p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23]);
+		}
+		/* Dump ring descriptors for rings 0-4 */
+		{
+			uint32_t rm = sc->ringmem_addr;
+			int k;
+			for (k = 0; k < 5; k++) {
+				uint32_t da = rm + k * 16;
+				uint16_t depth = brcmf_tcm_read16(sc, da + 4);
+				uint16_t ilen = brcmf_tcm_read16(sc, da + 6);
+				uint32_t lo = brcmf_tcm_read32(sc, da + 8);
+				uint32_t hi = brcmf_tcm_read32(sc, da + 12);
+				printf("brcmfmac: ringdesc[%d] depth=%d ilen=%d base=0x%x%08x\n",
+				    k, depth, ilen, hi, lo);
+			}
+		}
+		/* Check RXPOST w/r pointers */
+		{
+			struct brcmf_pcie_ringbuf *rxpost;
+			rxpost = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+			printf("brcmfmac: RXPOST w_idx=0x%x(%d) r_idx=0x%x(%d)\n",
+			    rxpost->w_idx_addr,
+			    brcmf_tcm_read16(sc, rxpost->w_idx_addr),
+			    rxpost->r_idx_addr,
+			    brcmf_tcm_read16(sc, rxpost->r_idx_addr));
+		}
+		/* Also dump first 64 bytes of RX complete ring buffer */
+		{
+			uint8_t *p = (uint8_t *)rx_ring->buf;
+			printf("brcmfmac: RX_CMPLT ring buf[0..31]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x\n",
+			    p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+			    p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
+			    p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
+			    p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31]);
+		}
+		dbg_count++;
+	}
+	if (tx_w != 0 && dbg_count < 10) {
+		printf("brcmfmac: D2H TX_w=%d RX_w=%d\n", tx_w, rx_w);
 		dbg_count++;
 	}
 
+	brcmf_pcie_console_read(sc);
 	brcmf_msgbuf_process_ctrl_complete(sc);
 	brcmf_msgbuf_process_tx_complete(sc);
 	brcmf_msgbuf_process_rx_complete(sc);
@@ -847,6 +995,35 @@ brcmf_msgbuf_init_rxbuf(struct brcmf_softc *sc)
 	sc->rxbufpost = count;
 	device_printf(sc->dev, "posted %u RX data buffers\n", count);
 	return (0);
+}
+
+/*
+ * Repost RX data buffers. Called when firmware consumed all buffers
+ * without returning completions (e.g., beacons during scan).
+ */
+void
+brcmf_msgbuf_repost_rxbufs(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring;
+	uint16_t fw_rptr;
+	int i, count = 0;
+
+	ring = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
+	fw_rptr = brcmf_tcm_read16(sc, ring->r_idx_addr);
+
+	if (fw_rptr != ring->w_ptr)
+		return;
+
+	for (i = 0; i < (int)sc->rxbufpost; i++) {
+		if (brcmf_msgbuf_post_rxbuf(sc, &sc->rxbuf[i]) != 0)
+			break;
+		count++;
+	}
+
+	if (count > 0) {
+		brcmf_msgbuf_ring_submit(sc, ring);
+		printf("brcmfmac: reposted %d RX buffers\n", count);
+	}
 }
 
 /*
@@ -1215,6 +1392,18 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 
 	sc->tx_pktid_next++;
 
+	{
+		uint8_t *eh = tx->txhdr;
+		static int tx_dbg = 0;
+		if (tx_dbg < 5) {
+			printf("brcmfmac: TX hdr dst=%02x:%02x:%02x:%02x:%02x:%02x "
+			    "src=%02x:%02x:%02x:%02x:%02x:%02x type=%02x%02x len=%d\n",
+			    eh[0],eh[1],eh[2],eh[3],eh[4],eh[5],
+			    eh[6],eh[7],eh[8],eh[9],eh[10],eh[11],
+			    eh[12],eh[13], m->m_pkthdr.len);
+			tx_dbg++;
+		}
+	}
 	printf("brcmfmac: TX submit pktid=0x%x len=%d data_len=%d dma=0x%llx w_ptr=%d\n",
 	    0x40000 + (pktid % BRCMF_TX_RING_SIZE),
 	    m->m_pkthdr.len, m->m_pkthdr.len - ETH_HLEN,

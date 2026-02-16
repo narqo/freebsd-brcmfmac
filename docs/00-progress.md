@@ -2,45 +2,46 @@
 
 ## Current status
 
-**Milestone 8: Data path** - TX works, RX completions missing
+**Milestone 8: Data path** - TX and RX working! Ping succeeds bidirectionally.
 
 ## Milestones
 
 ### Milestone 1-7: DONE
 
-### Milestone 8: Data path (IN PROGRESS)
+### Milestone 8: Data path (WORKING)
 
 **Working:**
 - [x] Flow ring creation and TX submission
-- [x] TX completions received (TX_STATUS status=0, firmware sends frames OTA)
-- [x] Flowring index slots correctly sized (4 bytes per slot)
-- [x] TX data format: DMA addr past ETH header, data_len excludes header
-- [x] Scan no longer crashes (overrode ic_scan_curchan with timeout scheduling)
+- [x] TX completions received (TX_STATUS status=0)
+- [x] RX completions received (firmware delivers both broadcast and unicast frames)
+- [x] Bidirectional ping works (14-116ms RTT)
+- [x] ARP resolution works (broadcast and unicast)
+- [x] VAP-level transmit bypass (no net80211 802.11 encapsulation for FullMAC)
+- [x] kldunload works cleanly
+- [x] scan_curchan crash fix (set ss_vap before enqueue)
+- [x] No re-join when already associated (link_up guard)
 
-**Not working:**
-- [ ] RX completions - firmware consumed 255 RXPOST buffers but RX_w stays 0
-- [ ] kldunload crashes (scan_curchan_task accesses NULL ss_vap during teardown)
+**Key fixes in this session:**
+1. **VAP transmit override**: net80211's `ieee80211_vap_transmit` encapsulates
+   ethernet frames into 802.11 before calling `ic_transmit`. For FullMAC, the
+   firmware handles 802.11 encapsulation. Override `if_transmit` on the VAP to
+   send raw ethernet frames directly to the firmware, bypassing net80211's
+   encapsulation. Without this, TX frames had garbled ethernet headers (802.11
+   header data instead of ethernet src/dst MACs).
 
-**Key debug findings:**
-- RXPOST_r = 255: firmware consumed ALL posted RX buffers
-- RX_w = 0: firmware wrote zero RX completions
-- TX_STATUS status=0: packets successfully transmitted OTA
+2. **No re-join guard**: `brcmf_scan_complete_task` would issue `SET_SSID` every
+   time a scan found the target BSS, even when already associated. This caused
+   repeated disassociation/reassociation cycles, which disrupted the firmware's
+   RX path (unicast delivery stopped). Fixed with `if (sc->link_up) return`.
 
-**Possible causes of RX silence:**
-1. Firmware writing RX complete write pointer to wrong address (DMA index mode?)
-2. RX complete ring address mismatch
-3. Firmware using buffers internally (beacons) without generating completions
-4. Missing iovar to enable data path RX
+3. **scan_curchan crash fix**: Set `ss_vap` from TAILQ_FIRST in
+   `brcmf_scan_curchan` before enqueuing the timeout task, preventing the
+   page fault when `scan_curchan_task` accesses `ss_vap->iv_debug`.
 
-### Scan crash fix
-
-Root cause: `scan_curchan_task` accesses `ss->ss_vap` (at offset 0x6a) which
-is NULL. The default swscan `scan_curchan` does `IEEE80211_DPRINTF(ss->ss_vap, ...)`
-which dereferences the NULL vap pointer.
-
-Fix: Override `ic_scan_curchan` with our own that skips the DPRINTF but still
-enqueues the timeout task to maintain proper scan timing. Uses knowledge of
-swscan's private `scan_state` layout to access `ss_scan_curchan` timeout_task.
+**Remaining issues:**
+- Latency is high (10-116ms, avg ~40ms) — possibly power management related
+- No broadcast RX in stable association (may need allmulti reconfiguration)
+- kldunload of old (buggy) modules crashes on destroy
 
 ## Code structure
 
@@ -50,5 +51,5 @@ swscan's private `scan_state` layout to access `ss_scan_curchan` timeout_task.
 | msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX |
 | core.c | Chip core management: enumeration, reset, firmware download |
 | fwil.c | Firmware interface: IOVAR get/set |
-| cfg.c | net80211: VAP management, scan, connect |
+| cfg.c | net80211: VAP management, scan, connect, TX override |
 | brcmfmac.zig | EROM parser (pure Zig) |
