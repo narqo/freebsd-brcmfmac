@@ -2,15 +2,14 @@
 
 ## Current status
 
-**Milestone 8: Data path** - TX and RX working! Ping succeeds bidirectionally.
+**Milestone 8: Data path** - COMPLETE. TX and RX working, ping succeeds bidirectionally.
 
 ## Milestones
 
 ### Milestone 1-7: DONE
 
-### Milestone 8: Data path (WORKING)
+### Milestone 8: Data path (COMPLETE)
 
-**Working:**
 - [x] Flow ring creation and TX submission
 - [x] TX completions received (TX_STATUS status=0)
 - [x] RX completions received (firmware delivers both broadcast and unicast frames)
@@ -21,35 +20,63 @@
 - [x] scan_curchan crash fix (set ss_vap before enqueue)
 - [x] No re-join when already associated (link_up guard)
 
-**Key fixes in this session:**
+**Key fixes:**
 1. **VAP transmit override**: net80211's `ieee80211_vap_transmit` encapsulates
    ethernet frames into 802.11 before calling `ic_transmit`. For FullMAC, the
    firmware handles 802.11 encapsulation. Override `if_transmit` on the VAP to
    send raw ethernet frames directly to the firmware, bypassing net80211's
-   encapsulation. Without this, TX frames had garbled ethernet headers (802.11
-   header data instead of ethernet src/dst MACs).
+   encapsulation.
 
 2. **No re-join guard**: `brcmf_scan_complete_task` would issue `SET_SSID` every
-   time a scan found the target BSS, even when already associated. This caused
-   repeated disassociation/reassociation cycles, which disrupted the firmware's
-   RX path (unicast delivery stopped). Fixed with `if (sc->link_up) return`.
+   time a scan found the target BSS, even when already associated. Fixed with
+   `if (sc->link_up) return`.
 
 3. **scan_curchan crash fix**: Set `ss_vap` from TAILQ_FIRST in
-   `brcmf_scan_curchan` before enqueuing the timeout task, preventing the
-   page fault when `scan_curchan_task` accesses `ss_vap->iv_debug`.
+   `brcmf_scan_curchan` before enqueuing the timeout task.
 
-**Remaining issues:**
-- Latency is high (10-116ms, avg ~40ms) — possibly power management related
-- No broadcast RX in stable association (may need allmulti reconfiguration)
-- kldunload of old (buggy) modules crashes on destroy
+### Milestone 9: Debug cleanup (COMPLETE)
+
+- [x] Remove verbose TX/RX logging from interrupt path
+- [x] Remove ring index dumps
+- [x] Remove hex dumps of RX frames
+- [x] Keep error-path logging only
+- [x] Disable firmware console reader (keep code for future debug)
+
+### Milestone 10: WPA2 support (TODO)
+
+- [ ] Set wsec (wireless security mode)
+- [ ] Set wpa_auth (WPA authentication type)
+- [ ] Set pmk or sae_password via iovar
+- [ ] Test with wpa_supplicant
+- [ ] Handle 4-way handshake completion event
+
+### Milestone 11: Latency optimization (TODO)
+
+- [ ] Investigate interrupt coalescing
+- [ ] Consider moving D2H processing to taskqueue
+- [ ] Piggyback D2H polling on TX path
+
+### Milestone 12: Robustness (TODO)
+
+- [ ] Handle LINK_DOWN event (disassociation)
+- [ ] RX buffer pool management under load
+- [ ] TX flow control / backpressure
+- [ ] Audit error paths for leaks
+
+### Milestone 13: ifconfig scan support (TODO)
+
+- [ ] Populate ieee80211_scan_entry from brcmf_scan_result
+- [ ] Feed results into net80211 scan cache
+- [ ] Support `ifconfig wlan0 list scan`
 
 ## Code structure
 
-| Module | Purpose |
-|--------|---------|
-| pcie.c | PCIe bus: BAR mapping, DMA, ring alloc, interrupts, firmware load |
-| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX |
-| core.c | Chip core management: enumeration, reset, firmware download |
-| fwil.c | Firmware interface: IOVAR get/set |
-| cfg.c | net80211: VAP management, scan, connect, TX override |
-| brcmfmac.zig | EROM parser (pure Zig) |
+| Module | Purpose | Lines |
+|--------|---------|-------|
+| pcie.c | PCIe bus: BAR mapping, DMA, ring alloc, interrupts, firmware load | 1161 |
+| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX | 1469 |
+| cfg.c | net80211: VAP management, scan, connect, TX override | 1196 |
+| core.c | Chip core management: enumeration, reset, firmware download | 307 |
+| fwil.c | Firmware interface: IOVAR get/set | 136 |
+| brcmfmac.zig | EROM parser (pure Zig) | 222 |
+| **Total** | | ~4900 |

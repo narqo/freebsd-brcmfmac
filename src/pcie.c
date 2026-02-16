@@ -1102,36 +1102,15 @@ brcmf_pcie_console_read(struct brcmf_softc *sc)
 	if (console_addr == 0)
 		return;
 
-	buf_addr = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_BUFADDR_OFFSET);
-	bufsize = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_BUFSIZE_OFFSET);
-	writeidx = brcmf_tcm_read32(sc, console_addr + BRCMF_CONSOLE_WRITEIDX_OFFSET);
-
-	if (!inited) {
-		readidx = writeidx;
-		inited = 1;
-		return;
-	}
-
-	if (bufsize == 0 || bufsize > 0x10000)
-		return;
-
-	while (readidx != writeidx) {
-		char ch = brcmf_tcm_read8(sc, buf_addr + readidx);
-		readidx = (readidx + 1) % bufsize;
-
-		if (ch == '\n' || pos >= (int)sizeof(line) - 2) {
-			line[pos] = '\0';
-			if (pos > 0)
-				printf("FW> %s\n", line);
-			pos = 0;
-		} else if (ch >= ' ') {
-			line[pos++] = ch;
-		}
-	}
-	if (pos > 0) {
-		line[pos] = '\0';
-		printf("FW> %s\n", line);
-	}
+	/* Firmware console logging disabled by default */
+	(void)console_addr;
+	(void)buf_addr;
+	(void)bufsize;
+	(void)writeidx;
+	(void)readidx;
+	(void)inited;
+	(void)line;
+	(void)pos;
 }
 
 int

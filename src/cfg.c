@@ -377,10 +377,6 @@ brcmf_link_task(void *arg, int pending)
 		else
 			channum = brcmf_chanspec_to_channel(channum);
 
-		printf("brcmfmac: associated to %02x:%02x:%02x:%02x:%02x:%02x ch%d\n",
-		    bssid[0], bssid[1], bssid[2], bssid[3], bssid[4], bssid[5],
-		    channum);
-
 		/* Find the channel in our channel list */
 		chan = ieee80211_find_channel(ic, channum,
 		    channum <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
@@ -419,25 +415,8 @@ brcmf_link_task(void *arg, int pending)
 
 			/* Repost RX buffers consumed during scan */
 			brcmf_msgbuf_repost_rxbufs(sc);
-
-			/* Debug: check firmware state after association */
-			{
-				uint32_t rate = 0, isup = 0;
-				error = brcmf_fil_cmd_data_get(sc, 12,
-				    &rate, sizeof(rate));
-				printf("brcmfmac: GET_RATE err=%d rate=%u\n",
-				    error, le32toh(rate));
-				/* Check if firmware interface is up */
-				error = brcmf_fil_cmd_data_get(sc, 2,
-				    &isup, sizeof(isup));
-				printf("brcmfmac: GET_UP err=%d val=%u\n",
-				    error, le32toh(isup));
-			}
-		} else {
-			printf("brcmfmac: no BSS node available\n");
 		}
 	} else {
-		printf("brcmfmac: transitioning to SCAN state\n");
 		ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
 	}
 }
@@ -451,25 +430,16 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 {
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
-		if (status == BRCMF_E_STATUS_SUCCESS) {
-			printf("brcmfmac: SET_SSID success\n");
-		} else {
-			printf("brcmfmac: SET_SSID failed, status=%u\n", status);
+		if (status != BRCMF_E_STATUS_SUCCESS) {
+			device_printf(sc->dev, "SET_SSID failed, status=%u\n", status);
 			sc->link_up = 0;
 			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
 		break;
 
 	case BRCMF_E_LINK:
-		if (flags & BRCMF_EVENT_MSG_LINK) {
-			printf("brcmfmac: link up\n");
-			sc->link_up = 1;
-			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
-		} else {
-			printf("brcmfmac: link down\n");
-			sc->link_up = 0;
-			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
-		}
+		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
+		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		break;
 
 	default:
@@ -486,11 +456,6 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	struct brcmf_join_params join;
 	int error;
 
-	printf("brcmfmac: joining BSS %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\"\n",
-	    sr->bssid[0], sr->bssid[1], sr->bssid[2],
-	    sr->bssid[3], sr->bssid[4], sr->bssid[5],
-	    sr->ssid_len, sr->ssid);
-
 	/* Save BSSID for later use (flowring creation) */
 	memcpy(sc->join_bssid, sr->bssid, 6);
 
@@ -502,10 +467,8 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 
 	/* Initiate association */
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
-	if (error != 0) {
-		printf("brcmfmac: SET_SSID failed: %d\n", error);
+	if (error != 0)
 		return error;
-	}
 
 	return 0;
 }
@@ -519,11 +482,6 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	struct brcmf_join_params join;
 	int error;
 
-	printf("brcmfmac: joining BSS %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\"\n",
-	    ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
-	    ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5],
-	    ni->ni_esslen, ni->ni_essid);
-
 	/* Build join parameters */
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
@@ -532,10 +490,8 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 
 	/* Initiate association */
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
-	if (error != 0) {
-		printf("brcmfmac: SET_SSID failed: %d\n", error);
+	if (error != 0)
 		return error;
-	}
 
 	return 0;
 }
@@ -723,7 +679,6 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		return;
 
 	if (bss_count == 0) {
-		printf("brcmfmac: escan complete, %d results\n", sc->scan_nresults);
 		sc->scan_active = 0;
 		sc->scan_complete = 1;
 		taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
@@ -758,10 +713,6 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			memcpy(sr->bssid, bi->BSSID, 6);
 			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
 			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
-			printf("brcmfmac: scan found %02x:%02x:%02x:%02x:%02x:%02x \"%.*s\" ch%d rssi%d\n",
-			    bi->BSSID[0], bi->BSSID[1], bi->BSSID[2],
-			    bi->BSSID[3], bi->BSSID[4], bi->BSSID[5],
-			    sr->ssid_len, sr->ssid, chan, rssi);
 			sr->chan = chan;
 			sr->rssi = rssi;
 			sr->noise = noise;
@@ -996,10 +947,6 @@ brcmf_scan_start(struct ieee80211com *ic)
 	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
 		ssid = vap->iv_des_ssid[0].ssid;
 		ssid_len = vap->iv_des_ssid[0].len;
-		printf("brcmfmac: directed scan for SSID \"%.*s\"\n",
-		    ssid_len, ssid);
-	} else {
-		printf("brcmfmac: broadcast scan\n");
 	}
 
 	brcmf_do_escan(sc, ssid, ssid_len);
