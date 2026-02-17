@@ -183,47 +183,43 @@ Rev 5 (our hardware) got the base firmware, which doesn't boot on this chip.
 
 ## WPA2 supplicant approach
 
-**Decision**: Use firmware's built-in supplicant for WPA2, not host-side wpa_supplicant.
+**Decision**: Host supplicant (wpa_supplicant). Firmware supplicant was tried
+first but this firmware doesn't support it.
 
-**Alternatives considered**:
+**Background**:
 
-1. **Firmware supplicant** (`sup_wpa=1` + `BRCMF_C_SET_WSEC_PMK`): firmware
-   handles the 4-way handshake internally. PSK provided via sysctl
-   `dev.brcmfmac.0.psk`. This is what Linux brcmfmac does by default.
+The firmware supplicant approach (`sup_wpa=1` + `BRCMF_C_SET_WSEC_PMK`) was
+attempted first because the scan cache wasn't working (ieee80211_add_scan
+crashed). Both `sup_wpa` and `SET_WSEC_PMK` return BCME_BADARG (-23) on
+firmware 7.35.180.133. This firmware expects the host to handle the 4-way
+handshake.
 
-2. **Host supplicant** (wpa_supplicant): standard FreeBSD approach. wpa_supplicant
-   discovers networks via net80211 scan cache, performs 4-way handshake over
-   EAPOL, installs keys via `iv_key_set` → `wsec_key` IOVAR. Standard config
-   via `wpa_supplicant.conf`.
+**Scan cache crash**: Caused by `sp->tstamp` being NULL. The
+`ieee80211_scanparams.tstamp` field is a pointer, and `sta_add()` in
+ieee80211_scan_sta.c dereferences it unconditionally. Fixed by providing
+a zero-filled 8-byte buffer.
 
-**Why firmware supplicant (for now)**:
+**IE offset bug**: Firmware reports `ie_offset=0` in `brcmf_bss_info_le`.
+Our initial fallback used `sizeof(brcmf_bss_info_le)` (117 bytes), but the
+firmware's actual struct is ~280 bytes. Fixed by computing `bi_len - ie_len`
+when `ie_offset=0`.
 
-- Host supplicant is blocked on `ieee80211_add_scan` crash — scan cache isn't
-  populated, so wpa_supplicant sees 0 networks and never initiates association.
-- Firmware supplicant works with existing direct-join path (`brcmf_join_bss_direct`),
-  no scan cache needed.
-- ~20 lines of code vs unknown debugging effort for the scan cache crash plus
-  untested EAPOL TX/RX path.
+**Current state**: Scan cache works, RSN IEs are properly parsed.
+wpa_supplicant finds networks but can't associate yet — it brings the
+interface down during init and never re-enables it. Needs investigation
+into the BSD wpa_supplicant driver's interface lifecycle expectations.
 
-**Tradeoffs**:
+**Sequence** (target):
 
-- PSK delivery is non-standard (sysctl instead of wpa_supplicant.conf). Acceptable
-  for proving WPA2 works; not a long-term solution.
-- Bypasses net80211 crypto framework (`iv_key_set`/`iv_key_delete` unused).
-- No WPA3/SAE support (may not exist in firmware 7.35.180.133 anyway).
-- Host supplicant remains the goal for production use. The firmware supplicant
-  code stays as a fallback.
-
-**Sequence**:
-
-1. `sysctl dev.brcmfmac.0.psk="passphrase"`
-2. `ifconfig wlan0 ssid <network>`
-3. Driver scans, finds BSS, detects WPA2 from Privacy capability bit
-4. `brcmf_set_security()` — sets `wsec=AES_ENABLED`, `wpa_auth=WPA2_AUTH_PSK`
-5. `brcmf_enable_supplicant()` — sets `sup_wpa=1`
-6. `brcmf_set_pmk()` — pushes passphrase via `BRCMF_C_SET_WSEC_PMK`
-7. `BRCMF_C_SET_SSID` — firmware associates and does 4-way handshake internally
-8. `BRCMF_E_LINK` event with link-up flag → driver transitions to RUN state
+1. `wpa_supplicant -Dbsd -iwlan0 -c/etc/wpa_supplicant.conf`
+2. wpa_supplicant scans via net80211 → scan cache populated
+3. wpa_supplicant finds matching BSS with RSN IE
+4. wpa_supplicant triggers MLME join via net80211 ioctl
+5. Driver sets wsec/wpa_auth and joins via firmware
+6. Firmware associates, sends LINK event
+7. AP sends EAPOL frame 1 → delivered to wlan0 via data path
+8. wpa_supplicant handles 4-way handshake over EAPOL
+9. wpa_supplicant installs keys via iv_key_set → wsec_key IOVAR
 
 ## Next steps
 

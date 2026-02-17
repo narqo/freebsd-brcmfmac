@@ -155,10 +155,9 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		noise = bi->phy_noise;
 		ie_off = le16toh(bi->ie_offset);
 		ie_len = le32toh(bi->ie_length);
-		/*
-		 * ie_offset=0 seems to mean "IEs follow the fixed struct".
-		 * Use sizeof(*bi) as minimum offset if ie_offset is 0.
-		 */
+
+		if (ie_off == 0 && ie_len > 0 && ie_len < bi_len)
+			ie_off = bi_len - ie_len;
 		if (ie_off < sizeof(*bi))
 			ie_off = sizeof(*bi);
 		chan = brcmf_chanspec_to_channel(chanspec);
@@ -205,6 +204,7 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	struct ieee80211_frame wh;
 	struct ieee80211_channel *chan;
 	uint8_t ssid_ie[2 + 32];
+	uint8_t tstamp[8];
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
@@ -219,7 +219,10 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	ssid_ie[1] = sr->ssid_len;
 	memcpy(&ssid_ie[2], sr->ssid, sr->ssid_len);
 
+	memset(tstamp, 0, sizeof(tstamp));
+
 	memset(&sp, 0, sizeof(sp));
+	sp.tstamp = tstamp;
 	sp.ssid = ssid_ie;
 	sp.rates = __DECONST(uint8_t *, default_rates_ie);
 	sp.chan = sr->chan;
@@ -279,7 +282,16 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	IEEE80211_ADDR_COPY(wh.i_addr2, sr->bssid);
 	IEEE80211_ADDR_COPY(wh.i_addr3, sr->bssid);
 
-	/* ieee80211_add_scan crashes - disabled for now */
+	if (sp.rates == NULL) {
+		printf("brcmfmac: skip scan entry %02x:%02x:%02x:%02x:%02x:%02x"
+		    " - no rates\n",
+		    sr->bssid[0], sr->bssid[1], sr->bssid[2],
+		    sr->bssid[3], sr->bssid[4], sr->bssid[5]);
+		return;
+	}
+
+	ieee80211_add_scan(vap, chan, &sp, &wh,
+	    IEEE80211_FC0_SUBTYPE_BEACON, sr->rssi, sr->noise);
 }
 
 void

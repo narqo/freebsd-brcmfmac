@@ -9,6 +9,7 @@
 #include <sys/mutex.h>
 #include <sys/socket.h>
 #include <sys/sockio.h>
+#include <sys/sysctl.h>
 #include <sys/taskqueue.h>
 
 #include <net/if.h>
@@ -127,6 +128,11 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (error != 0)
 		return error;
 
+	if (wpa_auth != WPA_AUTH_DISABLED && sc->psk_len > 0) {
+		brcmf_enable_supplicant(sc);
+		brcmf_set_pmk(sc, sc->psk, sc->psk_len);
+	}
+
 	memcpy(sc->join_bssid, sr->bssid, 6);
 
 	memset(&join, 0, sizeof(join));
@@ -221,8 +227,23 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	case IEEE80211_S_SCAN:
 		break;
 	case IEEE80211_S_AUTH:
-		if (vap->iv_bss != NULL)
+		if (vap->iv_bss != NULL) {
+			uint32_t wsec = WSEC_NONE;
+			uint32_t wpa_auth = WPA_AUTH_DISABLED;
+
+			if (vap->iv_flags & IEEE80211_F_WPA2) {
+				wsec = AES_ENABLED;
+				wpa_auth = WPA2_AUTH_PSK;
+			} else if (vap->iv_flags & IEEE80211_F_WPA1) {
+				wsec = TKIP_ENABLED;
+				wpa_auth = WPA_AUTH_PSK;
+			}
+			if (vap->iv_flags & IEEE80211_F_PRIVACY)
+				wsec |= AES_ENABLED;
+
+			brcmf_set_security(sc, wsec, wpa_auth);
 			brcmf_join_bss(sc, vap->iv_bss);
+		}
 		break;
 	case IEEE80211_S_ASSOC:
 		break;
@@ -516,6 +537,9 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
 	TASK_INIT(&sc->link_task, 0, brcmf_link_task, sc);
 
+	sysctl_ctx_init(&sc->sysctl_ctx);
+	brcmf_security_sysctl_init(sc);
+
 	ic->ic_softc = sc;
 	ic->ic_name = device_get_nameunit(sc->dev);
 	ic->ic_phytype = IEEE80211_T_OFDM;
@@ -562,5 +586,6 @@ brcmf_cfg_detach(struct brcmf_softc *sc)
 {
 	struct ieee80211com *ic = &sc->ic;
 
+	sysctl_ctx_free(&sc->sysctl_ctx);
 	ieee80211_ifdetach(ic);
 }

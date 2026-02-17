@@ -210,6 +210,11 @@ struct brcmf_softc {
 	struct task link_task;
 	uint8_t join_bssid[6];
 
+	/* WPA PSK (set via sysctl) */
+	char psk[65];
+	int psk_len;
+	struct sysctl_ctx_list sysctl_ctx;
+
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
 #define BRCMF_SCAN_IE_MAX	512

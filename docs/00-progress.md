@@ -49,16 +49,19 @@
 - [x] Add iv_key_set/iv_key_delete callbacks for key installation
 - [x] Add wsec_key IOVAR support
 - [x] Fix scan result BSSID matching (handle zero BSSID as "any")
-- [x] Fix IE offset parsing (ie_offset=0 means IEs follow fixed struct)
-- [x] Enable firmware supplicant (`sup_wpa=1`)
-- [x] Push PSK via `BRCMF_C_SET_WSEC_PMK`
-- [x] Add sysctl `dev.brcmfmac.0.psk` for passphrase input
-- [ ] Test WPA2 association end-to-end on real hardware
+- [x] Fix IE offset parsing (use `bi_len - ie_len` when ie_offset=0)
+- [x] Fix ieee80211_add_scan crash (NULL sp->tstamp pointer)
+- [x] Scan cache populated with RSN IEs (`ifconfig wlan0 list scan` works)
+- [x] Set wsec/wpa_auth from VAP flags in brcmf_newstate(AUTH)
+- [ ] Fix wpa_supplicant interface lifecycle (brings interface down, never re-ups)
+- [ ] Test WPA2 4-way handshake end-to-end
 
-**Current status**: Firmware supplicant approach implemented. Set PSK via
-`sysctl dev.brcmfmac.0.psk="passphrase"`, then `ifconfig wlan0 ssid <network>`.
-Driver enables `sup_wpa=1`, pushes PMK, then joins. Firmware handles 4-way
-handshake internally. See `docs/01-decisions.md` for rationale.
+**Current status**: Firmware supplicant (sup_wpa + SET_WSEC_PMK) returns
+BCME_BADARG on firmware 7.35.180.133 — not supported. Must use host
+wpa_supplicant. Scan cache now works correctly with RSN IEs. wpa_supplicant
+finds networks but goes INACTIVE because it brings the interface down during
+init and never re-enables it. Next step: debug the BSD wpa_supplicant driver's
+interface enable/disable behavior.
 
 ### Milestone 11: Latency optimization (TODO)
 
@@ -73,11 +76,14 @@ handshake internally. See `docs/01-decisions.md` for rationale.
 - [ ] TX flow control / backpressure
 - [ ] Audit error paths for leaks
 
-### Milestone 13: ifconfig scan support (TODO)
+### Milestone 13: ifconfig scan support (COMPLETE)
 
-- [ ] Populate ieee80211_scan_entry from brcmf_scan_result
-- [ ] Feed results into net80211 scan cache
-- [ ] Support `ifconfig wlan0 list scan`
+- [x] Populate ieee80211_scan_entry from brcmf_scan_result
+- [x] Feed results into net80211 scan cache via ieee80211_add_scan
+- [x] Support `ifconfig wlan0 list scan`
+- [x] Fix sp->tstamp NULL crash in sta_add
+- [x] Fix IE offset (bi_len - ie_len when ie_offset=0)
+- [x] RSN/WPA IEs correctly parsed and visible in scan output
 
 ## Code structure
 
