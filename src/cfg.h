@@ -42,6 +42,7 @@ struct brcmf_vap {
 #define WPA_AUTH_DISABLED	0x0000
 #define WPA_AUTH_PSK		0x0004
 #define WPA2_AUTH_PSK		0x0080
+#define WPA2_AUTH_PSK_SHA256	0x8000
 
 /* Crypto algorithm IDs for wsec_key */
 #define CRYPTO_ALGO_OFF		0
@@ -207,6 +208,10 @@ int brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k);
 int brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k);
 int brcmf_set_pmk(struct brcmf_softc *sc, const char *psk, int psk_len);
 int brcmf_enable_supplicant(struct brcmf_softc *sc);
+int brcmf_set_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
+    int rsn_ie_len);
+int brcmf_clear_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
+    int rsn_ie_len);
 void brcmf_security_sysctl_init(struct brcmf_softc *sc);
 
 /* cfg.c (internal, used by scan.c) */

@@ -208,12 +208,17 @@ struct brcmf_softc {
 	/* Link state */
 	int link_up;
 	struct task link_task;
+	struct task restart_task;
 	uint8_t join_bssid[6];
 
 	/* WPA PSK (set via sysctl) */
 	char psk[65];
 	int psk_len;
 	struct sysctl_ctx_list sysctl_ctx;
+
+	/* Last RSN IE set via vndr_ie (for deletion on reassoc) */
+	uint8_t assocreq_ie[64];
+	int assocreq_ie_len;
 
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
@@ -276,6 +281,7 @@ void brcmf_msgbuf_cleanup(struct brcmf_softc *sc);
 int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len);
 int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
+void brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc);
 int brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da);
 void brcmf_msgbuf_repost_rxbufs(struct brcmf_softc *sc);
 
@@ -292,6 +298,8 @@ int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
     uint32_t val);
 int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
     uint32_t *val);
+int brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
+    int bsscfg_idx, const void *data, uint32_t len);
 int brcmf_fil_bss_up(struct brcmf_softc *sc);
 int brcmf_fil_bss_down(struct brcmf_softc *sc);
 

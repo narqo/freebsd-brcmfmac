@@ -190,6 +190,15 @@ struct msgbuf_flowring_create_cmplt {
 
 #define MSGBUF_TYPE_FLOW_RING_CREATE		0x03
 #define MSGBUF_TYPE_FLOW_RING_CREATE_CMPLT	0x04
+#define MSGBUF_TYPE_FLOW_RING_DELETE		0x05
+#define MSGBUF_TYPE_FLOW_RING_DELETE_CMPLT	0x06
+
+struct msgbuf_flowring_delete {
+	struct msgbuf_common_hdr msg;
+	uint16_t flow_ring_id;
+	uint16_t reason;
+	uint32_t rsvd0[7];
+} __packed;
 
 #define BRCMF_FLOWRING_SIZE	512
 #define BRCMF_FLOWRING_ITEM_SIZE sizeof(struct msgbuf_tx_msghdr)
@@ -441,6 +450,7 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 			break;
 
 		case MSGBUF_TYPE_FLOW_RING_CREATE_CMPLT:
+		case MSGBUF_TYPE_FLOW_RING_DELETE_CMPLT:
 			sc->flowring_create_status =
 			    le16toh(((struct msgbuf_flowring_create_cmplt *)msg)->compl_hdr.status);
 			sc->flowring_create_done = 1;
@@ -498,6 +508,10 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 
 		pktid = le32toh(tx->msg.request_id);
 
+		if (le16toh(tx->tx_status) != 0)
+			printf("brcmfmac: tx_complete status=%u pktid=0x%x\n",
+			    le16toh(tx->tx_status), pktid);
+
 		/* Validate and free TX buffer */
 		if (pktid >= 0x40000 && pktid < 0x40000 + BRCMF_TX_RING_SIZE) {
 			idx = pktid - 0x40000;
@@ -549,7 +563,19 @@ brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
 	m->m_pkthdr.len = m->m_len = len;
 	m->m_pkthdr.rcvif = ifp;
 
-	/* Deliver as Ethernet frame */
+	if (len >= 14) {
+		uint16_t etype = ((uint8_t *)data)[12] << 8 |
+		    ((uint8_t *)data)[13];
+		if (etype == 0x888e) {
+			int j;
+			uint8_t *d = (uint8_t *)data;
+			printf("brcmfmac: EAPOL rx len=%u data:", len);
+			for (j = 14; j < (int)len && j < 135; j++)
+				printf(" %02x", d[j]);
+			printf("\n");
+		}
+	}
+
 	{
 		struct epoch_tracker et;
 		NET_EPOCH_ENTER(et);
@@ -1018,6 +1044,62 @@ brcmf_pcie_free_ioctlbuf(struct brcmf_softc *sc)
 #define BRCMF_RING_MAX_ITEM_OFFSET	4
 #define BRCMF_RING_LEN_ITEMS_OFFSET	6
 #define BRCMF_RING_MEM_SZ		16
+
+/*
+ * Delete existing flow ring, notifying firmware and freeing DMA resources.
+ */
+void
+brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc)
+{
+	struct brcmf_pcie_ringbuf *ring, *ctrl;
+	struct msgbuf_flowring_delete *del;
+	int i, timeout;
+
+	ring = sc->flowring;
+	if (ring == NULL)
+		return;
+
+	/* Drain pending TX buffers */
+	for (i = 0; i < BRCMF_TX_RING_SIZE; i++) {
+		if (sc->txbuf[i].m != NULL) {
+			bus_dmamap_sync(sc->txbuf[i].dma_tag,
+			    sc->txbuf[i].dma_map, BUS_DMASYNC_POSTWRITE);
+			bus_dmamap_unload(sc->txbuf[i].dma_tag,
+			    sc->txbuf[i].dma_map);
+			m_freem(sc->txbuf[i].m);
+			sc->txbuf[i].m = NULL;
+		}
+	}
+
+	/* Send flow ring delete request */
+	ctrl = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+	del = brcmf_msgbuf_ring_reserve(sc, ctrl);
+	if (del != NULL) {
+		memset(del, 0, sizeof(*del));
+		del->msg.msgtype = MSGBUF_TYPE_FLOW_RING_DELETE;
+		del->msg.ifidx = 0;
+		del->msg.request_id = htole32(ring->id);
+		del->flow_ring_id =
+		    htole16(BRCMF_NROF_H2D_COMMON_MSGRINGS + ring->id);
+		del->reason = 0;
+
+		sc->flowring_create_done = 0;
+		brcmf_msgbuf_ring_submit(sc, ctrl);
+
+		timeout = 1000;
+		while (!sc->flowring_create_done && timeout > 0) {
+			brcmf_msgbuf_process_d2h(sc);
+			if (sc->flowring_create_done)
+				break;
+			DELAY(1000);
+			timeout--;
+		}
+	}
+
+	brcmf_free_dma_buf(ring->dma_tag, ring->dma_map, ring->buf);
+	free(ring, M_BRCMFMAC);
+	sc->flowring = NULL;
+}
 
 /*
  * Allocate and create a flow ring for TX.

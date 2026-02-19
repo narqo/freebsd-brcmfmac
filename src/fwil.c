@@ -114,6 +114,30 @@ brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
 }
 
 /*
+ * Set a bsscfg-indexed IOVAR. The wire format is:
+ *   "bsscfg:<name>\0" + le32(bsscfgidx) + data
+ */
+int
+brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
+    int bsscfg_idx, const void *data, uint32_t len)
+{
+	uint32_t prefix_len;
+
+	prefix_len = 7 + strlen(name) + 1; /* "bsscfg:" + name + '\0' */
+	if (prefix_len + 4 + len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		return (EINVAL);
+
+	memcpy(sc->ioctlbuf, "bsscfg:", 7);
+	strcpy((char *)sc->ioctlbuf + 7, name);
+	*(uint32_t *)((char *)sc->ioctlbuf + prefix_len) = htole32(bsscfg_idx);
+	if (data != NULL && len > 0)
+		memcpy((char *)sc->ioctlbuf + prefix_len + 4, data, len);
+
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_SET_VAR, sc->ioctlbuf,
+	    prefix_len + 4 + len, NULL);
+}
+
+/*
  * Bring firmware interface up.
  */
 int

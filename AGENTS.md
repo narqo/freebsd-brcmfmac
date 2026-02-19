@@ -153,6 +153,44 @@ ABORT=0x10, RUNNING=0x20.
 checking abort flags. If `ss_vap` is NULL, the kernel faults at address 0x6a
 (`vap->iv_debug` offset). Pre-set `ic->ic_scan->ss_vap` in vap_create.
 
+## Firmware BSS info struct size mismatch
+
+The `brcmf_bss_info_le` struct is 117 bytes, but the firmware (v7.35.180.133)
+uses a 128-byte struct. When `ie_offset=0` and `ie_length=0`, IEs start at
+byte 128. The 11 extra bytes between offsets 117-127 are unknown fields not
+in our struct definition.
+
+## WPA2 RSN IE mismatch (RESOLVED)
+
+The firmware's RSN IE capabilities field is `0x000c` (16 PTKSA replay
+counters). wpa_supplicant defaults to `0x0000`. The mismatch causes the
+AP to reject EAPOL frame 2/4.
+
+**Root cause**: wpa_supplicant sets replay counter bits only when
+`sm->wmm_enabled` is true, which requires a WMM vendor IE in the BSS
+scan entry.
+
+**Fix**: Inject a synthetic WMM IE into scan results for BSSes with RSN
+but no WMM IE.
+
+**Do NOT use** the `wpaie` iovar on this firmware — any `wpaie` set
+(raw, bsscfg-prefixed, matching or mismatching) causes `SET_SSID
+failed, status=1` and corrupts the firmware WPA state persistently.
+
+## Group key EA field
+
+The `wsec_key` iovar for group keys requires `ea` field set to all zeros.
+Setting `ea=ff:ff:ff:ff:ff:ff` (broadcast) returns BCME_UNSUPPORTED (5).
+The Linux driver leaves `ea` zeroed for group keys in STA mode.
+
+## Firmware WPA2 limitations (v7.35.180.133)
+
+- `WPA2_AUTH_PSK_SHA256` (0x8000) is NOT supported. Setting
+  `wpa_auth=0x8080` causes `SET_SSID failed, status=1`.
+- `sup_wpa=1` + `SET_WSEC_PMK` returns BCME_BADARG (-23). The firmware
+  does not support internal supplicant mode.
+- Must use `sup_wpa=0` for host-managed WPA.
+
 ## LLVM printf optimization
 
 Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as

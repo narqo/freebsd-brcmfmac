@@ -65,10 +65,14 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 {
 	struct brcmf_escan_params_le *params;
 	size_t params_size;
-	int nchan, i, error;
+	int nchan, error;
 
-	nchan = 14;
-	params_size = sizeof(*params) + nchan * sizeof(uint16_t);
+	/*
+	 * Scan all 2.4 GHz and 5 GHz channels supported by the
+	 * hardware. Use channel_num=0 to let firmware scan all.
+	 */
+	nchan = 0;
+	params_size = sizeof(*params);
 	params = malloc(params_size, M_BRCMFMAC, M_NOWAIT | M_ZERO);
 	if (params == NULL)
 		return (ENOMEM);
@@ -92,10 +96,8 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 	params->params_le.home_time = htole32(-1);
 
 	params->params_le.channel_num = htole32(nchan);
-	for (i = 0; i < nchan; i++)
-		params->params_le.channel_list[i] =
-		    brcmf_channel_to_chanspec(i + 1);
 
+	sc->scan_nresults = 0;
 	sc->scan_active = 1;
 
 	error = brcmf_fil_iovar_data_set(sc, "escan", params, params_size);
@@ -124,6 +126,8 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	result = data;
 	buflen = le32toh(result->buflen);
 	bss_count = le16toh(result->bss_count);
+
+	/* no filtering — accept all escan events */
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
@@ -160,10 +164,46 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			ie_off = bi_len - ie_len;
 		if (ie_off < sizeof(*bi))
 			ie_off = sizeof(*bi);
+		/*
+		 * When firmware reports ie_offset=0, use the BSS info
+		 * version to determine the actual struct size. Version 109
+		 * (0x6d) has a 128-byte header before IEs.
+		 */
+		if (le16toh(bi->ie_offset) == 0 && ie_len == 0 &&
+		    bi_len > 128) {
+			ie_off = 128;
+			ie_len = bi_len - ie_off;
+		}
+
 		chan = brcmf_chanspec_to_channel(chanspec);
 
 		if (sc->scan_nresults < BRCMF_SCAN_RESULTS_MAX) {
-			sr = &sc->scan_results[sc->scan_nresults++];
+			int k, dup = -1;
+
+			/*
+			 * Check for duplicate BSSID. If we already have
+			 * an entry with IEs, don't overwrite it with one
+			 * that lacks IEs.
+			 */
+			for (k = 0; k < sc->scan_nresults; k++) {
+				if (memcmp(sc->scan_results[k].bssid,
+				    bi->BSSID, 6) == 0) {
+					dup = k;
+					break;
+				}
+			}
+			if (dup >= 0 && sc->scan_results[dup].ie_len > 0 &&
+			    ie_len == 0) {
+				bi = (struct brcmf_bss_info_le *)
+				    ((uint8_t *)bi + bi_len);
+				bss_count--;
+				continue;
+			}
+
+			if (dup >= 0)
+				sr = &sc->scan_results[dup];
+			else
+				sr = &sc->scan_results[sc->scan_nresults++];
 			memcpy(sr->bssid, bi->BSSID, 6);
 			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
 			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
@@ -180,13 +220,13 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			} else {
 				sr->ie_len = 0;
 			}
+
+			/* empty */
 		}
 
 		bi = (struct brcmf_bss_info_le *)((uint8_t *)bi + bi_len);
 		bss_count--;
 	}
-
-	taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
 }
 
 /* Default rates IE for 2.4GHz (11b/g rates) */
@@ -194,6 +234,36 @@ static const uint8_t default_rates_ie[] = {
 	IEEE80211_ELEMID_RATES, 8,
 	0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
 };
+
+/*
+ * Minimal WMM Information Element. The firmware always sets 16 PTKSA
+ * replay counters (RSN capabilities 0x000c) in its association request
+ * RSN IE. wpa_supplicant only does the same when it sees a WMM IE in
+ * the BSS, so inject one when the AP doesn't advertise WMM.
+ */
+static const uint8_t default_wmm_ie[] = {
+	IEEE80211_ELEMID_VENDOR, 0x07,
+	0x00, 0x50, 0xf2, 0x02,
+	0x00, 0x01, 0x00,
+};
+
+/*
+ * Clear ISCAN_DISCARD so ieee80211_add_scan doesn't drop results.
+ * swscan sets DISCARD at scan start and clears it at first channel
+ * dwell, but our firmware escan results may arrive outside that window.
+ */
+static void
+brcmf_clear_scan_discard(struct ieee80211com *ic)
+{
+	struct ieee80211_scan_state *ss = ic->ic_scan;
+	uint8_t *base;
+
+	if (ss == NULL)
+		return;
+	/* iflags is the first field after ieee80211_scan_state */
+	base = (uint8_t *)ss + sizeof(struct ieee80211_scan_state);
+	*(u_int *)base &= ~0x02; /* ISCAN_DISCARD */
+}
 
 void
 brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
@@ -209,6 +279,8 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
 		return;
+
+	brcmf_clear_scan_discard(ic);
 
 	chan = ieee80211_find_channel(ic, sr->chan,
 	    sr->chan <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
@@ -233,6 +305,7 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (sr->ie_len > 0) {
 		uint8_t *p = sr->ie;
 		uint8_t *end = sr->ie + sr->ie_len;
+		uint8_t *validated_end = p;
 
 		while (p + 2 <= end) {
 			uint8_t id = p[0];
@@ -272,9 +345,25 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 				break;
 			}
 			p += 2 + len;
+			validated_end = p;
 		}
+		/*
+		 * If the BSS has RSN but no WMM IE, append a synthetic
+		 * WMM IE. The firmware always sets 16 PTKSA replay
+		 * counters in its RSN IE; wpa_supplicant only matches
+		 * this when it sees a WMM IE in the BSS.
+		 */
+		if (sp.rsn != NULL && sp.wme == NULL &&
+		    validated_end - sr->ie + (int)sizeof(default_wmm_ie)
+		    <= BRCMF_SCAN_IE_MAX) {
+			memcpy(validated_end, default_wmm_ie,
+			    sizeof(default_wmm_ie));
+			sp.wme = validated_end;
+			validated_end += sizeof(default_wmm_ie);
+		}
+
 		sp.ies = sr->ie;
-		sp.ies_len = sr->ie_len;
+		sp.ies_len = validated_end - sr->ie;
 	}
 
 	memset(&wh, 0, sizeof(wh));
@@ -313,10 +402,17 @@ brcmf_scan_complete_task(void *arg, int pending)
 	n = sc->scan_nresults;
 	sc->scan_nresults = 0;
 
-	if (sc->link_up)
-		return;
+	for (i = 0; i < n; i++)
+		brcmf_add_scan_result(sc, &sc->scan_results[i]);
 
-	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
+	/*
+	 * Direct join only when net80211 controls roaming (not
+	 * wpa_supplicant). When iv_roaming == MANUAL, the
+	 * supplicant drives association via MLME ioctls.
+	 */
+	if (!sc->link_up &&
+	    vap->iv_roaming != IEEE80211_ROAMING_MANUAL &&
+	    vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
 		static const uint8_t zerobssid[6] = {0, 0, 0, 0, 0, 0};
 		int bssid_any = IEEE80211_ADDR_EQ(vap->iv_des_bssid,
 		    ieee80211broadcastaddr) ||
@@ -331,9 +427,6 @@ brcmf_scan_complete_task(void *arg, int pending)
 			}
 		}
 	}
-
-	for (i = 0; i < n; i++)
-		brcmf_add_scan_result(sc, &sc->scan_results[i]);
 
 	ieee80211_scan_done(vap);
 }

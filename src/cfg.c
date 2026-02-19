@@ -3,6 +3,7 @@
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
+#include <sys/endian.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -76,11 +77,29 @@ brcmf_link_task(void *arg, int pending)
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 
-			if (sc->flowring == NULL)
-				brcmf_msgbuf_init_flowring(sc, bssid);
+			brcmf_msgbuf_delete_flowring(sc);
+			brcmf_msgbuf_init_flowring(sc, bssid);
 
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
 			brcmf_msgbuf_repost_rxbufs(sc);
+
+			/* Debug: read back assoc_req_ies */
+			error = brcmf_fil_iovar_data_get(sc,
+			    "assoc_req_ies", NULL, 256);
+			if (error == 0) {
+				uint8_t *p = sc->ioctlbuf;
+				uint32_t alen = le32toh(*(uint32_t *)p);
+				int j;
+				printf("brcmfmac: assoc_req_ies len=%u:",
+				    alen);
+				for (j = 4; j < (int)(4 + alen) &&
+				    j < 60; j++)
+					printf(" %02x", p[j]);
+				printf("\n");
+			} else {
+				printf("brcmfmac: assoc_req_ies get: %d\n",
+				    error);
+			}
 		}
 	} else {
 		ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
@@ -104,6 +123,8 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 		break;
 
 	case BRCMF_E_LINK:
+		printf("brcmfmac: LINK event flags=0x%x link=%d\n",
+		    flags, !!(flags & BRCMF_EVENT_MSG_LINK));
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
 		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		break;
@@ -128,10 +149,10 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (error != 0)
 		return error;
 
-	if (wpa_auth != WPA_AUTH_DISABLED && sc->psk_len > 0) {
-		brcmf_enable_supplicant(sc);
+	brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
+
+	if (wpa_auth != WPA_AUTH_DISABLED && sc->psk_len > 0)
 		brcmf_set_pmk(sc, sc->psk, sc->psk_len);
-	}
 
 	memcpy(sc->join_bssid, sr->bssid, 6);
 
@@ -156,14 +177,20 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	struct brcmf_join_params join;
 	int error;
 
+	memcpy(sc->join_bssid, ni->ni_bssid, 6);
+
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
 	memcpy(join.params_le.bssid, ni->ni_bssid, 6);
 
+	printf("brcmfmac: SET_SSID ssid='%.*s' len=%d\n",
+	    ni->ni_esslen, ni->ni_essid, ni->ni_esslen);
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
-	if (error != 0)
+	if (error != 0) {
+		printf("brcmfmac: SET_SSID ioctl error=%d\n", error);
 		return error;
+	}
 
 	return 0;
 }
@@ -210,6 +237,30 @@ brcmf_get_macaddr(struct brcmf_softc *sc)
 }
 
 /*
+ * Re-start the VAP after a deferred INIT transition completes.
+ * The SIOCSIFFLAGS UP handler checks iv_state==INIT to call
+ * ieee80211_start_locked. When the INIT transition is deferred,
+ * iv_state may not be INIT yet when UP runs, leaving ic_nrunning
+ * at 0 and all scan ioctls failing with ENXIO.
+ */
+static void
+brcmf_restart_task(void *arg, int pending)
+{
+	struct brcmf_softc *sc = arg;
+	struct ieee80211com *ic = &sc->ic;
+	struct ieee80211vap *vap;
+
+	IEEE80211_LOCK(ic);
+	vap = TAILQ_FIRST(&ic->ic_vaps);
+	if (vap != NULL &&
+	    vap->iv_state == IEEE80211_S_INIT &&
+	    (if_getflags(vap->iv_ifp) & IFF_UP) &&
+	    ic->ic_nrunning == 0)
+		ieee80211_start_locked(vap);
+	IEEE80211_UNLOCK(ic);
+}
+
+/*
  * VAP state change handler.
  */
 static int
@@ -223,11 +274,19 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	switch (nstate) {
 	case IEEE80211_S_INIT:
+		sc->scan_active = 0;
+		sc->scan_complete = 0;
+		/*
+		 * Schedule restart check after this deferred INIT
+		 * transition completes.
+		 */
+		taskqueue_enqueue(ic->ic_tq, &sc->restart_task);
 		break;
 	case IEEE80211_S_SCAN:
 		break;
-	case IEEE80211_S_AUTH:
-		if (vap->iv_bss != NULL) {
+	case IEEE80211_S_AUTH: {
+		struct ieee80211_node *ni = vap->iv_bss;
+		if (ni != NULL) {
 			uint32_t wsec = WSEC_NONE;
 			uint32_t wpa_auth = WPA_AUTH_DISABLED;
 
@@ -241,10 +300,14 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			if (vap->iv_flags & IEEE80211_F_PRIVACY)
 				wsec |= AES_ENABLED;
 
+			printf("brcmfmac: AUTH wsec=0x%x wpa_auth=0x%x\n",
+			    wsec, wpa_auth);
 			brcmf_set_security(sc, wsec, wpa_auth);
-			brcmf_join_bss(sc, vap->iv_bss);
+			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
+			brcmf_join_bss(sc, ni);
 		}
 		break;
+	}
 	case IEEE80211_S_ASSOC:
 		break;
 	case IEEE80211_S_RUN:
@@ -386,10 +449,14 @@ brcmf_parent(struct ieee80211com *ic)
 			startall = 1;
 		}
 	} else {
-		if (sc->running) {
-			brcmf_fil_bss_down(sc);
-			sc->running = 0;
-		}
+		/*
+		 * Don't bring firmware BSS down on interface DOWN.
+		 * wpa_supplicant cycles the interface rapidly during
+		 * init, and the deferred INIT state transition in
+		 * net80211 can race with the UP, leaving ic_nrunning
+		 * at 0 and scan ioctls failing with ENXIO.
+		 */
+		sc->running = 0;
 	}
 
 	if (startall)
@@ -415,7 +482,6 @@ brcmf_scan_start(struct ieee80211com *ic)
 	 */
 	if (sc->scan_active)
 		return;
-	sc->scan_active = 1;
 
 	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
 		ssid = vap->iv_des_ssid[0].ssid;
@@ -428,9 +494,7 @@ brcmf_scan_start(struct ieee80211com *ic)
 static void
 brcmf_scan_end(struct ieee80211com *ic)
 {
-	struct brcmf_softc *sc = ic->ic_softc;
-
-	sc->scan_active = 0;
+	/* Don't clear scan_active — firmware escan may still be running */
 }
 
 static void
@@ -439,28 +503,38 @@ brcmf_set_channel(struct ieee80211com *ic)
 }
 
 /*
- * Scan current channel. Enqueue scan_curchan timeout task to prevent
- * swscan from completing instantly and busy-looping.
+ * Scan current channel. For FullMAC, firmware handles channel
+ * dwell and timing. We enqueue a short timeout to prevent swscan
+ * from completing instantly and busy-looping. The task will check
+ * ISCAN_CANCEL/ISCAN_ABORT before accessing ss_vap.
  */
 static void
 brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
 	struct ieee80211com *ic = ss->ss_ic;
+	struct brcmf_softc *sc = ic->ic_softc;
 	struct brcmf_scan_priv *priv = (struct brcmf_scan_priv *)ss;
 	struct ieee80211vap *vap;
+	unsigned long dwell;
 
 	/*
-	 * Ensure ss_vap is set before enqueuing scan_curchan_task.
-	 * The task accesses ss_vap->iv_debug via IEEE80211_DPRINTF
-	 * before checking abort flags.
+	 * On the first channel, wait for the firmware escan to
+	 * complete before letting swscan advance. For subsequent
+	 * channels, use minimal dwell to finish quickly.
 	 */
+	if (sc->scan_complete || ss->ss_next > 1)
+		dwell = 1;
+	else
+		dwell = maxdwell;
+
 	IEEE80211_LOCK(ic);
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap != NULL)
 		ss->ss_vap = vap;
-	if (ss->ss_vap != NULL)
+	if (ss->ss_vap != NULL &&
+	    (priv->iflags & (0x08 | 0x10)) == 0)  /* !CANCEL && !ABORT */
 		taskqueue_enqueue_timeout(ic->ic_tq,
-		    &priv->scan_curchan, maxdwell);
+		    &priv->scan_curchan, dwell);
 	IEEE80211_UNLOCK(ic);
 }
 
@@ -484,7 +558,27 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 		return (ENETDOWN);
 	}
 
+	if (m->m_len >= 14) {
+		uint8_t *eh = mtod(m, uint8_t *);
+		uint16_t etype = eh[12] << 8 | eh[13];
+		if (etype == 0x888e) {
+			int j, dlen = m->m_pkthdr.len;
+			printf("brcmfmac: EAPOL tx len=%d\n", dlen);
+			printf("brcmfmac: EAPOL tx data:");
+			for (j = 14; j < dlen && j < 135; j++)
+				printf(" %02x", eh[j]);
+			printf("\n");
+		}
+	}
+
 	return brcmf_msgbuf_tx(sc, m);
+}
+
+static int
+brcmf_wme_update(struct ieee80211com *ic)
+{
+	/* Firmware handles WME parameters internally. */
+	return 0;
 }
 
 static int
@@ -536,6 +630,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
 	TASK_INIT(&sc->link_task, 0, brcmf_link_task, sc);
+	TASK_INIT(&sc->restart_task, 0, brcmf_restart_task, sc);
 
 	sysctl_ctx_init(&sc->sysctl_ctx);
 	brcmf_security_sysctl_init(sc);
@@ -564,6 +659,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	ieee80211_ifattach(ic);
 
+	ic->ic_wme.wme_update = brcmf_wme_update;
 	ic->ic_vap_create = brcmf_vap_create;
 	ic->ic_vap_delete = brcmf_vap_delete;
 	ic->ic_parent = brcmf_parent;

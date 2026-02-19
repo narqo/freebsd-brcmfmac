@@ -194,35 +194,113 @@ crashed). Both `sup_wpa` and `SET_WSEC_PMK` return BCME_BADARG (-23) on
 firmware 7.35.180.133. This firmware expects the host to handle the 4-way
 handshake.
 
-**Scan cache crash**: Caused by `sp->tstamp` being NULL. The
-`ieee80211_scanparams.tstamp` field is a pointer, and `sta_add()` in
-ieee80211_scan_sta.c dereferences it unconditionally. Fixed by providing
-a zero-filled 8-byte buffer.
+**Sequence** (working up to step 7):
 
-**IE offset bug**: Firmware reports `ie_offset=0` in `brcmf_bss_info_le`.
-Our initial fallback used `sizeof(brcmf_bss_info_le)` (117 bytes), but the
-firmware's actual struct is ~280 bytes. Fixed by computing `bi_len - ie_len`
-when `ie_offset=0`.
-
-**Current state**: Scan cache works, RSN IEs are properly parsed.
-wpa_supplicant finds networks but can't associate yet — it brings the
-interface down during init and never re-enables it. Needs investigation
-into the BSD wpa_supplicant driver's interface lifecycle expectations.
-
-**Sequence** (target):
-
-1. `wpa_supplicant -Dbsd -iwlan0 -c/etc/wpa_supplicant.conf`
+1. `wpa_supplicant -Dbsd -iwlan0 -c/tmp/wpa.conf`
 2. wpa_supplicant scans via net80211 → scan cache populated
 3. wpa_supplicant finds matching BSS with RSN IE
-4. wpa_supplicant triggers MLME join via net80211 ioctl
-5. Driver sets wsec/wpa_auth and joins via firmware
-6. Firmware associates, sends LINK event
-7. AP sends EAPOL frame 1 → delivered to wlan0 via data path
-8. wpa_supplicant handles 4-way handshake over EAPOL
-9. wpa_supplicant installs keys via iv_key_set → wsec_key IOVAR
+4. wpa_supplicant triggers MLME associate → net80211 AUTH state
+5. Driver sets wsec/wpa_auth, sup_wpa=0, wpaie, then joins via SET_SSID
+6. Firmware associates, sends LINK event → link_task → RUN state
+7. AP sends EAPOL frame 1/4 → delivered to wlan0 → wpa_supplicant
+8. **BLOCKED**: wpa_supplicant sends frame 2/4, AP rejects (RSN IE mismatch)
 
-## Next steps
+## WPA2 4-way handshake: RSN IE mismatch (RESOLVED)
 
-1. DMA ring initialization
-2. Interrupt setup
-3. msgbuf protocol
+### Root cause
+
+The firmware's RSN IE in the association request uses capabilities
+`0x000c` (16 PTKSA replay counters). wpa_supplicant's RSN IE in EAPOL
+frame 2/4 uses `0x0000`. The AP compares both and rejects the handshake.
+
+The firmware always sets the WMM-style replay counter bits because the
+Broadcom FullMAC firmware manages WMM internally.
+
+wpa_supplicant sets these bits only when `sm->wmm_enabled == 1`
+(`rsn_supp_capab()` in `src/rsn_supp/wpa_ie.c`):
+
+```c
+if (sm->wmm_enabled) {
+    capab |= RSN_NUM_REPLAY_COUNTERS_16 << 2;  /* 0x000c */
+}
+```
+
+`wmm_enabled` is set when the BSS has a WMM vendor IE (OUI 00:50:f2
+type 2) in its scan entry (`wpa_supplicant.c:2117`).
+
+### Fix
+
+Inject a synthetic WMM IE into scan results for BSSes that have RSN
+but no WMM IE. This makes wpa_supplicant detect WMM capability, set
+`wmm_enabled=1`, and produce RSN capabilities `0x000c` — matching the
+firmware's association request.
+
+### What did NOT work
+
+- `wpaie` iovar (raw, bsscfg-prefixed) — accepts the IE but causes
+  `SET_SSID failed, status=1`. Corrupts firmware WPA state persistently.
+- `vndr_ie` iovar with RSN IE — firmware ignores it, still uses its own.
+- `bsscfg:wpaie` — same failure.
+- `assoc_req_ies` readback — works after association, but too late to
+  feed back to wpa_supplicant (no BSD driver mechanism for this).
+
+## Scan implementation details
+
+### escan lifecycle
+
+swscan calls `scan_start` per channel. The driver starts ONE firmware escan
+(all channels, `channel_num=0`) on the first call and ignores subsequent
+calls until the escan completes. `scan_end` is a no-op — the firmware
+controls scan timing.
+
+The escan completion (bss_count=0) sets `scan_active=0` and enqueues
+`scan_complete_task`, which delivers results to net80211 via
+`ieee80211_add_scan` and calls `ieee80211_scan_done`.
+
+### IE extraction from firmware scan results
+
+The firmware's `brcmf_bss_info_le` struct is 117 bytes (`sizeof`), but
+the firmware's actual struct appears to be 128 bytes. When `ie_offset=0`
+and `ie_length=0` (common case), the IEs start at offset 128 from the
+BSS info start. When `ie_length > 0`, the IEs are at `bi_len - ie_len`.
+
+The 128-byte offset was determined empirically: at offset 117, there are
+11 bytes of unknown data before the SSID IE (ID=0x00). The SSID IE at
+offset 128 parses correctly and is followed by valid Rates, RSN, etc.
+
+### BSSID dedup
+
+Multiple escan events may report the same BSSID — some with IEs
+(`ie_length > 0`) and some without. Without dedup, the entry without IEs
+overwrites the one with IEs, losing RSN/HTCAP flags. The scan result
+buffer tracks BSSIDs and refuses to overwrite an entry that has IEs with
+one that doesn't.
+
+### ISCAN_DISCARD
+
+swscan's internal `ISCAN_DISCARD` flag (offset `sizeof(ieee80211_scan_state)`,
+bit 0x02) causes `ieee80211_add_scan` to silently drop results. This flag
+is set at scan start and cleared at first channel dwell. Since firmware
+escan results arrive asynchronously (not tied to swscan's channel timing),
+the driver clears this flag before each `ieee80211_add_scan` call.
+
+## Test environment
+
+- **Build host**: 192.168.20.82 (FreeBSD 15, Zig 0.16-dev)
+- **Target**: 192.168.200.10 (SSH via jump host 192.168.20.82)
+- **Hardware**: BCM4350c2 (PCI 0x14e4:0x43a3), firmware v7.35.180.133
+- **AP**: "TestAP1" on dc:a6:32:5b:98:ad, channel 1, WPA2-PSK CCMP only
+  (AKM type 2, no SHA-256), passphrase "SuperSecret!Test1"
+- **Build/deploy**: `rsync` to build host → `make` → `scp` to target →
+  `kldunload/kldload`
+- **wpa.conf**: `/tmp/wpa.conf` on target:
+  ```
+  ctrl_interface=/var/run/wpa_supplicant
+  network={
+      ssid="TestAP1"
+      psk="SuperSecret!Test1"
+      key_mgmt=WPA-PSK
+      proto=RSN
+      pairwise=CCMP
+  }
+  ```

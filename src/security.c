@@ -2,6 +2,7 @@
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/endian.h>
 #include <sys/bus.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
@@ -84,7 +85,6 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 
 	if (k->wk_flags & IEEE80211_KEY_GROUP) {
 		key.flags = htole32(BRCMF_PRIMARY_KEY);
-		memset(key.ea, 0xff, 6);
 	} else {
 		macaddr = k->wk_macaddr;
 		if (macaddr == NULL || IEEE80211_ADDR_EQ(macaddr, ieee80211broadcastaddr))
@@ -92,6 +92,10 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 		memcpy(key.ea, macaddr, 6);
 	}
 
+	printf("brcmfmac: wsec_key idx=%d algo=%d len=%d flags=0x%x ea=%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    le32toh(key.index), le32toh(key.algo), le32toh(key.len),
+	    le32toh(key.flags), key.ea[0], key.ea[1], key.ea[2],
+	    key.ea[3], key.ea[4], key.ea[5]);
 	error = brcmf_fil_iovar_data_set(sc, "wsec_key", &key, sizeof(key));
 	if (error != 0)
 		device_printf(sc->dev, "wsec_key set failed: %d\n", error);
@@ -153,6 +157,75 @@ brcmf_enable_supplicant(struct brcmf_softc *sc)
 		    "sup_wpa not supported (err=%d), continuing\n", error);
 	}
 
+	return (0);
+}
+
+/*
+ * vndr_ie iovar format:
+ *   cmd[12]       "add" or "del"
+ *   pktflag[4]    frame type bitmask
+ *   ie_count[4]   always 1
+ *   ie_data[]     raw IE (id + len + body)
+ */
+#define VNDR_IE_CMD_LEN		12
+#define VNDR_IE_ASSOCREQ_FLAG	0x04
+
+static int
+brcmf_vndr_ie_cmd(struct brcmf_softc *sc, const char *cmd,
+    uint32_t pktflag, const uint8_t *ie, int ie_len)
+{
+	uint8_t buf[VNDR_IE_CMD_LEN + 4 + 4 + 256];
+	uint32_t buflen;
+
+	if (ie_len > 256)
+		return (EINVAL);
+
+	buflen = VNDR_IE_CMD_LEN + 4 + 4 + ie_len;
+	memset(buf, 0, VNDR_IE_CMD_LEN);
+	strncpy((char *)buf, cmd, VNDR_IE_CMD_LEN);
+	*(uint32_t *)(buf + VNDR_IE_CMD_LEN) = htole32(pktflag);
+	*(uint32_t *)(buf + VNDR_IE_CMD_LEN + 4) = htole32(1);
+	memcpy(buf + VNDR_IE_CMD_LEN + 4 + 4, ie, ie_len);
+
+	return brcmf_fil_bsscfg_data_set(sc, "vndr_ie", 0, buf, buflen);
+}
+
+/*
+ * Set the RSN IE that the firmware will include in the 802.11
+ * association request. This must match the RSN IE that
+ * wpa_supplicant puts in EAPOL frame 2/4, otherwise the AP
+ * rejects the handshake.
+ */
+int
+brcmf_set_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
+    int rsn_ie_len)
+{
+	int error;
+
+	if (rsn_ie == NULL || rsn_ie_len < 2)
+		return (0);
+
+	error = brcmf_vndr_ie_cmd(sc, "add", VNDR_IE_ASSOCREQ_FLAG,
+	    rsn_ie, rsn_ie_len);
+	if (error != 0)
+		device_printf(sc->dev, "vndr_ie add failed: %d\n", error);
+
+	return (error);
+}
+
+/*
+ * Remove a previously set RSN IE from association requests.
+ */
+int
+brcmf_clear_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
+    int rsn_ie_len)
+{
+	if (rsn_ie == NULL || rsn_ie_len < 2)
+		return (0);
+
+	/* Best-effort; ignore errors (IE may not exist) */
+	brcmf_vndr_ie_cmd(sc, "del", VNDR_IE_ASSOCREQ_FLAG,
+	    rsn_ie, rsn_ie_len);
 	return (0);
 }
 
