@@ -179,13 +179,29 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 
 	memcpy(sc->join_bssid, ni->ni_bssid, 6);
 
+	/* Clear any stale association state in the firmware */
+	{
+		struct {
+			uint32_t val;
+			uint8_t ea[6];
+			uint8_t pad[2];
+		} scbval;
+		memset(&scbval, 0, sizeof(scbval));
+		scbval.val = htole32(8); /* DISASSOC_STA_HAS_LEFT */
+		memcpy(scbval.ea, ni->ni_bssid, 6);
+		brcmf_fil_cmd_data_set(sc, 52 /* BRCMF_C_DISASSOC */,
+		    &scbval, sizeof(scbval));
+	}
+
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
 	memcpy(join.params_le.bssid, ni->ni_bssid, 6);
 
-	printf("brcmfmac: SET_SSID ssid='%.*s' len=%d\n",
-	    ni->ni_esslen, ni->ni_essid, ni->ni_esslen);
+	printf("brcmfmac: SET_SSID ssid='%.*s' bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
+	    ni->ni_esslen, ni->ni_essid,
+	    ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
+	    ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5]);
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
 	if (error != 0) {
 		printf("brcmfmac: SET_SSID ioctl error=%d\n", error);
@@ -201,12 +217,7 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	uint8_t evmask[BRCMF_EVENTING_MASK_LEN];
 	int error;
 
-	memset(evmask, 0, sizeof(evmask));
-
-	evmask[BRCMF_E_IF / 8] |= 1 << (BRCMF_E_IF % 8);
-	evmask[BRCMF_E_ESCAN_RESULT / 8] |= 1 << (BRCMF_E_ESCAN_RESULT % 8);
-	evmask[BRCMF_E_SET_SSID / 8] |= 1 << (BRCMF_E_SET_SSID % 8);
-	evmask[BRCMF_E_LINK / 8] |= 1 << (BRCMF_E_LINK % 8);
+	memset(evmask, 0xff, sizeof(evmask));
 
 	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask, sizeof(evmask));
 	if (error != 0)
@@ -561,6 +572,8 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 	if (m->m_len >= 14) {
 		uint8_t *eh = mtod(m, uint8_t *);
 		uint16_t etype = eh[12] << 8 | eh[13];
+		printf("brcmfmac: vap_tx etype=0x%04x len=%d\n",
+		    etype, m->m_pkthdr.len);
 		if (etype == 0x888e) {
 			int j, dlen = m->m_pkthdr.len;
 			printf("brcmfmac: EAPOL tx len=%d\n", dlen);

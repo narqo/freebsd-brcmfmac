@@ -185,8 +185,11 @@ The Linux driver leaves `ea` zeroed for group keys in STA mode.
 
 ## Firmware WPA2 limitations (v7.35.180.133)
 
-- `WPA2_AUTH_PSK_SHA256` (0x8000) is NOT supported. Setting
-  `wpa_auth=0x8080` causes `SET_SSID failed, status=1`.
+- `WPA2_AUTH_PSK_SHA256` (0x8000) as `wpa_auth` value is NOT supported.
+  Setting `wpa_auth=0x8080` causes `SET_SSID failed, status=1`.
+  However, the firmware auto-negotiates PSK-SHA256 (AKM type 6) when
+  the AP advertises it. Use `wpa_auth=0x80` (WPA2_AUTH_PSK) and let the
+  firmware select the AKM based on the AP's RSN IE.
 - `sup_wpa=1` + `SET_WSEC_PMK` returns BCME_BADARG (-23). The firmware
   does not support internal supplicant mode.
 - Must use `sup_wpa=0` for host-managed WPA.

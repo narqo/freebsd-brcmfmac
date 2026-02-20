@@ -2,10 +2,9 @@
 
 ## Current status
 
-**Milestone 10: WPA2 support** - IN PROGRESS. RSN IE mismatch resolved.
-4-way handshake completes, pairwise key installs. Group key install and
-encrypted data path need testing (blocked by intermittent SET_SSID firmware
-failures on test AP).
+**Milestone 10: WPA2 support** - COMPLETE. End-to-end ping over
+WPA2-PSK-SHA256 works (5/5, ~13ms RTT). Both WPA2-PSK and
+WPA2-PSK-SHA256 verified.
 
 ## Milestones
 
@@ -52,8 +51,11 @@ failures on test AP).
 - [x] 4-way handshake completes (all 4 frames exchanged)
 - [x] Pairwise key (AES-CCM) installs successfully
 - [x] Group key EA fix (zeros, not broadcast)
-- [ ] Group key installation (BCME_UNSUPPORTED — needs struct investigation)
-- [ ] Test encrypted data path
+- [x] Group key installs (idx=1, algo=4, flags=0x2)
+- [x] TX data path works (ARP frames transmitted, TX completions OK)
+- [x] WPA2-PSK-SHA256 works (firmware auto-negotiates AKM type 6)
+- [x] RX data path works (ARP + ICMP received)
+- [x] End-to-end ping over WPA2-PSK-SHA256 (5/5, 0% loss, ~13ms RTT)
 
 #### RSN IE mismatch (RESOLVED)
 

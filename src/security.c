@@ -34,6 +34,23 @@ brcmf_set_security(struct brcmf_softc *sc, uint32_t wsec, uint32_t wpa_auth)
 {
 	int error;
 
+	{
+		uint32_t val;
+		/* Infrastructure (BSS) mode */
+		val = htole32(1);
+		error = brcmf_fil_cmd_data_set(sc, 20 /* BRCMF_C_SET_INFRA */,
+		    &val, sizeof(val));
+		if (error != 0)
+			device_printf(sc->dev, "set infra: %d\n", error);
+
+		/* Open system auth */
+		val = htole32(0);
+		error = brcmf_fil_cmd_data_set(sc, 22 /* BRCMF_C_SET_AUTH */,
+		    &val, sizeof(val));
+		if (error != 0)
+			device_printf(sc->dev, "set auth: %d\n", error);
+	}
+
 	error = brcmf_fil_iovar_int_set(sc, "wsec", wsec);
 	if (error != 0) {
 		device_printf(sc->dev, "failed to set wsec: %d\n", error);
