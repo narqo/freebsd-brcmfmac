@@ -376,9 +376,6 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	case 54: /* BRCMF_E_IF - interface event, ignored */
 		break;
 	default:
-		printf("brcmfmac: event %u status=%u reason=%u flags=0x%x\n",
-		    event_code, be32toh(event->msg.status),
-		    be32toh(event->msg.reason), be16toh(event->msg.flags));
 		break;
 	}
 
@@ -565,20 +562,6 @@ brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
 	m_copyback(m, 0, len, data);
 	m->m_pkthdr.len = m->m_len = len;
 	m->m_pkthdr.rcvif = ifp;
-
-	if (len >= 14) {
-		uint16_t etype = ((uint8_t *)data)[12] << 8 |
-		    ((uint8_t *)data)[13];
-		printf("brcmfmac: rx etype=0x%04x len=%u\n", etype, len);
-		if (etype == 0x888e) {
-			int j;
-			uint8_t *d = (uint8_t *)data;
-			printf("brcmfmac: EAPOL rx len=%u data:", len);
-			for (j = 14; j < (int)len && j < 135; j++)
-				printf(" %02x", d[j]);
-			printf("\n");
-		}
-	}
 
 	{
 		struct epoch_tracker et;

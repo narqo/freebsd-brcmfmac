@@ -109,10 +109,6 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 		memcpy(key.ea, macaddr, 6);
 	}
 
-	printf("brcmfmac: wsec_key idx=%d algo=%d len=%d flags=0x%x ea=%02x:%02x:%02x:%02x:%02x:%02x\n",
-	    le32toh(key.index), le32toh(key.algo), le32toh(key.len),
-	    le32toh(key.flags), key.ea[0], key.ea[1], key.ea[2],
-	    key.ea[3], key.ea[4], key.ea[5]);
 	error = brcmf_fil_iovar_data_set(sc, "wsec_key", &key, sizeof(key));
 	if (error != 0)
 		device_printf(sc->dev, "wsec_key set failed: %d\n", error);

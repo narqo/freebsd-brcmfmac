@@ -24,7 +24,7 @@ WPA2-PSK-SHA256 verified.
 
 ### Milestone 9: Debug cleanup (COMPLETE)
 
-### Milestone 10: WPA2 support (IN PROGRESS)
+### Milestone 10: WPA2 support (COMPLETE)
 
 - [x] Set wsec (wireless security mode) - detected from capability field
 - [x] Set wpa_auth (WPA authentication type) - WPA2_AUTH_PSK
@@ -102,9 +102,4 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 | fwil.c | Firmware interface: IOVAR get/set | ~140 |
 | brcmfmac.zig | EROM parser (pure Zig) | ~220 |
 
-## Active debug prints
 
-These should be removed once WPA2 works:
-
-- `cfg.c`: EAPOL TX hex dump, LINK event flags, assoc_req_ies dump
-- `msgbuf.c`: EAPOL RX hex dump, TX completion non-zero status

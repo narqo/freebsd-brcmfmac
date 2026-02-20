@@ -82,24 +82,6 @@ brcmf_link_task(void *arg, int pending)
 
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
 			brcmf_msgbuf_repost_rxbufs(sc);
-
-			/* Debug: read back assoc_req_ies */
-			error = brcmf_fil_iovar_data_get(sc,
-			    "assoc_req_ies", NULL, 256);
-			if (error == 0) {
-				uint8_t *p = sc->ioctlbuf;
-				uint32_t alen = le32toh(*(uint32_t *)p);
-				int j;
-				printf("brcmfmac: assoc_req_ies len=%u:",
-				    alen);
-				for (j = 4; j < (int)(4 + alen) &&
-				    j < 60; j++)
-					printf(" %02x", p[j]);
-				printf("\n");
-			} else {
-				printf("brcmfmac: assoc_req_ies get: %d\n",
-				    error);
-			}
 		}
 	} else {
 		ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
@@ -123,8 +105,6 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 		break;
 
 	case BRCMF_E_LINK:
-		printf("brcmfmac: LINK event flags=0x%x link=%d\n",
-		    flags, !!(flags & BRCMF_EVENT_MSG_LINK));
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
 		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		break;
@@ -198,15 +178,9 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
 	memcpy(join.params_le.bssid, ni->ni_bssid, 6);
 
-	printf("brcmfmac: SET_SSID ssid='%.*s' bssid=%02x:%02x:%02x:%02x:%02x:%02x\n",
-	    ni->ni_esslen, ni->ni_essid,
-	    ni->ni_bssid[0], ni->ni_bssid[1], ni->ni_bssid[2],
-	    ni->ni_bssid[3], ni->ni_bssid[4], ni->ni_bssid[5]);
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
-	if (error != 0) {
-		printf("brcmfmac: SET_SSID ioctl error=%d\n", error);
+	if (error != 0)
 		return error;
-	}
 
 	return 0;
 }
@@ -217,7 +191,12 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	uint8_t evmask[BRCMF_EVENTING_MASK_LEN];
 	int error;
 
-	memset(evmask, 0xff, sizeof(evmask));
+	memset(evmask, 0, sizeof(evmask));
+
+	evmask[BRCMF_E_IF / 8] |= 1 << (BRCMF_E_IF % 8);
+	evmask[BRCMF_E_ESCAN_RESULT / 8] |= 1 << (BRCMF_E_ESCAN_RESULT % 8);
+	evmask[BRCMF_E_SET_SSID / 8] |= 1 << (BRCMF_E_SET_SSID % 8);
+	evmask[BRCMF_E_LINK / 8] |= 1 << (BRCMF_E_LINK % 8);
 
 	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask, sizeof(evmask));
 	if (error != 0)
@@ -311,8 +290,6 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			if (vap->iv_flags & IEEE80211_F_PRIVACY)
 				wsec |= AES_ENABLED;
 
-			printf("brcmfmac: AUTH wsec=0x%x wpa_auth=0x%x\n",
-			    wsec, wpa_auth);
 			brcmf_set_security(sc, wsec, wpa_auth);
 			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 			brcmf_join_bss(sc, ni);
@@ -567,21 +544,6 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 	if (vap->iv_state != IEEE80211_S_RUN) {
 		m_freem(m);
 		return (ENETDOWN);
-	}
-
-	if (m->m_len >= 14) {
-		uint8_t *eh = mtod(m, uint8_t *);
-		uint16_t etype = eh[12] << 8 | eh[13];
-		printf("brcmfmac: vap_tx etype=0x%04x len=%d\n",
-		    etype, m->m_pkthdr.len);
-		if (etype == 0x888e) {
-			int j, dlen = m->m_pkthdr.len;
-			printf("brcmfmac: EAPOL tx len=%d\n", dlen);
-			printf("brcmfmac: EAPOL tx data:");
-			for (j = 14; j < dlen && j < 135; j++)
-				printf(" %02x", eh[j]);
-			printf("\n");
-		}
 	}
 
 	return brcmf_msgbuf_tx(sc, m);
