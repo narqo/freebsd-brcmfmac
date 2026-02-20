@@ -207,11 +207,6 @@ int brcmf_set_security(struct brcmf_softc *sc, uint32_t wsec,
 int brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k);
 int brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k);
 int brcmf_set_pmk(struct brcmf_softc *sc, const char *psk, int psk_len);
-int brcmf_enable_supplicant(struct brcmf_softc *sc);
-int brcmf_set_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
-    int rsn_ie_len);
-int brcmf_clear_assocreq_ies(struct brcmf_softc *sc, const uint8_t *rsn_ie,
-    int rsn_ie_len);
 void brcmf_security_sysctl_init(struct brcmf_softc *sc);
 
 /* cfg.c (internal, used by scan.c) */

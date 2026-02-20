@@ -216,9 +216,7 @@ struct brcmf_softc {
 	int psk_len;
 	struct sysctl_ctx_list sysctl_ctx;
 
-	/* Last RSN IE set via vndr_ie (for deletion on reassoc) */
-	uint8_t assocreq_ie[64];
-	int assocreq_ie_len;
+
 
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
@@ -298,8 +296,6 @@ int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
     uint32_t val);
 int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
     uint32_t *val);
-int brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
-    int bsscfg_idx, const void *data, uint32_t len);
 int brcmf_fil_bss_up(struct brcmf_softc *sc);
 int brcmf_fil_bss_down(struct brcmf_softc *sc);
 
