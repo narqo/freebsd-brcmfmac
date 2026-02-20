@@ -289,17 +289,20 @@ the driver clears this flag before each `ieee80211_add_scan` call.
 - **Build host**: 192.168.20.82 (FreeBSD 15, Zig 0.16-dev)
 - **Target**: 192.168.200.10 (SSH via jump host 192.168.20.82)
 - **Hardware**: BCM4350c2 (PCI 0x14e4:0x43a3), firmware v7.35.180.133
-- **AP**: "TestAP1" on dc:a6:32:5b:98:ad, channel 1, WPA2-PSK CCMP only
-  (AKM type 2, no SHA-256), passphrase "SuperSecret!Test1"
+- **AP**: Raspberry Pi (dc:a6:32:5b:98:ad), channel 1, hostapd
+- **AP configs tested**:
+  - "TestAP1": WPA2-PSK CCMP (AKM type 2)
+  - "TestAP": WPA2-PSK-SHA256 CCMP (AKM type 6)
+  - Passphrase: "SuperSecret!Test1"
 - **Build/deploy**: `rsync` to build host → `make` → `scp` to target →
   `kldunload/kldload`
-- **wpa.conf**: `/tmp/wpa.conf` on target:
+- **wpa.conf**: `/tmp/wpa_sha256.conf` on target (current):
   ```
   ctrl_interface=/var/run/wpa_supplicant
   network={
-      ssid="TestAP1"
+      ssid="TestAP"
       psk="SuperSecret!Test1"
-      key_mgmt=WPA-PSK
+      key_mgmt=WPA-PSK-SHA256
       proto=RSN
       pairwise=CCMP
   }
