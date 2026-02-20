@@ -159,20 +159,6 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 
 	memcpy(sc->join_bssid, ni->ni_bssid, 6);
 
-	/* Clear any stale association state in the firmware */
-	{
-		struct {
-			uint32_t val;
-			uint8_t ea[6];
-			uint8_t pad[2];
-		} scbval;
-		memset(&scbval, 0, sizeof(scbval));
-		scbval.val = htole32(8); /* DISASSOC_STA_HAS_LEFT */
-		memcpy(scbval.ea, ni->ni_bssid, 6);
-		brcmf_fil_cmd_data_set(sc, 52 /* BRCMF_C_DISASSOC */,
-		    &scbval, sizeof(scbval));
-	}
-
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
@@ -264,8 +250,23 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	switch (nstate) {
 	case IEEE80211_S_INIT:
+		if (sc->link_up) {
+			struct {
+				uint32_t val;
+				uint8_t ea[6];
+				uint8_t pad[2];
+			} scbval;
+			memset(&scbval, 0, sizeof(scbval));
+			scbval.val = htole32(3); /* DEAUTH_LEAVING */
+			memcpy(scbval.ea, sc->join_bssid, 6);
+			brcmf_fil_cmd_data_set(sc,
+			    52 /* BRCMF_C_DISASSOC */,
+			    &scbval, sizeof(scbval));
+			sc->link_up = 0;
+		}
 		sc->scan_active = 0;
 		sc->scan_complete = 0;
+		sc->running = 0;
 		/*
 		 * Schedule restart check after this deferred INIT
 		 * transition completes.
