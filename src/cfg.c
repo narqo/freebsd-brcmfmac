@@ -56,10 +56,24 @@ brcmf_link_task(void *arg, int pending)
 		else
 			channum = brcmf_chanspec_to_channel(channum);
 
-		chan = ieee80211_find_channel(ic, channum,
-		    channum <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
-		if (chan == NULL)
-			chan = &ic->ic_channels[0];
+		{
+			int freq = ieee80211_ieee2mhz(channum,
+			    channum <= 14 ? IEEE80211_CHAN_2GHZ :
+			    IEEE80211_CHAN_5GHZ);
+			/* Prefer HT20 channel; fall back to legacy */
+			if (channum <= 14)
+				chan = ieee80211_find_channel(ic, freq,
+				    IEEE80211_CHAN_G | IEEE80211_CHAN_HT20);
+			else
+				chan = ieee80211_find_channel(ic, freq,
+				    IEEE80211_CHAN_A | IEEE80211_CHAN_HT20);
+			if (chan == NULL)
+				chan = ieee80211_find_channel(ic, freq,
+				    channum <= 14 ? IEEE80211_CHAN_G :
+				    IEEE80211_CHAN_A);
+			if (chan == NULL)
+				chan = &ic->ic_channels[0];
+		}
 
 		ic->ic_curchan = chan;
 		ic->ic_bsschan = chan;
@@ -69,6 +83,15 @@ brcmf_link_task(void *arg, int pending)
 			IEEE80211_ADDR_COPY(ni->ni_bssid, bssid);
 			IEEE80211_ADDR_COPY(ni->ni_macaddr, bssid);
 			ni->ni_chan = chan;
+			if (chan->ic_flags & IEEE80211_CHAN_HT) {
+				ni->ni_flags |= IEEE80211_NODE_HT;
+				ni->ni_htcap = ic->ic_htcaps;
+				ni->ni_htrates.rs_nrates = 8;
+				for (int i = 0; i < 8; i++)
+					ni->ni_htrates.rs_rates[i] = i;
+				/* Nominal rate for display; firmware manages actual rate */
+				ieee80211_node_set_txrate_ht_mcsrate(ni, 7);
+			}
 			if (vap->iv_des_nssid > 0) {
 				ni->ni_esslen = vap->iv_des_ssid[0].len;
 				memcpy(ni->ni_essid, vap->iv_des_ssid[0].ssid,
@@ -606,10 +629,12 @@ brcmf_getradiocaps(struct ieee80211com *ic, int maxchans, int *nchans,
 
 	setbit(bands, IEEE80211_MODE_11B);
 	setbit(bands, IEEE80211_MODE_11G);
+	setbit(bands, IEEE80211_MODE_11NG);
 
 	ieee80211_add_channels_default_2ghz(chans, maxchans, nchans, bands, 0);
 
 	setbit(bands, IEEE80211_MODE_11A);
+	setbit(bands, IEEE80211_MODE_11NA);
 	ieee80211_add_channel_list_5ghz(chans, maxchans, nchans,
 	    (const uint8_t[]){36, 40, 44, 48, 52, 56, 60, 64,
 	    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
@@ -651,6 +676,13 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	    IEEE80211_CRYPTO_WEP |
 	    IEEE80211_CRYPTO_TKIP |
 	    IEEE80211_CRYPTO_AES_CCM;
+
+	ic->ic_htcaps =
+	    IEEE80211_HTCAP_SMPS_OFF |
+	    IEEE80211_HTCAP_SHORTGI20 |
+	    IEEE80211_HTCAP_SHORTGI40 |
+	    IEEE80211_HTCAP_DSSSCCK40 |
+	    IEEE80211_HTCAP_MAXAMSDU_3839;
 
 	brcmf_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);
