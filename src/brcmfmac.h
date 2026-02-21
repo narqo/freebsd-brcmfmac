@@ -161,6 +161,8 @@ struct brcmf_softc {
 	struct resource *irq_res;
 	int irq_rid;
 	void *irq_handle;
+	struct task isr_task;
+	struct taskqueue *isr_tq;
 
 	/* IOCTL buffer */
 	void *ioctlbuf;
@@ -215,8 +217,7 @@ struct brcmf_softc {
 	char psk[65];
 	int psk_len;
 	struct sysctl_ctx_list sysctl_ctx;
-
-
+	int cfg_attached;
 
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
@@ -282,7 +283,7 @@ int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
 void brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc);
 int brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da);
-void brcmf_msgbuf_repost_rxbufs(struct brcmf_softc *sc);
+
 
 /* fwil.c - Firmware interface layer */
 int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,

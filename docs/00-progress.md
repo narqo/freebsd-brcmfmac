@@ -2,9 +2,12 @@
 
 ## Current status
 
-**Milestones 1-14 complete.** Driver connects to WPA2 APs on 2.4GHz
-and 5GHz, runs at HT/VHT rates, handles link loss recovery, interface
-cycling. ~5200 lines total.
+**Milestones 1-14 complete. M15 blocked on hardware, M16 in progress.**
+Driver connects to WPA2 APs on 2.4GHz and 5GHz, handles link loss
+recovery, interface cycling. Throughput testing (M15) revealed crashes
+under heavy RX load — root-caused to concurrent D2H ring processing
+and hard-IRQ packet delivery. Fixed via ISR taskqueue (M16), awaiting
+hardware power cycle to verify.
 
 ## Milestones
 
@@ -176,21 +179,58 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 | Gateway ping (100x, 10ms interval) | avg 1.8ms, 0% loss |
 | Jitter (stddev) | 0.5ms |
 
-### Milestone 15: Throughput and real-world testing (TODO)
+### Milestone 15: Throughput and real-world testing (IN PROGRESS)
 
-- [ ] iperf3 TCP/UDP throughput measurement
-- [ ] Compare against theoretical HT20/HT40/VHT max
-- [ ] Large file transfer (scp/fetch)
-- [ ] Test with real-world APs (home routers, enterprise)
+- [x] Ping flood: 1000 packets 0% loss, avg 1.15ms (5GHz gateway)
+- [x] Internet download via fetch: 13 Mbps (ISP-limited, not WiFi)
+- [x] 5GHz→2.4GHz→5GHz cycling: passes
+- [ ] iperf3 TCP throughput — crashed under heavy RX (fix applied, untested)
+- [ ] Large fetch/scp — crashed under heavy RX (fix applied, untested)
 - [ ] Open network association (no WPA)
 - [ ] WPA2-PSK (non-SHA256) with different APs
-- [ ] Multiple scan/connect cycles against different SSIDs
 
-### Milestone 16: Production hardening (TODO)
+#### Findings
 
+- **Firmware bw_cap(5G)=0x1 (20MHz only)**: firmware negotiates HT40
+  despite advertising VHT in scan. The `bw_cap` iovar requires interface
+  down, but the firmware auto-ups at boot; `BRCMF_C_DOWN` returns
+  NOTDOWN. Root cause unclear — may be NVRAM/firmware default or
+  DFS channel limitation. Net80211 reports `11a ht/40+`.
+- **Kernel crash under heavy RX traffic (core.txt.3, FIXED)**: iperf3
+  download caused page fault in `sbcut_internal` at `fault_addr=0x8`
+  (NULL mbuf deref). Socket buffer accounting (`sb_ccc`) was corrupt.
+  Root cause: concurrent D2H ring processing from two contexts — the
+  hard-IRQ filter handler and the ioctl polling loop — with no locking.
+  Same RX completion could be processed twice, corrupting mbuf chains.
+  Fixed by moving all D2H processing to a dedicated ISR taskqueue and
+  removing D2H polling from wait loops. Untested (chip stuck).
+- **Crash in detach on failed attach (core.txt.5/6, FIXED)**: When
+  `brcmf_cfg_attach` fails early (firmware ioctl timeout),
+  `brcmf_cfg_detach` called `sysctl_ctx_free` on uninitialized context
+  and `ieee80211_ifdetach` on unattached ic. Fixed with `cfg_attached`
+  guard.
+- **COM lock panic (core.txt.1/2)**: `sleeping thread holds
+  brcmfmac0_com_l` — WITNESS detected COM lock held while sleeping.
+  A thread holding COM lock was sleeping in `tsleep` (firmware ioctl
+  wait); another thread tried to acquire COM via
+  `ieee80211_new_state`. `propagate_priority` detected the sleeping
+  owner and panicked. Not yet fixed; requires deferring firmware
+  ioctls from `brcmf_newstate` to a task.
+- **Chip stuck after crash**: After kernel panic, PCI device returns
+  0xffffffff on BAR0 MMIO reads. D3→D0 power cycle doesn't help.
+  Physical host power cycle required (QEMU PCI passthrough limitation).
+- **`brcmf_fil_bss_down` was passing val=1 (FIXED)**: Linux driver
+  passes 0 for `BRCMF_C_DOWN`.
+
+### Milestone 16: Production hardening (IN PROGRESS)
+
+- [x] Move D2H processing from filter handler to ISR taskqueue
+- [x] Remove concurrent D2H polling from ioctl/flowring wait loops
+- [x] Guard `brcmf_cfg_detach` against partial attach (`cfg_attached`)
+- [x] Fix `brcmf_fil_bss_down` to pass val=0
+- [ ] Fix COM lock deadlock (defer firmware ioctls from `brcmf_newstate`)
 - [ ] Watchdog: detect firmware hang (ioctl timeout, no TX completions)
 - [ ] Firmware crash recovery (core dump, reload)
-- [ ] Ioctl timeout handling (currently waits indefinitely)
 - [ ] Memory leak audit (malloc/free pairing)
 - [ ] Error path review (missing frees, leaked references)
 - [ ] Locking audit (mutex coverage for shared state)
@@ -206,30 +246,43 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 
 ## Known issues
 
+- **RX in hard interrupt context (FIXED, untested)**: The interrupt
+  handler was a filter-only design; all D2H processing including RX
+  delivery ran in hard IRQ. Concurrent D2H polling from ioctl wait
+  loops created ring access races. Fixed: split into filter + dedicated
+  `brcmfmac_isr` taskqueue; removed all D2H polling from wait loops.
+  Awaiting hardware power cycle to test.
+- **COM lock held across sleep**: `brcmf_newstate` is called with COM
+  lock held by `ieee80211_new_state_locked`. It drops the lock, calls
+  firmware ioctls (which `tsleep`), then re-acquires. During the unlock
+  window, `brcmf_link_task` can run and call `ieee80211_new_state`,
+  which tries to acquire the already-held COM lock from a different
+  context. WITNESS panics with `sleeping thread holds brcmfmac0_com_l`.
+  Needs restructuring: either defer firmware ioctls from `brcmf_newstate`
+  to a taskqueue, or use a separate driver mutex for firmware calls.
+- **5GHz limited to HT40**: Firmware reports `bw_cap(5G)=0x1` (20MHz).
+  Setting `bw_cap` requires `BRCMF_C_DOWN` but the firmware auto-ups
+  at boot and rejects DOWN with NOTDOWN. Actual negotiated mode on
+  5GHz ch60 is HT40+ (chanspec 0xd83e, bw=3). VHT80 channel lookup
+  code is correct but never triggered.
 - wpa_supplicant prints `ioctl[SIOCS80211, op=20]: Invalid argument`
-  at startup. This is the DELKEY ioctl during key flush — benign, does
-  not affect functionality.
+  at startup. This is the DELKEY ioctl during key flush — benign.
 - Rapid interface cycling (<2s between down and up) fails ~40% of the
-  time. The firmware occasionally re-associates with stale encryption
-  keys before the `wsec=0` clear takes effect, causing the AP to
-  deauth after EAPOL timeout. Realistic reconnect intervals (>5s) are
-  reliable.
-- Reported TX rate is nominal (MCS 7 = 72 Mbps). The firmware manages
-  actual rate adaptation; the driver has no visibility into the real
-  rate. Actual throughput needs iperf measurement (Milestone 14).
+  time. Firmware re-associates with stale keys before `wsec=0` clears.
+  Intervals >5s are reliable.
+- Memory leak on unload: 1 allocation, 64 bytes.
 
 ## Code structure
 
-| Module | Purpose | Lines |
-|--------|---------|-------|
-| pcie.c | PCIe bus: BAR mapping, DMA, ring alloc, interrupts, firmware load | ~1140 |
-| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX | ~1350 |
-| cfg.c | net80211: VAP lifecycle, attach/detach, link events, transmit | ~720 |
-| cfg.h | Shared definitions for cfg/scan/security modules | ~216 |
-| scan.c | Scan: escan requests, result processing, chanspec conversion | ~430 |
-| security.c | Security: wsec/wpa_auth, key installation, PSK | ~200 |
-| core.c | Chip core management: enumeration, reset, firmware download | ~310 |
-| fwil.c | Firmware interface: IOVAR get/set | ~136 |
-| brcmfmac.h | Main driver header: softc, firmware structs, constants | ~318 |
-| brcmfmac.zig | EROM parser (pure Zig) | ~222 |
-| **Total** | | **~5040** |
+| Module | Purpose |
+|--------|---------|
+| pcie.c | PCIe bus: BAR mapping, DMA, ISR taskqueue, firmware load |
+| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX |
+| cfg.c | net80211: VAP lifecycle, attach/detach, link events, transmit |
+| cfg.h | Shared definitions for cfg/scan/security modules |
+| scan.c | Scan: escan requests, result processing, chanspec conversion |
+| security.c | Security: wsec/wpa_auth, key installation, PSK |
+| core.c | Chip core management: enumeration, reset, firmware download |
+| fwil.c | Firmware interface: IOVAR get/set |
+| brcmfmac.h | Main driver header: softc, firmware structs, constants |
+| brcmfmac.zig | EROM parser (pure Zig) |

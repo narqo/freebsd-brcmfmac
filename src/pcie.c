@@ -644,7 +644,7 @@ brcmf_pcie_handle_mb_data(struct brcmf_softc *sc)
  * Interrupt handler.
  */
 static int
-brcmf_pcie_intr(void *arg)
+brcmf_pcie_isr_filter(void *arg)
 {
 	struct brcmf_softc *sc = arg;
 	uint32_t status;
@@ -654,15 +654,33 @@ brcmf_pcie_intr(void *arg)
 	if (status == 0 || status == 0xffffffff)
 		return (FILTER_STRAY);
 
+	/* Ack and disable further interrupts until task runs */
 	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT, status);
+	brcmf_pcie_intr_disable(sc);
+
+	taskqueue_enqueue(sc->isr_tq, &sc->isr_task);
+
+	return (FILTER_HANDLED);
+}
+
+static void
+brcmf_pcie_isr_task(void *arg, int pending)
+{
+	struct brcmf_softc *sc = arg;
+	uint32_t status;
+
+	/* Re-read in case new events arrived between filter and task */
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	status = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
+	if (status != 0 && status != 0xffffffff)
+		brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT, status);
 
 	if (status & BRCMF_PCIE_MB_INT_FN0)
 		brcmf_pcie_handle_mb_data(sc);
 
-	if (status & BRCMF_PCIE_MB_INT_D2H_DB)
-		brcmf_msgbuf_process_d2h(sc);
+	brcmf_msgbuf_process_d2h(sc);
 
-	return (FILTER_HANDLED);
+	brcmf_pcie_intr_enable(sc);
 }
 
 /*
@@ -688,8 +706,14 @@ brcmf_pcie_setup_irq(struct brcmf_softc *sc)
 		return (ENXIO);
 	}
 
+	TASK_INIT(&sc->isr_task, 0, brcmf_pcie_isr_task, sc);
+	sc->isr_tq = taskqueue_create("brcmfmac_isr", M_WAITOK,
+	    taskqueue_thread_enqueue, &sc->isr_tq);
+	taskqueue_start_threads(&sc->isr_tq, 1, PI_NET, "%s isr",
+	    device_get_nameunit(sc->dev));
+
 	error = bus_setup_intr(sc->dev, sc->irq_res,
-	    INTR_TYPE_NET | INTR_MPSAFE, brcmf_pcie_intr, NULL, sc,
+	    INTR_TYPE_NET | INTR_MPSAFE, brcmf_pcie_isr_filter, NULL, sc,
 	    &sc->irq_handle);
 	if (error != 0) {
 		device_printf(sc->dev, "failed to setup interrupt: %d\n",
@@ -713,6 +737,11 @@ brcmf_pcie_free_irq(struct brcmf_softc *sc)
 		brcmf_pcie_intr_disable(sc);
 		bus_teardown_intr(sc->dev, sc->irq_res, sc->irq_handle);
 		sc->irq_handle = NULL;
+	}
+	if (sc->isr_tq != NULL) {
+		taskqueue_drain(sc->isr_tq, &sc->isr_task);
+		taskqueue_free(sc->isr_tq);
+		sc->isr_tq = NULL;
 	}
 	if (sc->irq_res != NULL) {
 		bus_release_resource(sc->dev, SYS_RES_IRQ, sc->irq_rid,

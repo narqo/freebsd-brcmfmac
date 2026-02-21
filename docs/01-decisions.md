@@ -341,3 +341,70 @@ session state and blocks subsequent association attempts.
       pairwise=CCMP
   }
   ```
+
+## D2H ring processing: single-owner via ISR taskqueue
+
+**Decision**: All D2H ring processing runs exclusively in a dedicated
+`brcmfmac_isr` taskqueue. No other context may call
+`brcmf_msgbuf_process_d2h`.
+
+**Problem**: The original design ran D2H processing in two places
+concurrently:
+
+1. The interrupt filter (`brcmf_pcie_intr`) — hard interrupt context
+2. Polling loops in `brcmf_msgbuf_ioctl` and flowring create/delete
+   wait paths — thread context
+
+This caused two classes of crashes:
+
+- **Socket buffer corruption (core.txt.3)**: `sbcut_internal` page
+  fault at address 0x8. The filter handler delivered RX packets via
+  `if_input` in hard interrupt context. Under heavy RX, TCP socket
+  buffer accounting (`sb_ccc`) became corrupt — claimed 8688 bytes
+  but the mbuf chain was empty.
+- **Concurrent ring access**: The ioctl wait loop polled D2H rings
+  while the filter handler could fire and process the same rings
+  simultaneously. No locking protected ring pointer updates, so
+  the same RX completion could be processed twice or ring state
+  could be torn.
+
+**Solution**: Split the interrupt into filter + taskqueue:
+
+- `brcmf_pcie_isr_filter`: acks the mailbox interrupt, disables
+  further interrupts, enqueues `isr_task`. Runs in hard IRQ; does
+  no ring processing.
+- `brcmf_pcie_isr_task`: runs in the `brcmfmac_isr` taskqueue at
+  `PI_NET` priority. Processes all D2H rings (ctrl complete, TX
+  complete, RX complete), then re-enables interrupts.
+- Ioctl and flowring waits use `tsleep`/`wakeup` only. The ISR task
+  processes the completion ring entry and calls `wakeup`. No polling.
+- `brcmf_msgbuf_repost_rxbufs` removed — it wrote to the H2D RXPOST
+  ring from `brcmf_link_task` (net80211 taskqueue), racing with the
+  ISR task which reposts buffers during RX completion. The ISR task
+  is now the sole writer to H2D RXPOST.
+
+**Invariant**: `brcmf_msgbuf_process_d2h` is called from exactly one
+place: `brcmf_pcie_isr_task`. All ring pointer updates, RX delivery,
+ioctl completion wakeups, and flowring completion wakeups happen in
+this single-threaded context.
+
+## COM lock and firmware ioctls
+
+**Problem**: `ieee80211_newstate_cb` holds the COM lock and calls our
+`brcmf_newstate`. `brcmf_newstate` drops the lock, issues firmware
+ioctls (which `tsleep`), then re-acquires. WITNESS panics with
+`sleeping thread holds brcmfmac0_com_l` when another thread
+(e.g. `brcmf_link_task`) tries to acquire COM via
+`ieee80211_new_state` while the ioctl-waiting thread is detected as
+the lock owner.
+
+**Status**: Not yet fixed. The ISR taskqueue change reduces the
+exposure (D2H processing no longer contends with ioctl polling), but
+the fundamental issue remains: `brcmf_newstate` calls `tsleep`-based
+firmware ioctls between COM unlock/relock. If another path acquires
+COM in that window and itself sleeps, the original thread's
+re-acquire can deadlock or trigger WITNESS.
+
+**Planned fix**: Defer firmware ioctls from `brcmf_newstate` to a
+task. `brcmf_newstate` should only set flags and enqueue work; the
+actual firmware communication happens outside the COM lock.

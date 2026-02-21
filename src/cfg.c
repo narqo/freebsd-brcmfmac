@@ -77,16 +77,20 @@ brcmf_link_task(void *arg, int pending)
 			chan = NULL;
 
 			/* Try VHT80 */
-			if (bw == 4 && chan == NULL)
+			if (bw == 4) {
+				int htdir = (sb & 1) ?
+				    IEEE80211_CHAN_HT40D :
+				    IEEE80211_CHAN_HT40U;
 				chan = ieee80211_find_channel(ic, freq,
-				    base | IEEE80211_CHAN_HT20 |
-				    IEEE80211_CHAN_VHT20);
+				    base | htdir |
+				    IEEE80211_CHAN_VHT80);
+			}
 
 			/* Try HT40 */
 			if (bw >= 3 && chan == NULL) {
-				int htflag = (sb == 0) ?
-				    IEEE80211_CHAN_HT40U :
-				    IEEE80211_CHAN_HT40D;
+				int htflag = (sb & 1) ?
+				    IEEE80211_CHAN_HT40D :
+				    IEEE80211_CHAN_HT40U;
 				chan = ieee80211_find_channel(ic, freq,
 				    base | htflag);
 			}
@@ -146,7 +150,6 @@ brcmf_link_task(void *arg, int pending)
 
 			/* Receive all multicast frames (no filtering) */
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
-			brcmf_msgbuf_repost_rxbufs(sc);
 		}
 	} else {
 		if (vap->iv_state > IEEE80211_S_SCAN)
@@ -817,6 +820,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	ieee80211_announce(ic);
 
+	sc->cfg_attached = 1;
 	return (0);
 }
 
@@ -825,6 +829,9 @@ brcmf_cfg_detach(struct brcmf_softc *sc)
 {
 	struct ieee80211com *ic = &sc->ic;
 
+	if (!sc->cfg_attached)
+		return;
+	sc->cfg_attached = 0;
 	sysctl_ctx_free(&sc->sysctl_ctx);
 	ieee80211_ifdetach(ic);
 }

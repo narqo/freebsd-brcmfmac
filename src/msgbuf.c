@@ -868,33 +868,6 @@ brcmf_msgbuf_init_rxbuf(struct brcmf_softc *sc)
 }
 
 /*
- * Repost RX data buffers. Called when firmware consumed all buffers
- * without returning completions (e.g., beacons during scan).
- */
-void
-brcmf_msgbuf_repost_rxbufs(struct brcmf_softc *sc)
-{
-	struct brcmf_pcie_ringbuf *ring;
-	uint16_t fw_rptr;
-	int i, count = 0;
-
-	ring = sc->commonrings[BRCMF_H2D_MSGRING_RXPOST_SUBMIT];
-	fw_rptr = brcmf_tcm_read16(sc, ring->r_idx_addr);
-
-	if (fw_rptr != ring->w_ptr)
-		return;
-
-	for (i = 0; i < (int)sc->rxbufpost; i++) {
-		if (brcmf_msgbuf_post_rxbuf(sc, &sc->rxbuf[i]) != 0)
-			break;
-		count++;
-	}
-
-	if (count > 0)
-		brcmf_msgbuf_ring_submit(sc, ring);
-}
-
-/*
  * Send IOCTL request to firmware.
  */
 static int
@@ -951,10 +924,6 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 	timeout = BRCMF_IOCTL_TIMEOUT_MS;
 	while (!sc->ioctl_completed && timeout > 0) {
-		/* Poll D2H rings while waiting */
-		brcmf_msgbuf_process_d2h(sc);
-		if (sc->ioctl_completed)
-			break;
 		error = tsleep(&sc->ioctl_completed, PCATCH, "brcmioctl",
 		    hz / 10);
 		if (error != 0 && error != EWOULDBLOCK)
@@ -1084,11 +1053,9 @@ brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc)
 
 		timeout = 1000;
 		while (!sc->flowring_create_done && timeout > 0) {
-			brcmf_msgbuf_process_d2h(sc);
-			if (sc->flowring_create_done)
-				break;
-			DELAY(1000);
-			timeout--;
+			tsleep(&sc->flowring_create_done, 0,
+			    "brcmfrd", hz / 100);
+			timeout -= 10;
 		}
 	}
 
@@ -1178,11 +1145,8 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	/* Wait for flow ring create completion */
 	timeout = 1000;
 	while (!sc->flowring_create_done && timeout > 0) {
-		brcmf_msgbuf_process_d2h(sc);
-		if (sc->flowring_create_done)
-			break;
-		DELAY(1000);
-		timeout--;
+		tsleep(&sc->flowring_create_done, 0, "brcmfrc", hz / 100);
+		timeout -= 10;
 	}
 
 	if (!sc->flowring_create_done) {

@@ -130,7 +130,7 @@ brcmf_fil_bss_up(struct brcmf_softc *sc)
 int
 brcmf_fil_bss_down(struct brcmf_softc *sc)
 {
-	uint32_t val = 1;
+	uint32_t val = 0;
 
 	return brcmf_msgbuf_ioctl(sc, BRCMF_C_DOWN, &val, sizeof(val), NULL);
 }

@@ -220,6 +220,18 @@ flag).
 filter and preserves all channels from `ic_getradiocaps`. The
 firmware handles regulatory enforcement.
 
+## Chip stuck after kernel panic
+
+After a kernel panic, the BCM4350 PCI device may stop responding to
+BAR0 MMIO reads (returns 0xffffffff). The ARM core is in an undefined
+state and the backplane ignores reads.
+
+- `devctl reset` does not help
+- D3→D0 PCI power management transition does not help
+- VM reboot does not help (QEMU PCI passthrough doesn't reset the
+  physical device)
+- **Physical host power cycle required** to restore the chip
+
 ## LLVM printf optimization
 
 Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as
