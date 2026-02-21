@@ -2,8 +2,9 @@
 
 ## Current status
 
-**Milestones 1-13 complete.** Driver connects to WPA2 APs, runs at HT
-rates, handles link loss recovery, interface cycling. ~5100 lines total.
+**Milestones 1-14 complete.** Driver connects to WPA2 APs on 2.4GHz
+and 5GHz, runs at HT/VHT rates, handles link loss recovery, interface
+cycling. ~5200 lines total.
 
 ## Milestones
 
@@ -144,13 +145,36 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] IE offset (128-byte fallback when ie_offset=0 and ie_length=0)
 - [x] RSN/WPA IEs correctly parsed and visible in scan output
 
-### Milestone 14: 5GHz and HT40 (TODO)
+### Milestone 14: 5GHz and HT40 (COMPLETE)
 
-- [ ] Test 5GHz association (AP on channel 36+)
-- [ ] HT40 channel support (ic_htcaps CHWIDTH40, HT40U/HT40D channels)
-- [ ] VHT capability advertisement (BCM4350 supports 802.11ac)
-- [ ] Chanspec encoding for 5GHz/HT40/VHT bands
-- [ ] DFS channel handling (or exclusion)
+- [x] Fixed brcmf_bss_info_le struct alignment (removed __packed, sizeof=128)
+- [x] Fixed scan result channel→frequency conversion in brcmf_add_scan_result
+- [x] HT40 channel support (CHWIDTH40 htcap, HT40U/HT40D channels)
+- [x] VHT capability advertisement (2SS MCS 0-9, SGI80, RXLDPC)
+- [x] D11AC chanspec decoding for 5GHz/HT40/VHT80 in scan results
+- [x] 5GHz default rates IE for scan results
+- [x] Firmware country code (DE) via "country" iovar
+- [x] SKU_DEBUG regdomain to bypass channel filtering
+- [x] All 5GHz channels including DFS (36-165)
+- [x] RSSI display fixed (dBm relative to noise floor)
+- [x] link_task selects VHT/HT40/HT20 channel based on firmware chanspec
+- [x] VHT node flags on 5GHz association
+- [x] 5GHz WPA2 association + ping (Kolabox, channel 60, HT40+)
+- [x] 2.4GHz regression passes (TestAP, channel 1)
+- [x] DEAUTH/DISASSOC event handling (E_DEAUTH, E_DEAUTH_IND, E_DISASSOC, E_DISASSOC_IND)
+- [x] Fixed brcmf_assoc_params_le (removed spurious bssid_cnt field)
+- [x] Guard link_task state transition (skip SCAN if VAP already in INIT)
+- [x] 5GHz→2.4GHz→5GHz cycling passes without crash
+
+#### 5GHz test results (Kolabox, channel 60 VHT80)
+
+| Metric | Value |
+|--------|-------|
+| Association | ✓ channel 60, 5300 MHz, 11a ht/40+ |
+| WPA2 handshake | ✓ AES-CCM keys installed |
+| DHCP | ✓ lease from 192.168.188.1 |
+| Gateway ping (100x, 10ms interval) | avg 1.8ms, 0% loss |
+| Jitter (stddev) | 0.5ms |
 
 ### Milestone 15: Throughput and real-world testing (TODO)
 

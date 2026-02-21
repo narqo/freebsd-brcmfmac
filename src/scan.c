@@ -157,6 +157,8 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		chanspec = le16toh(bi->chanspec);
 		rssi = (int16_t)le16toh(bi->RSSI);
 		noise = bi->phy_noise;
+		if (noise == 0)
+			noise = -95;
 		ie_off = le16toh(bi->ie_offset);
 		ie_len = le32toh(bi->ie_length);
 
@@ -208,6 +210,7 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
 			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
 			sr->chan = chan;
+			sr->chanspec = chanspec;
 			sr->rssi = rssi;
 			sr->noise = noise;
 			sr->capinfo = le16toh(bi->capability);
@@ -230,9 +233,15 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 }
 
 /* Default rates IE for 2.4GHz (11b/g rates) */
-static const uint8_t default_rates_ie[] = {
+static const uint8_t default_rates_2g[] = {
 	IEEE80211_ELEMID_RATES, 8,
 	0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
+};
+
+/* Default rates IE for 5GHz (11a rates) */
+static const uint8_t default_rates_5g[] = {
+	IEEE80211_ELEMID_RATES, 8,
+	0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
 };
 
 /*
@@ -282,10 +291,22 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 
 	brcmf_clear_scan_discard(ic);
 
-	chan = ieee80211_find_channel(ic, sr->chan,
-	    sr->chan <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A);
-	if (chan == NULL)
-		chan = &ic->ic_channels[0];
+	{
+		int freq = ieee80211_ieee2mhz(sr->chan,
+		    sr->chan <= 14 ? IEEE80211_CHAN_2GHZ :
+		    IEEE80211_CHAN_5GHZ);
+
+		chan = ieee80211_find_channel(ic, freq,
+		    sr->chan <= 14 ?
+		    IEEE80211_CHAN_G | IEEE80211_CHAN_HT20 :
+		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT20);
+		if (chan == NULL)
+			chan = ieee80211_find_channel(ic, freq,
+			    sr->chan <= 14 ? IEEE80211_CHAN_G :
+			    IEEE80211_CHAN_A);
+		if (chan == NULL)
+			chan = &ic->ic_channels[0];
+	}
 
 	ssid_ie[0] = IEEE80211_ELEMID_SSID;
 	ssid_ie[1] = sr->ssid_len;
@@ -296,7 +317,8 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	memset(&sp, 0, sizeof(sp));
 	sp.tstamp = tstamp;
 	sp.ssid = ssid_ie;
-	sp.rates = __DECONST(uint8_t *, default_rates_ie);
+	sp.rates = __DECONST(uint8_t *,
+	    sr->chan <= 14 ? default_rates_2g : default_rates_5g);
 	sp.chan = sr->chan;
 	sp.bchan = sr->chan;
 	sp.capinfo = sr->capinfo;
@@ -380,7 +402,8 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	}
 
 	ieee80211_add_scan(vap, chan, &sp, &wh,
-	    IEEE80211_FC0_SUBTYPE_BEACON, sr->rssi, sr->noise);
+	    IEEE80211_FC0_SUBTYPE_BEACON,
+	    sr->rssi - sr->noise, sr->noise);
 }
 
 void

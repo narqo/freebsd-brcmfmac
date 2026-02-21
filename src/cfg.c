@@ -44,33 +44,62 @@ brcmf_link_task(void *arg, int pending)
 		return;
 
 	if (sc->link_up) {
+		uint32_t chanspec_raw;
+		int bw, sb;
+
 		memcpy(bssid, sc->join_bssid, 6);
 
-		error = brcmf_fil_iovar_int_get(sc, "chanspec", &channum);
+		error = brcmf_fil_iovar_int_get(sc, "chanspec",
+		    &chanspec_raw);
 		if (error != 0) {
 			error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_CHANNEL,
-			    &channum, sizeof(channum));
+			    &chanspec_raw, sizeof(chanspec_raw));
 		}
-		if (error != 0)
+		if (error != 0) {
 			channum = 1;
-		else
-			channum = brcmf_chanspec_to_channel(channum);
+			bw = 2; /* 20 MHz */
+			sb = 0;
+		} else {
+			channum = brcmf_chanspec_to_channel(chanspec_raw);
+			bw = (chanspec_raw & BRCMF_CHSPEC_D11AC_BW_MASK) >>
+			    BRCMF_CHSPEC_D11AC_BW_SHIFT;
+			sb = (chanspec_raw & BRCMF_CHSPEC_D11AC_SB_MASK) >>
+			    BRCMF_CHSPEC_D11AC_SB_SHIFT;
+		}
 
 		{
 			int freq = ieee80211_ieee2mhz(channum,
 			    channum <= 14 ? IEEE80211_CHAN_2GHZ :
 			    IEEE80211_CHAN_5GHZ);
-			/* Prefer HT20 channel; fall back to legacy */
-			if (channum <= 14)
+			int base = channum <= 14 ?
+			    IEEE80211_CHAN_G : IEEE80211_CHAN_A;
+
+			chan = NULL;
+
+			/* Try VHT80 */
+			if (bw == 4 && chan == NULL)
 				chan = ieee80211_find_channel(ic, freq,
-				    IEEE80211_CHAN_G | IEEE80211_CHAN_HT20);
-			else
+				    base | IEEE80211_CHAN_HT20 |
+				    IEEE80211_CHAN_VHT20);
+
+			/* Try HT40 */
+			if (bw >= 3 && chan == NULL) {
+				int htflag = (sb == 0) ?
+				    IEEE80211_CHAN_HT40U :
+				    IEEE80211_CHAN_HT40D;
 				chan = ieee80211_find_channel(ic, freq,
-				    IEEE80211_CHAN_A | IEEE80211_CHAN_HT20);
+				    base | htflag);
+			}
+
+			/* HT20 */
 			if (chan == NULL)
 				chan = ieee80211_find_channel(ic, freq,
-				    channum <= 14 ? IEEE80211_CHAN_G :
-				    IEEE80211_CHAN_A);
+				    base | IEEE80211_CHAN_HT20);
+
+			/* Legacy */
+			if (chan == NULL)
+				chan = ieee80211_find_channel(ic, freq,
+				    base);
 			if (chan == NULL)
 				chan = &ic->ic_channels[0];
 		}
@@ -89,8 +118,20 @@ brcmf_link_task(void *arg, int pending)
 				ni->ni_htrates.rs_nrates = 8;
 				for (int i = 0; i < 8; i++)
 					ni->ni_htrates.rs_rates[i] = i;
-				/* Nominal rate for display; firmware manages actual rate */
 				ieee80211_node_set_txrate_ht_mcsrate(ni, 7);
+			}
+			if (chan->ic_flags & IEEE80211_CHAN_VHT) {
+				ni->ni_flags |= IEEE80211_NODE_VHT;
+				ni->ni_vhtcap =
+				    ic->ic_vht_cap.vht_cap_info;
+				ni->ni_vht_mcsinfo =
+				    ic->ic_vht_cap.supp_mcs;
+				if (bw >= 4)
+					ni->ni_vht_chanwidth =
+					    IEEE80211_VHT_CHANWIDTH_80MHZ;
+				else
+					ni->ni_vht_chanwidth =
+					    IEEE80211_VHT_CHANWIDTH_USE_HT;
 			}
 			if (vap->iv_des_nssid > 0) {
 				ni->ni_esslen = vap->iv_des_ssid[0].len;
@@ -108,7 +149,8 @@ brcmf_link_task(void *arg, int pending)
 			brcmf_msgbuf_repost_rxbufs(sc);
 		}
 	} else {
-		ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
+		if (vap->iv_state > IEEE80211_S_SCAN)
+			ieee80211_new_state(vap, IEEE80211_S_SCAN, -1);
 	}
 }
 
@@ -131,6 +173,16 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 	case BRCMF_E_LINK:
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
 		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
+		break;
+
+	case BRCMF_E_DEAUTH:
+	case BRCMF_E_DEAUTH_IND:
+	case BRCMF_E_DISASSOC:
+	case BRCMF_E_DISASSOC_IND:
+		if (sc->link_up) {
+			sc->link_up = 0;
+			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
+		}
 		break;
 
 	default:
@@ -214,6 +266,10 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	evmask[BRCMF_E_ESCAN_RESULT / 8] |= 1 << (BRCMF_E_ESCAN_RESULT % 8);
 	evmask[BRCMF_E_SET_SSID / 8] |= 1 << (BRCMF_E_SET_SSID % 8);
 	evmask[BRCMF_E_LINK / 8] |= 1 << (BRCMF_E_LINK % 8);
+	evmask[BRCMF_E_DEAUTH / 8] |= 1 << (BRCMF_E_DEAUTH % 8);
+	evmask[BRCMF_E_DEAUTH_IND / 8] |= 1 << (BRCMF_E_DEAUTH_IND % 8);
+	evmask[BRCMF_E_DISASSOC / 8] |= 1 << (BRCMF_E_DISASSOC % 8);
+	evmask[BRCMF_E_DISASSOC_IND / 8] |= 1 << (BRCMF_E_DISASSOC_IND % 8);
 
 	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask, sizeof(evmask));
 	if (error != 0)
@@ -631,14 +687,19 @@ brcmf_getradiocaps(struct ieee80211com *ic, int maxchans, int *nchans,
 	setbit(bands, IEEE80211_MODE_11G);
 	setbit(bands, IEEE80211_MODE_11NG);
 
-	ieee80211_add_channels_default_2ghz(chans, maxchans, nchans, bands, 0);
+	ieee80211_add_channels_default_2ghz(chans, maxchans, nchans, bands,
+	    NET80211_CBW_FLAG_HT40);
 
+	memset(bands, 0, sizeof(bands));
 	setbit(bands, IEEE80211_MODE_11A);
 	setbit(bands, IEEE80211_MODE_11NA);
+	setbit(bands, IEEE80211_MODE_VHT_5GHZ);
+
 	ieee80211_add_channel_list_5ghz(chans, maxchans, nchans,
 	    (const uint8_t[]){36, 40, 44, 48, 52, 56, 60, 64,
-	    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140,
-	    149, 153, 157, 161, 165}, 24, bands, 0);
+	    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
+	    149, 153, 157, 161, 165}, 25, bands,
+	    NET80211_CBW_FLAG_HT40 | NET80211_CBW_FLAG_VHT80);
 }
 
 int
@@ -650,6 +711,24 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	error = brcmf_get_macaddr(sc);
 	if (error != 0)
 		return (error);
+
+	/* Set regulatory domain so firmware enables 5GHz channels */
+	{
+		struct {
+			char country_abbrev[4];
+			uint32_t rev;
+			char ccode[4];
+		} __packed country;
+		memset(&country, 0, sizeof(country));
+		strlcpy(country.country_abbrev, "DE", sizeof(country.country_abbrev));
+		strlcpy(country.ccode, "DE", sizeof(country.ccode));
+		country.rev = htole32(0);
+		error = brcmf_fil_iovar_data_set(sc, "country",
+		    &country, sizeof(country));
+		if (error != 0)
+			device_printf(sc->dev,
+			    "failed to set country: %d\n", error);
+	}
 
 	brcmf_setup_events(sc);
 
@@ -678,11 +757,43 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	    IEEE80211_CRYPTO_AES_CCM;
 
 	ic->ic_htcaps =
+	    IEEE80211_HTCAP_CHWIDTH40 |
 	    IEEE80211_HTCAP_SMPS_OFF |
 	    IEEE80211_HTCAP_SHORTGI20 |
 	    IEEE80211_HTCAP_SHORTGI40 |
 	    IEEE80211_HTCAP_DSSSCCK40 |
 	    IEEE80211_HTCAP_MAXAMSDU_3839;
+
+	/* BCM4350: 2SS VHT, MCS 0-9, SGI80 */
+	ic->ic_vht_cap.vht_cap_info =
+	    IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
+	    IEEE80211_VHTCAP_SHORT_GI_80 |
+	    IEEE80211_VHTCAP_RXLDPC;
+	/* 2SS MCS 0-9, streams 3-8 unsupported */
+	ic->ic_vht_cap.supp_mcs.rx_mcs_map = htole16(
+	    IEEE80211_VHT_MCS_SUPPORT_0_9 |
+	    (IEEE80211_VHT_MCS_SUPPORT_0_9 << 2) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 4) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 6) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 8) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 10) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 12) |
+	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 14));
+	ic->ic_vht_cap.supp_mcs.tx_mcs_map =
+	    ic->ic_vht_cap.supp_mcs.rx_mcs_map;
+	/* Max rate: 867 Mbps (VHT80 2SS MCS9 SGI) */
+	ic->ic_vht_cap.supp_mcs.rx_highest = htole16(867);
+	ic->ic_vht_cap.supp_mcs.tx_highest = htole16(867);
+
+	/*
+	 * Set regdomain to DEBUG so the channel list isn't filtered
+	 * by regulatory rules. The firmware handles regulatory.
+	 */
+	ic->ic_regdomain.regdomain = 0x1ff; /* SKU_DEBUG */
+	ic->ic_regdomain.country = 0x1ff;   /* CTRY_DEBUG */
+	ic->ic_regdomain.location = ' ';
+	ic->ic_regdomain.isocc[0] = 'D';
+	ic->ic_regdomain.isocc[1] = 'B';
 
 	brcmf_getradiocaps(ic, IEEE80211_CHAN_MAX, &ic->ic_nchans,
 	    ic->ic_channels);

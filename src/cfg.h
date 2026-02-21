@@ -14,6 +14,10 @@ struct brcmf_vap {
 
 /* Event codes */
 #define BRCMF_E_SET_SSID	0
+#define BRCMF_E_DEAUTH		5
+#define BRCMF_E_DEAUTH_IND	6
+#define BRCMF_E_DISASSOC	11
+#define BRCMF_E_DISASSOC_IND	12
 #define BRCMF_E_LINK		16
 #define BRCMF_E_IF		54
 #define BRCMF_E_ESCAN_RESULT	69
@@ -140,6 +144,11 @@ struct brcmf_escan_params_le {
 	struct brcmf_scan_params_le params_le;
 } __packed;
 
+/*
+ * Firmware BSS info struct. The firmware uses natural alignment
+ * (matches Linux's non-packed struct). sizeof == 128 bytes, which
+ * explains the "128-byte header" observed for IE offset.
+ */
 struct brcmf_bss_info_le {
 	uint32_t version;
 	uint32_t length;
@@ -167,7 +176,7 @@ struct brcmf_bss_info_le {
 	uint16_t ie_offset;
 	uint32_t ie_length;
 	int16_t SNR;
-} __packed;
+};
 
 struct brcmf_escan_result_le {
 	uint32_t buflen;
@@ -180,7 +189,6 @@ struct brcmf_escan_result_le {
 /* Join parameters */
 struct brcmf_assoc_params_le {
 	uint8_t bssid[6];
-	uint16_t bssid_cnt;
 	uint32_t chanspec_num;
 	uint16_t chanspec_list[1];
 } __packed;

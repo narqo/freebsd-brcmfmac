@@ -226,6 +226,7 @@ struct brcmf_softc {
 		uint8_t ssid[32];
 		uint8_t ssid_len;
 		uint8_t chan;
+		uint16_t chanspec;
 		int16_t rssi;
 		int8_t noise;
 		uint16_t capinfo;

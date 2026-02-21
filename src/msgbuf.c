@@ -47,7 +47,12 @@
 
 /* Event codes (for brcmf_link_event) */
 #define BRCMF_E_SET_SSID	0
+#define BRCMF_E_DEAUTH		5
+#define BRCMF_E_DEAUTH_IND	6
+#define BRCMF_E_DISASSOC	11
+#define BRCMF_E_DISASSOC_IND	12
 #define BRCMF_E_LINK		16
+#define BRCMF_E_IF		54
 
 /*
  * msgbuf structures
@@ -366,6 +371,10 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
 	case BRCMF_E_LINK:
+	case BRCMF_E_DEAUTH:
+	case BRCMF_E_DEAUTH_IND:
+	case BRCMF_E_DISASSOC:
+	case BRCMF_E_DISASSOC_IND:
 		brcmf_link_event(sc, event_code, be32toh(event->msg.status),
 		    be16toh(event->msg.flags));
 		break;
@@ -373,7 +382,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 		if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))
 			brcmf_escan_result(sc, (uint8_t *)cb->buf + sizeof(*event), datalen);
 		break;
-	case 54: /* BRCMF_E_IF - interface event, ignored */
+	case BRCMF_E_IF:
 		break;
 	default:
 		break;

@@ -153,12 +153,15 @@ ABORT=0x10, RUNNING=0x20.
 checking abort flags. If `ss_vap` is NULL, the kernel faults at address 0x6a
 (`vap->iv_debug` offset). Pre-set `ic->ic_scan->ss_vap` in vap_create.
 
-## Firmware BSS info struct size mismatch
+## Firmware BSS info struct alignment (RESOLVED)
 
-The `brcmf_bss_info_le` struct is 117 bytes, but the firmware (v7.35.180.133)
-uses a 128-byte struct. When `ie_offset=0` and `ie_length=0`, IEs start at
-byte 128. The 11 extra bytes between offsets 117-127 are unknown fields not
-in our struct definition.
+The firmware's `brcmf_bss_info_le` uses natural alignment, NOT packed.
+`sizeof` is 128 bytes. Using `__packed` produces a 117-byte struct
+that misaligns `chanspec` (offset 71 instead of 72), `RSSI`, and all
+subsequent fields.
+
+**Fix**: Remove `__packed` from the struct definition. The compiler's
+natural alignment matches the firmware layout exactly.
 
 ## WPA2 RSN IE mismatch (RESOLVED)
 
@@ -203,6 +206,19 @@ handshake timeout (~1s).
 
 **Fix**: Clear `wsec=0` and `wpa_auth=0` on interface down (in
 `brcmf_parent`) before the next association cycle.
+
+## net80211 regdomain channel filtering
+
+When `ifconfig wlan0 create` is called, ifconfig's regdomain code
+rebuilds the channel list from the regdomain database, replacing
+`ic_channels` and `ic_nchans`. This silently drops channels not in
+the regulatory domain (e.g., DFS channels without `IEEE80211_CHAN_DFS`
+flag).
+
+**Fix**: Set `ic_regdomain` to `SKU_DEBUG` (0x1ff) / `CTRY_DEBUG`
+(0x1ff) before `ieee80211_ifattach`. This bypasses the regdomain
+filter and preserves all channels from `ic_getradiocaps`. The
+firmware handles regulatory enforcement.
 
 ## LLVM printf optimization
 
