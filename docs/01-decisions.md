@@ -388,23 +388,31 @@ place: `brcmf_pcie_isr_task`. All ring pointer updates, RX delivery,
 ioctl completion wakeups, and flowring completion wakeups happen in
 this single-threaded context.
 
-## COM lock and firmware ioctls
+## COM/node lock and firmware ioctls
 
-**Problem**: `ieee80211_newstate_cb` holds the COM lock and calls our
-`brcmf_newstate`. `brcmf_newstate` drops the lock, issues firmware
-ioctls (which `tsleep`), then re-acquires. WITNESS panics with
-`sleeping thread holds brcmfmac0_com_l` when another thread
-(e.g. `brcmf_link_task`) tries to acquire COM via
-`ieee80211_new_state` while the ioctl-waiting thread is detected as
-the lock owner.
+**Problem**: `sta_newstate` (INIT from RUN) calls
+`ieee80211_sta_leave` → `ieee80211_node_delucastkey` →
+`ieee80211_crypto_delkey` → `brcmf_key_delete`. At this point both
+the COM lock and the node table lock are held. `brcmf_key_delete`
+calls a firmware ioctl which does `tsleep`. WITNESS panics:
+`sleeping thread holds brcmfmac0_com_l` (core.txt.1) or
+`sleeping thread holds brcmfmac0_node_` (core.txt.7).
 
-**Status**: Not yet fixed. The ISR taskqueue change reduces the
-exposure (D2H processing no longer contends with ioctl polling), but
-the fundamental issue remains: `brcmf_newstate` calls `tsleep`-based
-firmware ioctls between COM unlock/relock. If another path acquires
-COM in that window and itself sleeps, the original thread's
-re-acquire can deadlock or trigger WITNESS.
+The call chain:
+```
+ieee80211_newstate_cb           [COM lock held]
+  brcmf_newstate                [drops COM, does fw work, re-acquires]
+    sta_newstate                [COM held]
+      ieee80211_sta_leave
+        ieee80211_node_delucastkey  [acquires node lock]
+          ieee80211_crypto_delkey
+            brcmf_key_delete        [COM + node held → tsleep → panic]
+```
 
-**Planned fix**: Defer firmware ioctls from `brcmf_newstate` to a
-task. `brcmf_newstate` should only set flags and enqueue work; the
-actual firmware communication happens outside the COM lock.
+**Fix**: `brcmf_key_set` and `brcmf_key_delete` dynamically check
+and drop both COM and node locks before the firmware ioctl, then
+re-acquire after. Uses `IEEE80211_IS_LOCKED` / `IEEE80211_NODE_IS_LOCKED`
+to handle callers that may or may not hold these locks.
+
+Verified: interface cycling (which triggers `sta_newstate` INIT →
+key delete) no longer panics.

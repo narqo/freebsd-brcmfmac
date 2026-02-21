@@ -71,9 +71,10 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 {
 	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_softc *sc = ic->ic_softc;
+	struct ieee80211_node_table *nt = &ic->ic_sta;
 	struct brcmf_wsec_key key;
 	const uint8_t *macaddr;
-	int error;
+	int error, com_locked, node_locked;
 
 	memset(&key, 0, sizeof(key));
 	key.index = htole32(k->wk_keyix);
@@ -109,7 +110,17 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 		memcpy(key.ea, macaddr, 6);
 	}
 
+	com_locked = IEEE80211_IS_LOCKED(ic);
+	node_locked = IEEE80211_NODE_IS_LOCKED(nt);
+	if (node_locked)
+		IEEE80211_NODE_UNLOCK(nt);
+	if (com_locked)
+		IEEE80211_UNLOCK(ic);
 	error = brcmf_fil_iovar_data_set(sc, "wsec_key", &key, sizeof(key));
+	if (com_locked)
+		IEEE80211_LOCK(ic);
+	if (node_locked)
+		IEEE80211_NODE_LOCK(nt);
 	if (error != 0)
 		device_printf(sc->dev, "wsec_key set failed: %d\n", error);
 
@@ -121,15 +132,26 @@ brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k)
 {
 	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_softc *sc = ic->ic_softc;
+	struct ieee80211_node_table *nt = &ic->ic_sta;
 	struct brcmf_wsec_key key;
-	int error;
+	int error, com_locked, node_locked;
 
 	memset(&key, 0, sizeof(key));
 	key.index = htole32(k->wk_keyix);
 	key.algo = htole32(CRYPTO_ALGO_OFF);
 	key.flags = htole32(BRCMF_PRIMARY_KEY);
 
+	com_locked = IEEE80211_IS_LOCKED(ic);
+	node_locked = IEEE80211_NODE_IS_LOCKED(nt);
+	if (node_locked)
+		IEEE80211_NODE_UNLOCK(nt);
+	if (com_locked)
+		IEEE80211_UNLOCK(ic);
 	error = brcmf_fil_iovar_data_set(sc, "wsec_key", &key, sizeof(key));
+	if (com_locked)
+		IEEE80211_LOCK(ic);
+	if (node_locked)
+		IEEE80211_NODE_LOCK(nt);
 	if (error != 0)
 		device_printf(sc->dev, "wsec_key delete failed: %d\n", error);
 

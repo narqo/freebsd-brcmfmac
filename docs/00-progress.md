@@ -184,8 +184,8 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Ping flood: 1000 packets 0% loss, avg 1.15ms (5GHz gateway)
 - [x] Internet download via fetch: 13 Mbps (ISP-limited, not WiFi)
 - [x] 5GHz→2.4GHz→5GHz cycling: passes
-- [ ] iperf3 TCP throughput — crashed under heavy RX (fix applied, untested)
-- [ ] Large fetch/scp — crashed under heavy RX (fix applied, untested)
+- [x] Large fetch: 3×10MB over WiFi, no crash (ISP-limited ~19 Mbps)
+- [ ] iperf3 TCP throughput — public servers unavailable
 - [ ] Open network association (no WPA)
 - [ ] WPA2-PSK (non-SHA256) with different APs
 
@@ -203,19 +203,18 @@ and produce RSN capabilities `0x000c`, matching the firmware.
   hard-IRQ filter handler and the ioctl polling loop — with no locking.
   Same RX completion could be processed twice, corrupting mbuf chains.
   Fixed by moving all D2H processing to a dedicated ISR taskqueue and
-  removing D2H polling from wait loops. Untested (chip stuck).
+  removing D2H polling from wait loops. Verified: sustained downloads
+  no longer crash.
 - **Crash in detach on failed attach (core.txt.5/6, FIXED)**: When
   `brcmf_cfg_attach` fails early (firmware ioctl timeout),
   `brcmf_cfg_detach` called `sysctl_ctx_free` on uninitialized context
   and `ieee80211_ifdetach` on unattached ic. Fixed with `cfg_attached`
   guard.
-- **COM lock panic (core.txt.1/2)**: `sleeping thread holds
-  brcmfmac0_com_l` — WITNESS detected COM lock held while sleeping.
-  A thread holding COM lock was sleeping in `tsleep` (firmware ioctl
-  wait); another thread tried to acquire COM via
-  `ieee80211_new_state`. `propagate_priority` detected the sleeping
-  owner and panicked. Not yet fixed; requires deferring firmware
-  ioctls from `brcmf_newstate` to a task.
+- **COM/node lock panic (core.txt.1/2/7, FIXED)**: Thread held COM +
+  node lock in `sta_newstate` → `ieee80211_sta_leave` →
+  `brcmf_key_delete` → `brcmf_msgbuf_ioctl` (`tsleep`). Fixed:
+  `brcmf_key_set`/`brcmf_key_delete` drop both COM and node locks
+  around firmware ioctl. Verified: interface cycling no longer panics.
 - **Chip stuck after crash**: After kernel panic, PCI device returns
   0xffffffff on BAR0 MMIO reads. D3→D0 power cycle doesn't help.
   Physical host power cycle required (QEMU PCI passthrough limitation).
@@ -228,7 +227,7 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Remove concurrent D2H polling from ioctl/flowring wait loops
 - [x] Guard `brcmf_cfg_detach` against partial attach (`cfg_attached`)
 - [x] Fix `brcmf_fil_bss_down` to pass val=0
-- [ ] Fix COM lock deadlock (defer firmware ioctls from `brcmf_newstate`)
+- [x] Fix COM lock deadlock (drop COM in `brcmf_key_set`/`brcmf_key_delete`)
 - [ ] Watchdog: detect firmware hang (ioctl timeout, no TX completions)
 - [ ] Firmware crash recovery (core dump, reload)
 - [ ] Memory leak audit (malloc/free pairing)
@@ -246,20 +245,11 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 
 ## Known issues
 
-- **RX in hard interrupt context (FIXED, untested)**: The interrupt
-  handler was a filter-only design; all D2H processing including RX
-  delivery ran in hard IRQ. Concurrent D2H polling from ioctl wait
-  loops created ring access races. Fixed: split into filter + dedicated
-  `brcmfmac_isr` taskqueue; removed all D2H polling from wait loops.
-  Awaiting hardware power cycle to test.
-- **COM lock held across sleep**: `brcmf_newstate` is called with COM
-  lock held by `ieee80211_new_state_locked`. It drops the lock, calls
-  firmware ioctls (which `tsleep`), then re-acquires. During the unlock
-  window, `brcmf_link_task` can run and call `ieee80211_new_state`,
-  which tries to acquire the already-held COM lock from a different
-  context. WITNESS panics with `sleeping thread holds brcmfmac0_com_l`.
-  Needs restructuring: either defer firmware ioctls from `brcmf_newstate`
-  to a taskqueue, or use a separate driver mutex for firmware calls.
+- ~~RX in hard interrupt context~~: Fixed. Split into filter + ISR
+  taskqueue. Tested: 3×10MB downloads, 1000-pkt flood, no crash.
+- ~~COM/node lock held across sleep~~: Fixed. `brcmf_key_set`/
+  `brcmf_key_delete` drop COM and node locks around firmware ioctl.
+  Tested: 3 interface cycles + band switch, no crash.
 - **5GHz limited to HT40**: Firmware reports `bw_cap(5G)=0x1` (20MHz).
   Setting `bw_cap` requires `BRCMF_C_DOWN` but the firmware auto-ups
   at boot and rejects DOWN with NOTDOWN. Actual negotiated mode on
