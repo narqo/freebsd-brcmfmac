@@ -80,6 +80,7 @@ brcmf_link_task(void *arg, int pending)
 			brcmf_msgbuf_delete_flowring(sc);
 			brcmf_msgbuf_init_flowring(sc, bssid);
 
+			/* Receive all multicast frames (no filtering) */
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
 			brcmf_msgbuf_repost_rxbufs(sc);
 		}
@@ -138,6 +139,7 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (error != 0)
 		return error;
 
+	/* Host-managed WPA; firmware supplicant broken on this chip */
 	brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 
 	memcpy(sc->join_bssid, sr->bssid, 6);
@@ -298,6 +300,7 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 				wsec |= AES_ENABLED;
 
 			brcmf_set_security(sc, wsec, wpa_auth);
+			/* Host-managed WPA; firmware supplicant broken on this chip */
 			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 			brcmf_join_bss(sc, ni);
 		}
@@ -426,7 +429,6 @@ brcmf_parent(struct ieee80211com *ic)
 		if (!sc->running) {
 			uint32_t val;
 
-			brcmf_fil_iovar_int_set(sc, "mpc", 0);
 			brcmf_fil_bss_up(sc);
 
 			val = htole32(1);
@@ -437,6 +439,11 @@ brcmf_parent(struct ieee80211com *ic)
 			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
 			    &val, sizeof(val));
 
+			/* Keep radio on during idle */
+			brcmf_fil_iovar_int_set(sc, "mpc", 0);
+			/* No firmware-initiated roaming */
+			brcmf_fil_iovar_int_set(sc, "roam_off", 1);
+			/* Disable firmware ARP offload */
 			brcmf_fil_iovar_int_set(sc, "arp_ol", 0);
 			brcmf_fil_iovar_int_set(sc, "arpoe", 0);
 

@@ -2,10 +2,9 @@
 
 ## Current status
 
-**Milestone 12: Robustness** - IN PROGRESS. Link loss recovery works.
-Interface cycling (down/up) works with security state cleanup. Remaining
-issue: rapid cycling (<2s) has ~40% failure rate due to firmware/AP
-handshake timing race.
+**Milestone 11-12 complete.** Latency optimized (avg 1.8ms flood ping).
+Robustness: link loss recovery, interface cycling, DEAUTH on disconnect.
+Remaining: rapid cycling (<2s) ~40% failure rate (firmware timing race).
 
 ## Milestones
 
@@ -115,7 +114,20 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 | 5x rapid cycling (2s gap) | ~3/5 pass |
 | Reconnect after >5s gap | ✓ reliable |
 
-### Milestone 11: Latency optimization (TODO)
+### Milestone 11: Latency optimization (COMPLETE)
+
+- [x] PM=0 (power management off) — already set in brcmf_parent
+- [x] mpc=0 (minimum power consumption off) — keeps radio on during idle
+- [x] roam_off=1 (disable firmware roaming) — eliminates background scans
+
+#### Latency results
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Steady-state ping | ~7ms | ~4.6ms |
+| After 30s idle | ~7ms (sleep) | ~4.6ms (no penalty) |
+| Flood ping (100x, 10ms interval) | — | avg 1.8ms, min 1.3ms |
+| Jitter (stddev) | — | 1.4ms |
 
 ### Milestone 13: ifconfig scan support (COMPLETE)
 
