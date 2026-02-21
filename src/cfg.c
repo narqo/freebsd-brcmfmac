@@ -125,14 +125,20 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	int error;
 
 	wsec = brcmf_detect_security(sr, &wpa_auth);
+
+	/*
+	 * Skip WPA networks on the direct-join path. Without an
+	 * external supplicant (wpa_supplicant) nobody will handle
+	 * the 4-way handshake, and the AP will deauth us.
+	 */
+	if (wpa_auth != WPA_AUTH_DISABLED)
+		return (EINVAL);
+
 	error = brcmf_set_security(sc, wsec, wpa_auth);
 	if (error != 0)
 		return error;
 
 	brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
-
-	if (wpa_auth != WPA_AUTH_DISABLED && sc->psk_len > 0)
-		brcmf_set_pmk(sc, sc->psk, sc->psk_len);
 
 	memcpy(sc->join_bssid, sr->bssid, 6);
 
@@ -438,13 +444,24 @@ brcmf_parent(struct ieee80211com *ic)
 			startall = 1;
 		}
 	} else {
-		/*
-		 * Don't bring firmware BSS down on interface DOWN.
-		 * wpa_supplicant cycles the interface rapidly during
-		 * init, and the deferred INIT state transition in
-		 * net80211 can race with the UP, leaving ic_nrunning
-		 * at 0 and scan ioctls failing with ENXIO.
-		 */
+		if (sc->link_up) {
+			struct {
+				uint32_t val;
+				uint8_t ea[6];
+				uint8_t pad[2];
+			} scbval;
+			memset(&scbval, 0, sizeof(scbval));
+			scbval.val = htole32(3); /* DEAUTH_LEAVING */
+			memcpy(scbval.ea, sc->join_bssid, 6);
+			brcmf_fil_cmd_data_set(sc,
+			    52 /* BRCMF_C_DISASSOC */,
+			    &scbval, sizeof(scbval));
+			sc->link_up = 0;
+		}
+		/* Clear security state so stale keys don't interfere
+		 * with the next association's EAPOL handshake. */
+		brcmf_fil_iovar_int_set(sc, "wsec", 0);
+		brcmf_fil_iovar_int_set(sc, "wpa_auth", 0);
 		sc->running = 0;
 	}
 
