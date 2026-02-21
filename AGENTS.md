@@ -11,7 +11,7 @@ Target hardware: PCI device `0x14e4:0x43a3`
 
 ## Constraints
 
-- Use FreeBSD's LinuxKPI compatibility layer
+- Use native FreeBSD APIs (no LinuxKPI)
 - Cannot use Zig's `@cImport` with kernel headers (see decisions doc)
 - C for kernel API calls; Zig for pure logic only
 - Build/test requires remote FreeBSD 15 host
@@ -193,6 +193,16 @@ The Linux driver leaves `ea` zeroed for group keys in STA mode.
 - `sup_wpa=1` + `SET_WSEC_PMK` returns BCME_BADARG (-23). The firmware
   does not support internal supplicant mode.
 - Must use `sup_wpa=0` for host-managed WPA.
+
+## Firmware stale encryption keys on reassociation
+
+After a successful WPA handshake, the firmware retains encryption keys
+across DISASSOC. On the next association, the firmware encrypts EAPOL
+frame 2/4 using old keys. The AP can't decrypt it and deauths after its
+handshake timeout (~1s).
+
+**Fix**: Clear `wsec=0` and `wpa_auth=0` on interface down (in
+`brcmf_parent`) before the next association cycle.
 
 ## LLVM printf optimization
 

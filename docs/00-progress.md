@@ -2,9 +2,10 @@
 
 ## Current status
 
-**Milestone 10: WPA2 support** - COMPLETE. End-to-end encrypted WiFi
-working with both WPA2-PSK and WPA2-PSK-SHA256. DHCP, VAP lifecycle,
-and reconnection all verified.
+**Milestone 12: Robustness** - IN PROGRESS. Link loss recovery works.
+Interface cycling (down/up) works with security state cleanup. Remaining
+issue: rapid cycling (<2s) has ~40% failure rate due to firmware/AP
+handshake timing race.
 
 ## Milestones
 
@@ -86,8 +87,35 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - `vndr_ie` iovar with RSN IE — firmware ignores it, still uses `0x000c`
 - `bsscfg:wpaie` — same failure as `wpaie`
 
+### Milestone 12: Robustness (IN PROGRESS)
+
+- [x] Link loss recovery (AP restart while connected)
+  - LINK event with link=0 triggers SCAN transition
+  - Driver re-scans, re-associates automatically
+- [x] DISASSOC on interface down (synchronous in `brcmf_parent`)
+  - Sends DEAUTH_LEAVING before `ifconfig down` returns
+  - Prevents stale AP session from blocking next association
+- [x] Security state cleanup on interface down
+  - Clear `wsec=0` and `wpa_auth=0` so stale encryption keys
+    don't corrupt the next EAPOL handshake
+- [x] Skip direct-join for WPA networks
+  - `brcmf_join_bss_direct` returns EINVAL when `wpa_auth != 0`
+  - Prevents supplicant-less WPA association from scan-complete path
+- [ ] Rapid cycling reliability (<2s gap)
+  - ~60% success rate; firmware occasionally re-associates before
+    security clear takes effect, causing EAPOL timeout
+  - With realistic intervals (>5s), cycling is reliable
+
+#### Interface cycling test results
+
+| Scenario | Result |
+|----------|--------|
+| AP restart while connected | ✓ auto-recovers |
+| Single down/up cycle | ✓ reliable |
+| 5x rapid cycling (2s gap) | ~3/5 pass |
+| Reconnect after >5s gap | ✓ reliable |
+
 ### Milestone 11: Latency optimization (TODO)
-### Milestone 12: Robustness (TODO)
 
 ### Milestone 13: ifconfig scan support (COMPLETE)
 
@@ -103,6 +131,11 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - wpa_supplicant prints `ioctl[SIOCS80211, op=20]: Invalid argument`
   at startup. This is the DELKEY ioctl during key flush — benign, does
   not affect functionality.
+- Rapid interface cycling (<2s between down and up) fails ~40% of the
+  time. The firmware occasionally re-associates with stale encryption
+  keys before the `wsec=0` clear takes effect, causing the AP to
+  deauth after EAPOL timeout. Realistic reconnect intervals (>5s) are
+  reliable.
 
 ## Code structure
 

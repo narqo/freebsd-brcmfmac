@@ -284,6 +284,40 @@ is set at scan start and cleared at first channel dwell. Since firmware
 escan results arrive asynchronously (not tied to swscan's channel timing),
 the driver clears this flag before each `ieee80211_add_scan` call.
 
+## Interface down: synchronous disconnect and security clear
+
+**Decision**: Send DISASSOC and clear `wsec`/`wpa_auth` in
+`brcmf_parent` (the `ic_parent` callback), not in the deferred INIT
+state transition.
+
+**Problem**: `ifconfig down` triggers `ieee80211_new_state(INIT)`,
+which is deferred via taskqueue. If `ifconfig up` + wpa_supplicant
+start before the deferred INIT runs, the DISASSOC races with the new
+SET_SSID. The AP receives auth → assoc → deauth (stale) and drops the
+session.
+
+Even when DISASSOC arrives first, stale encryption keys in the firmware
+cause it to encrypt EAPOL frame 2/4. The AP can't decrypt it and deauths
+after its handshake timeout (~1s).
+
+**Fix**: `brcmf_parent` runs synchronously in the `ifconfig down` path
+(before it returns). Sending DISASSOC + clearing security state here
+guarantees they complete before the next `ifconfig up`.
+
+The INIT handler's DISASSOC is retained as a safety net for state
+transitions that don't go through `brcmf_parent` (e.g., VAP destroy).
+
+## Direct-join and WPA networks
+
+**Decision**: `brcmf_join_bss_direct` (the scan-complete auto-join
+path) skips WPA networks.
+
+**Rationale**: The direct-join path runs when `iv_roaming != MANUAL`
+(before wpa_supplicant sets roaming to manual). Without a supplicant
+managing the 4-way handshake, a WPA association succeeds at L2 but the
+AP deauthenticates after its EAPOL timeout. This pollutes the AP's
+session state and blocks subsequent association attempts.
+
 ## Test environment
 
 - **Build host**: 192.168.20.82 (FreeBSD 15, Zig 0.16-dev)
