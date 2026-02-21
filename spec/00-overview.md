@@ -8,6 +8,13 @@ brcmfmac is a Linux FullMAC WiFi driver for Broadcom wireless chipsets. This spe
 
 **Key distinction**: brcmfmac is a FullMAC driver. The firmware handles 802.11 MAC layer operations (scanning, authentication, association). The host driver communicates with firmware via commands and events.
 
+---
+**Hardware-specific notes**
+
+Throughout this specification, sections marked with "**BCM4350 note**" contain hardware-specific details discovered during FreeBSD driver development. These notes apply to firmware version 7.35.180.133 and may not apply to other Broadcom chips or firmware versions.
+
+---
+
 ## Document structure
 
 | File | Description |

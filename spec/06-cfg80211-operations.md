@@ -472,3 +472,12 @@ s32 brcmf_cfg80211_down(struct net_device *ndev) {
 Notes:
 - `brcmf_config_dongle()` performs `BRCMF_C_UP` with value 0, configures scan times, power mode, roam policy, ARP/ND offload, and frameburst; it is the only place dongle-wide init occurs.
 - There is no `BRCMF_C_DOWN` in `brcmf_cfg80211_down()`.
+
+---
+**BCM4350 note**
+
+The firmware retains encryption keys across DISASSOC. On reassociation, the firmware may encrypt EAPOL frame 2/4 with stale keys, causing the AP to deauth after its handshake timeout. Clear `wsec=0` and `wpa_auth=0` on interface down before the next association cycle.
+
+The firmware's RSN IE in association requests always uses `capabilities=0x000c` (16 PTKSA replay counters). wpa_supplicant only matches this when `wmm_enabled=1`, which requires a WMM vendor IE in the scan entry. If the AP has RSN but no WMM IE, inject a synthetic WMM IE into scan results. Do NOT use the `wpaie` iovar — any `wpaie` set causes `SET_SSID failed, status=1`.
+
+---

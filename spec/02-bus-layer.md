@@ -130,6 +130,13 @@ After firmware boots, it writes a shared RAM address to the last 4 bytes of RAM.
 #define BRCMF_SHARED_DMA_RINGUPD_ADDR_OFFSET   68
 ```
 
+---
+**BCM4350 note**
+
+Firmware v7.35.180.133 uses shared version 5. The `DMA_INDEX` flag is typically set, using 16-bit indices (`DMA_2B_IDX`). The `HOSTRDY_DB1` flag is set, requiring a write to `h2d_mailbox_1` after ring setup.
+
+---
+
 First word contains version and flags:
 ```c
 #define BRCMF_PCIE_MIN_SHARED_VERSION      5
@@ -302,6 +309,13 @@ struct brcmf_pcie_reginfo {
 ```
 
 Selected at probe time based on core revision.
+
+---
+**BCM4350 note**
+
+Core revision is < 64, so the driver uses the legacy register offsets (INTMASK=0x24, MAILBOXINT=0x48, etc.). The rev >= 64 offsets are not needed for this chip.
+
+---
 
 ### ISR flow
 

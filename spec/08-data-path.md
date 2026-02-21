@@ -64,6 +64,13 @@ done:
 
 msgbuf uses flow rings per (TID, peer) for QoS:
 
+---
+**BCM4350 note**
+
+For STA mode with a single peer (the AP), a simplified implementation can use a single flow ring for all traffic. The firmware handles QoS internally. Flow rings must be deleted and recreated on each association to avoid stale state.
+
+---
+
 ```c
 static int brcmf_msgbuf_tx_queue_data(struct brcmf_pub *drvr, int ifidx,
                                       struct sk_buff *skb) {

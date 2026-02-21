@@ -112,6 +112,13 @@ struct brcmf_bss_info_le {
 };
 ```
 
+---
+**BCM4350 note**
+
+Firmware v7.35.180.133 uses a 128-byte BSS info header (version 109/0x6d), not the 117-byte struct shown above. The 11 extra bytes between offsets 117-127 are unknown fields. When `ie_offset=0` and `ie_length=0`, IEs actually start at byte 128. The driver should use `ie_offset = max(ie_offset, 128)` when `ie_offset` is 0 and `length > 128`.
+
+---
+
 ## Connection structures
 
 ### brcmf_join_params
@@ -174,6 +181,13 @@ struct brcmf_wsec_key {
 // Key flags
 #define BRCMF_PRIMARY_KEY       (1 << 1)
 ```
+
+---
+**BCM4350 note**
+
+For group keys in STA mode, the `ea` field must be set to all zeros. Setting `ea=ff:ff:ff:ff:ff:ff` (broadcast) returns `BCME_UNSUPPORTED` (error code 5). The Linux driver leaves `ea` zeroed for group keys.
+
+---
 
 ### brcmf_wsec_pmk_le
 

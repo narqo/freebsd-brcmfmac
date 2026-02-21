@@ -226,6 +226,13 @@ static s32 brcmf_fil_cmd_data(struct brcmf_if *ifp, u32 cmd, void *data, u32 len
 | `wsec_pmk` | struct | PMK for WPA-PSK |
 | `mfp` | int | Management frame protection |
 
+---
+**BCM4350 note**
+
+Firmware v7.35.180.133 does not support the internal supplicant. Setting `sup_wpa=1` combined with `SET_WSEC_PMK` returns `BCME_BADARG` (-23). Use `sup_wpa=0` and let the host (wpa_supplicant) manage the 4-way handshake. Additionally, `WPA2_AUTH_PSK_SHA256` (0x8000) as a direct `wpa_auth` value causes `SET_SSID failed, status=1`; use `WPA2_AUTH_PSK` (0x80) and let firmware auto-negotiate AKM type 6 when the AP advertises it.
+
+---
+
 ### Interface
 
 | IOVAR | Type | Description |

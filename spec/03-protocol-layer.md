@@ -283,6 +283,10 @@ IOCTL responses and events use a separate posting path in the control submit rin
 ### Flow rings
 
 Each TX flow (per TID, per peer) gets its own ring. Created on demand.
+- Ring indices start at `BRCMF_H2D_MSGRING_FLOWRING_IDSTART` (2).
+- Rings are created via `MSGBUF_TYPE_FLOW_RING_CREATE` control message.
+- Rings are deleted via `MSGBUF_TYPE_FLOW_RING_DELETE` control message.
+- TX post `request_id` is `pktid + 1`, so request_id 0 is never used for TX data (control messages use request_id 0).
 
 ```c
 struct msgbuf_tx_flowring_create_req {

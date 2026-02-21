@@ -245,6 +245,13 @@ int brcmf_c_preinit_dcmds(struct brcmf_if *ifp) {
     // 9. Set default join preferences (RSSI-based)
     brcmf_c_set_joinpref_default(ifp);
 
+---
+**BCM4350 note**
+
+For low-latency operation, disable MPC (`mpc=0`) and firmware roaming (`roam_off=1`) after interface up. This keeps the radio active during idle and eliminates background scans that cause latency spikes.
+
+---
+
     // 10. Read event_msgs, enable E_IF bit, write back
     brcmf_fil_iovar_data_get(ifp, "event_msgs", ...);
     setbit(event_mask, BRCMF_E_IF);
