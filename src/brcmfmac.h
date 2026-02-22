@@ -191,6 +191,7 @@ struct brcmf_softc {
 	uint16_t reqid;
 
 	/* IOCTL state */
+	struct mtx ioctl_mtx;
 	uint16_t ioctl_trans_id;
 	int ioctl_status;
 	uint32_t ioctl_resp_len;
@@ -198,6 +199,7 @@ struct brcmf_softc {
 
 	/* Firmware health */
 	int fw_dead;
+	int ioctl_timeouts;
 	struct callout watchdog;
 
 	/* net80211 */
@@ -240,7 +242,6 @@ struct brcmf_softc {
 		uint8_t ie[BRCMF_SCAN_IE_MAX];
 	} scan_results[BRCMF_SCAN_RESULTS_MAX];
 	int scan_nresults;
-	struct mtx scan_mtx;
 };
 
 MALLOC_DECLARE(M_BRCMFMAC);

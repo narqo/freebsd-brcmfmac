@@ -921,38 +921,60 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	if (sc->fw_dead)
 		return (ENXIO);
 
+	mtx_lock(&sc->ioctl_mtx);
+
+	if (sc->fw_dead) {
+		mtx_unlock(&sc->ioctl_mtx);
+		return (ENXIO);
+	}
+
 	error = brcmf_msgbuf_tx_ioctl(sc, cmd, buf, len);
-	if (error != 0)
+	if (error != 0) {
+		mtx_unlock(&sc->ioctl_mtx);
 		return (error);
+	}
 
 	timeout = BRCMF_IOCTL_TIMEOUT_MS;
-	while (!sc->ioctl_completed && timeout > 0) {
-		error = tsleep(&sc->ioctl_completed, PCATCH, "brcmioctl",
-		    hz / 10);
+	while (!sc->ioctl_completed && !sc->fw_dead && timeout > 0) {
+		error = msleep(&sc->ioctl_completed, &sc->ioctl_mtx,
+		    PCATCH, "brcmioctl", hz / 10);
 		if (error != 0 && error != EWOULDBLOCK)
-			return (error);
+			break;
 		timeout -= 100;
 	}
 
 	if (!sc->ioctl_completed) {
-		device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
-		sc->fw_dead = 1;
-		return (ENXIO);
+		if (timeout <= 0) {
+			device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n",
+			    cmd);
+			if (++sc->ioctl_timeouts >= 3)
+				sc->fw_dead = 1;
+		}
+		mtx_unlock(&sc->ioctl_mtx);
+		return (ETIMEDOUT);
+	}
+
+	sc->ioctl_timeouts = 0;
+
+	if (error != 0 && error != EWOULDBLOCK) {
+		mtx_unlock(&sc->ioctl_mtx);
+		return (error);
 	}
 
 	if (resp_len != NULL)
 		*resp_len = sc->ioctl_resp_len;
 
+	error = 0;
 	if (sc->ioctl_status != 0)
-		return (EIO);
-
-	if (buf != NULL && sc->ioctl_resp_len > 0) {
+		error = EIO;
+	else if (buf != NULL && sc->ioctl_resp_len > 0) {
 		if (sc->ioctl_resp_len > len)
 			sc->ioctl_resp_len = len;
 		memcpy(buf, sc->ioctlbuf, sc->ioctl_resp_len);
 	}
 
-	return (0);
+	mtx_unlock(&sc->ioctl_mtx);
+	return (error);
 }
 
 /*

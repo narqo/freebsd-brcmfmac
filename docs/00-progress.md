@@ -232,7 +232,7 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [ ] Firmware crash recovery (core dump, reload)
 - [x] Memory leak fix (flowring struct freed in cleanup path)
 - [x] Error path review (TX DMA tag/map cleanup, callout_init ordering)
-- [ ] Locking audit (mutex coverage for shared state)
+- [x] Locking audit (ioctl_mtx serialization, removed unused scan_mtx)
 - [ ] sysctl tuning interface (PM mode, roam_off, debug level)
 
 ### Milestone 17: Integration (TODO)

@@ -438,3 +438,25 @@ The flag is set by:
 
 The watchdog also wakes any threads sleeping on ioctl or flowring
 completion, so they don't have to wait for their individual timeouts.
+
+## IOCTL serialization mutex
+
+**Problem**: The firmware IOCTL protocol is single-threaded
+(one outstanding request, shared `ioctlbuf`). Multiple kernel
+contexts can call firmware ioctls concurrently: `ic_tq` tasks
+(`brcmf_parent`, `brcmf_link_task`, `brcmf_newstate`), sysctl
+handler (`brcmf_set_pmk`), and `brcmf_key_set`/`brcmf_key_delete`
+(which drop COM+node locks before the ioctl).
+
+**Fix**: `ioctl_mtx` (MTX_DEF) serializes all calls to
+`brcmf_msgbuf_ioctl`. The mutex is held for the entire
+request-response cycle. `msleep` atomically releases it while
+waiting for the firmware response, allowing other threads to
+queue up without corrupting the shared ioctl buffer.
+
+**fw_dead threshold**: A single ioctl timeout does not mark the
+firmware dead — transient timeouts occur during firmware state
+transitions (e.g., after DISASSOC). Three consecutive timeouts
+set `fw_dead`, which permanently short-circuits all firmware
+communication. The watchdog callout also sets `fw_dead` on
+BAR0 read failure (PCIe link down).

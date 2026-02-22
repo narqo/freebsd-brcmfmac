@@ -1080,6 +1080,7 @@ brcmf_pcie_attach(device_t dev)
 
 	pci_write_config(dev, BRCMF_PCIE_BAR0_WINDOW, SI_ENUM_BASE, 4);
 	callout_init(&sc->watchdog, 1);
+	mtx_init(&sc->ioctl_mtx, "brcmfmac_ioctl", NULL, MTX_DEF);
 
 	regdata = brcmf_reg_read(sc, 0);
 	if (regdata == 0xffffffff) {
@@ -1182,6 +1183,7 @@ brcmf_pcie_detach(device_t dev)
 	brcmf_pcie_free_irq(sc);
 	brcmf_msgbuf_cleanup(sc);
 	brcmf_pcie_free_rings(sc);
+	mtx_destroy(&sc->ioctl_mtx);
 
 	if (sc->nvram != NULL)
 		free(sc->nvram, M_BRCMFMAC);
