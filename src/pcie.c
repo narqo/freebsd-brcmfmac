@@ -728,11 +728,37 @@ brcmf_pcie_setup_irq(struct brcmf_softc *sc)
 }
 
 /*
+ * Periodic check for device liveness.
+ */
+static void
+brcmf_watchdog(void *arg)
+{
+	struct brcmf_softc *sc = arg;
+	uint32_t val;
+
+	if (sc->fw_dead)
+		return;
+
+	brcmf_pcie_select_core(sc, &sc->pciecore);
+	val = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
+	if (val == 0xffffffff) {
+		device_printf(sc->dev, "device not responding, marking dead\n");
+		sc->fw_dead = 1;
+		wakeup(&sc->ioctl_completed);
+		wakeup(&sc->flowring_create_done);
+		return;
+	}
+
+	callout_reset(&sc->watchdog, 5 * hz, brcmf_watchdog, sc);
+}
+
+/*
  * Tear down MSI interrupt.
  */
 static void
 brcmf_pcie_free_irq(struct brcmf_softc *sc)
 {
+	callout_drain(&sc->watchdog);
 	if (sc->irq_handle != NULL) {
 		brcmf_pcie_intr_disable(sc);
 		bus_teardown_intr(sc->dev, sc->irq_res, sc->irq_handle);
@@ -997,6 +1023,8 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	brcmf_pcie_intr_enable(sc);
 
+	callout_reset(&sc->watchdog, 5 * hz, brcmf_watchdog, sc);
+
 	/* Get firmware version */
 	error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
 	if (error == 0 && sc->ioctl_resp_len > 0) {
@@ -1051,6 +1079,7 @@ brcmf_pcie_attach(device_t dev)
 	sc->tcm_bsh = rman_get_bushandle(sc->tcm_res);
 
 	pci_write_config(dev, BRCMF_PCIE_BAR0_WINDOW, SI_ENUM_BASE, 4);
+	callout_init(&sc->watchdog, 1);
 
 	regdata = brcmf_reg_read(sc, 0);
 	if (regdata == 0xffffffff) {

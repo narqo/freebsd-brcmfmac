@@ -228,10 +228,10 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Guard `brcmf_cfg_detach` against partial attach (`cfg_attached`)
 - [x] Fix `brcmf_fil_bss_down` to pass val=0
 - [x] Fix COM lock deadlock (drop COM in `brcmf_key_set`/`brcmf_key_delete`)
-- [ ] Watchdog: detect firmware hang (ioctl timeout, no TX completions)
+- [x] Watchdog: `fw_dead` flag, BAR0 liveness callout, fast ioctl bail-out
 - [ ] Firmware crash recovery (core dump, reload)
-- [ ] Memory leak audit (malloc/free pairing)
-- [ ] Error path review (missing frees, leaked references)
+- [x] Memory leak fix (flowring struct freed in cleanup path)
+- [x] Error path review (TX DMA tag/map cleanup, callout_init ordering)
 - [ ] Locking audit (mutex coverage for shared state)
 - [ ] sysctl tuning interface (PM mode, roam_off, debug level)
 

@@ -918,6 +918,9 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 {
 	int error, timeout;
 
+	if (sc->fw_dead)
+		return (ENXIO);
+
 	error = brcmf_msgbuf_tx_ioctl(sc, cmd, buf, len);
 	if (error != 0)
 		return (error);
@@ -933,7 +936,8 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 	if (!sc->ioctl_completed) {
 		device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
-		return (ETIMEDOUT);
+		sc->fw_dead = 1;
+		return (ENXIO);
 	}
 
 	if (resp_len != NULL)
@@ -1052,7 +1056,8 @@ brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc)
 		brcmf_msgbuf_ring_submit(sc, ctrl);
 
 		timeout = 1000;
-		while (!sc->flowring_create_done && timeout > 0) {
+		while (!sc->flowring_create_done && !sc->fw_dead &&
+		    timeout > 0) {
 			tsleep(&sc->flowring_create_done, 0,
 			    "brcmfrd", hz / 100);
 			timeout -= 10;
@@ -1144,14 +1149,15 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 
 	/* Wait for flow ring create completion */
 	timeout = 1000;
-	while (!sc->flowring_create_done && timeout > 0) {
+	while (!sc->flowring_create_done && !sc->fw_dead && timeout > 0) {
 		tsleep(&sc->flowring_create_done, 0, "brcmfrc", hz / 100);
 		timeout -= 10;
 	}
 
 	if (!sc->flowring_create_done) {
 		device_printf(sc->dev, "flowring create timeout\n");
-		return (ETIMEDOUT);
+		sc->fw_dead = 1;
+		return (ENXIO);
 	}
 
 	if (sc->flowring_create_status != 0) {
@@ -1177,7 +1183,7 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 	int error, nsegs;
 	uint32_t pktid;
 
-	if (sc->flowring == NULL) {
+	if (sc->fw_dead || sc->flowring == NULL) {
 		m_freem(m);
 		return (ENXIO);
 	}
@@ -1315,6 +1321,31 @@ brcmf_msgbuf_init(struct brcmf_softc *sc)
 void
 brcmf_msgbuf_cleanup(struct brcmf_softc *sc)
 {
+	int i;
+
+	if (sc->flowring != NULL) {
+		brcmf_free_dma_buf(sc->flowring->dma_tag,
+		    sc->flowring->dma_map, sc->flowring->buf);
+		free(sc->flowring, M_BRCMFMAC);
+		sc->flowring = NULL;
+	}
+
+	for (i = 0; i < BRCMF_TX_RING_SIZE; i++) {
+		if (sc->txbuf[i].m != NULL) {
+			bus_dmamap_sync(sc->txbuf[i].dma_tag,
+			    sc->txbuf[i].dma_map, BUS_DMASYNC_POSTWRITE);
+			bus_dmamap_unload(sc->txbuf[i].dma_tag,
+			    sc->txbuf[i].dma_map);
+			m_freem(sc->txbuf[i].m);
+			sc->txbuf[i].m = NULL;
+		}
+		if (sc->txbuf[i].dma_map != NULL)
+			bus_dmamap_destroy(sc->txbuf[i].dma_tag,
+			    sc->txbuf[i].dma_map);
+		if (sc->txbuf[i].dma_tag != NULL)
+			bus_dma_tag_destroy(sc->txbuf[i].dma_tag);
+	}
+
 	brcmf_msgbuf_free_ctrlbufs(sc);
 	brcmf_pcie_free_ioctlbuf(sc);
 }

@@ -416,3 +416,25 @@ to handle callers that may or may not hold these locks.
 
 Verified: interface cycling (which triggers `sta_newstate` INIT →
 key delete) no longer panics.
+
+## Firmware liveness and fw_dead flag
+
+**Problem**: Firmware can become unresponsive (ioctl timeouts, BAR0
+reads return 0xffffffff). When this happens during detach, each
+ioctl waits the full 2s timeout, making kldunload hang for tens of
+seconds. If the chip is physically gone (PCIe error), no amount of
+retrying will recover.
+
+**Design**: A `fw_dead` flag in softc. Once set, all firmware
+communication is short-circuited:
+- `brcmf_msgbuf_ioctl` returns `ENXIO` immediately
+- `brcmf_msgbuf_tx` drops packets immediately
+- Flowring create/delete waits bail out
+
+The flag is set by:
+1. Any ioctl timeout (first timeout marks the device dead)
+2. The watchdog callout (5s interval), which reads BAR0 mailbox
+   register — `0xffffffff` means PCIe link is down
+
+The watchdog also wakes any threads sleeping on ioctl or flowring
+completion, so they don't have to wait for their individual timeouts.

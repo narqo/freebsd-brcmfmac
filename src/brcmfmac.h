@@ -196,6 +196,10 @@ struct brcmf_softc {
 	uint32_t ioctl_resp_len;
 	int ioctl_completed;
 
+	/* Firmware health */
+	int fw_dead;
+	struct callout watchdog;
+
 	/* net80211 */
 	struct ieee80211com ic;
 	uint8_t macaddr[ETHER_ADDR_LEN];
