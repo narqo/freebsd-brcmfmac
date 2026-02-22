@@ -5,7 +5,7 @@ built into the 2016 MacBook Pro (PCIe device `14e4:43a3`).
 
 ## Project status
 
-This is a experimental project. The module still shows stability problems. As of Feb 2026 I DO NOT recommend using it other than for testing purposes.
+This is an experimental project. The module still shows stability problems. As of Feb 2026 I DO NOT recommend using it other than for testing purposes.
 
 ### AI disclosure
 
