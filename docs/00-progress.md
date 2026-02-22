@@ -233,7 +233,7 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Memory leak fix (flowring struct freed in cleanup path)
 - [x] Error path review (TX DMA tag/map cleanup, callout_init ordering)
 - [x] Locking audit (ioctl_mtx serialization, removed unused scan_mtx)
-- [ ] sysctl tuning interface (PM mode, roam_off, debug level)
+- [x] sysctl tuning interface (dev.brcmfmac.0.pm, debug, psk)
 
 ### Milestone 17: Integration (TODO)
 

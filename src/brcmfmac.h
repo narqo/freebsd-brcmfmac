@@ -225,6 +225,9 @@ struct brcmf_softc {
 	struct sysctl_ctx_list sysctl_ctx;
 	int cfg_attached;
 
+	/* Tuning (sysctl) */
+	int debug;
+
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64
 #define BRCMF_SCAN_IE_MAX	512

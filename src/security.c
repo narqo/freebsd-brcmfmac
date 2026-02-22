@@ -208,6 +208,28 @@ brcmf_sysctl_psk(SYSCTL_HANDLER_ARGS)
 	return (0);
 }
 
+static int
+brcmf_sysctl_pm(SYSCTL_HANDLER_ARGS)
+{
+	struct brcmf_softc *sc = arg1;
+	uint32_t val;
+	int error;
+
+	val = 0;
+	brcmf_fil_cmd_data_get(sc, 85 /* BRCMF_C_GET_PM */,
+	    &val, sizeof(val));
+
+	error = sysctl_handle_int(oidp, &val, 0, req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	if (val > 2)
+		return (EINVAL);
+
+	return brcmf_fil_cmd_data_set(sc, 86 /* BRCMF_C_SET_PM */,
+	    &val, sizeof(val));
+}
+
 void
 brcmf_security_sysctl_init(struct brcmf_softc *sc)
 {
@@ -220,4 +242,12 @@ brcmf_security_sysctl_init(struct brcmf_softc *sc)
 	SYSCTL_ADD_PROC(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "psk", CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
 	    brcmf_sysctl_psk, "A", "WPA PSK passphrase");
+
+	SYSCTL_ADD_PROC(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "pm", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
+	    brcmf_sysctl_pm, "I", "Power management (0=off, 1=PM1, 2=PM2)");
+
+	SYSCTL_ADD_INT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "debug", CTLFLAG_RW, &sc->debug, 0,
+	    "Debug verbosity (0=off, 1=events, 2=verbose)");
 }
