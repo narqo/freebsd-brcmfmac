@@ -90,7 +90,7 @@ For BCM4350 (target hardware):
 - Protocol: msgbuf (ring-based DMA)
 - Shared memory: TCM (Tightly Coupled Memory) accessible via BAR1
 - Firmware: `brcmfmac4350c2-pcie.bin`
-- NVRAM: `brcmfmac4350c2-pcie.txt`
+- NVRAM: `brcmfmac4350c2-pcie.txt` (optional)
 
 ### Memory regions
 

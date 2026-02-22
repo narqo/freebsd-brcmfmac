@@ -29,10 +29,10 @@ make
 
 ## Install
 
-Copy the firmware files to `/boot/firmware/`:
+Copy the firmware file to `/boot/firmware/`:
 
-- `brcmfmac4350c2-pcie.bin`
-- `brcmfmac4350c2-pcie.txt`
+- `brcmfmac4350c2-pcie.bin` (required)
+- `brcmfmac4350c2-pcie.txt` (optional, NVRAM configuration)
 
 These are the standard Linux firmware files from `linux-firmware`.
 
