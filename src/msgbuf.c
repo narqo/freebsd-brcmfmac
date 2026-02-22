@@ -412,7 +412,7 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 	if (ring->w_ptr >= ring->r_ptr)
 		avail = ring->w_ptr - ring->r_ptr;
 	else
-		avail = ring->depth - ring->r_ptr;
+		avail = (ring->depth - ring->r_ptr) + ring->w_ptr;
 
 	if (avail == 0)
 		return;
@@ -499,7 +499,7 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 	if (ring->w_ptr >= ring->r_ptr)
 		avail = ring->w_ptr - ring->r_ptr;
 	else
-		avail = ring->depth - ring->r_ptr;
+		avail = (ring->depth - ring->r_ptr) + ring->w_ptr;
 
 	if (avail == 0)
 		return;
@@ -600,7 +600,7 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 	if (ring->w_ptr >= ring->r_ptr)
 		avail = ring->w_ptr - ring->r_ptr;
 	else
-		avail = ring->depth - ring->r_ptr;
+		avail = (ring->depth - ring->r_ptr) + ring->w_ptr;
 
 	if (avail == 0)
 		return;
@@ -673,16 +673,23 @@ void
 brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 {
 	struct brcmf_pcie_ringbuf *rx_ring;
+	int pass;
 
 	rx_ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
 
-	/* Sync DMA before processing */
-	bus_dmamap_sync(rx_ring->dma_tag, rx_ring->dma_map,
-	    BUS_DMASYNC_POSTREAD);
+	for (pass = 0; pass < 5; pass++) {
+		bus_dmamap_sync(rx_ring->dma_tag, rx_ring->dma_map,
+		    BUS_DMASYNC_POSTREAD);
 
-	brcmf_msgbuf_process_ctrl_complete(sc);
-	brcmf_msgbuf_process_tx_complete(sc);
-	brcmf_msgbuf_process_rx_complete(sc);
+		brcmf_msgbuf_process_ctrl_complete(sc);
+		brcmf_msgbuf_process_tx_complete(sc);
+		brcmf_msgbuf_process_rx_complete(sc);
+
+		/* Check if more work arrived during processing */
+		brcmf_ring_read_wptr(sc, rx_ring);
+		if (rx_ring->w_ptr == rx_ring->r_ptr)
+			break;
+	}
 }
 
 /*
@@ -1215,7 +1222,6 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 	/* Find a free TX buffer slot */
 	pktid = sc->tx_pktid_next;
 	if (sc->txbuf[pktid % BRCMF_TX_RING_SIZE].m != NULL) {
-		/* Ring full */
 		m_freem(m);
 		return (ENOBUFS);
 	}

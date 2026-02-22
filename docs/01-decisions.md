@@ -460,3 +460,21 @@ transitions (e.g., after DISASSOC). Three consecutive timeouts
 set `fw_dead`, which permanently short-circuits all firmware
 communication. The watchdog callout also sets `fw_dead` on
 BAR0 read failure (PCIe link down).
+
+## D2H ring wraparound bug
+
+**Problem**: The available-entries calculation in D2H completion
+rings only counted entries from `r_ptr` to end-of-buffer when
+`w_ptr < r_ptr` (wraparound case). Entries from 0 to `w_ptr` were
+missed until the next ISR invocation. Under heavy traffic, TX
+completions in the wrapped region were never processed, the TX
+buffer ring filled up, and all TX stalled permanently.
+
+**Fix**: `avail = (ring->depth - ring->r_ptr) + ring->w_ptr` for
+the wraparound case. Applied to all three D2H rings (ctrl, TX, RX).
+
+Additionally, `brcmf_msgbuf_process_d2h` now loops up to 5 times,
+re-checking the RX completion ring w_ptr after each pass. This
+catches completions that arrive during processing, preventing stalls
+when the firmware writes new entries between the initial w_ptr read
+and the interrupt re-enable.

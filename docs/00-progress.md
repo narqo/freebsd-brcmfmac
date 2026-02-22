@@ -185,7 +185,7 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Internet download via fetch: 13 Mbps (ISP-limited, not WiFi)
 - [x] 5GHz→2.4GHz→5GHz cycling: passes
 - [x] Large fetch: 3×10MB over WiFi, no crash (ISP-limited ~19 Mbps)
-- [ ] iperf3 TCP throughput — public servers unavailable
+- [x] Throughput: ~14 Mbps download (ISP-limited), 10MB transfers stable
 - [ ] Open network association (no WPA)
 - [ ] WPA2-PSK (non-SHA256) with different APs
 
