@@ -7,9 +7,11 @@ built into the 2016 MacBook Pro (PCIe device `14e4:43a3`).
 
 This is an experimental project. The module still shows stability problems. As of Feb 2026 I DO NOT recommend using it other than for testing purposes.
 
+Works for WPA2-PSK on 2.4GHz and 5GHz.
+
 ### AI disclosure
 
-The code of the project was mainly written by AI coding agents, with very low supervision (_vibe coding over many coding sessions, using [pi agent](https://pi.dev) and Claude Opus family of modules_). The code is not guaranteed to be free of bugs or security vulnerabilities, and should be used with caution.
+The code of the project was mainly written by AI coding agents, with very low supervision (_vibe coding over many coding sessions, using [pi agent](https://pi.dev) and Claude Opus family of models_). The code is not guaranteed to be free of bugs or security vulnerabilities, and should be used with caution.
 
 ## Prerequisites
 
@@ -80,10 +82,6 @@ if_brcmfmac_load="YES"
 | `dev.brcmfmac.0.psk` | WPA passphrase |
 | `dev.brcmfmac.0.pm` | Power management (0=off, 1=PM1, 2=PM2) |
 | `dev.brcmfmac.0.debug` | Debug verbosity |
-
-## Status
-
-Works for WPA2-PSK on 2.4GHz and 5GHz.
 
 ## Documentation
 
