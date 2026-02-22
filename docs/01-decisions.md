@@ -1,5 +1,21 @@
 # Design Decisions
 
+## License
+
+**Decision**: ISC License.
+
+**Rationale**:
+
+The Linux brcmfmac driver is dual-licensed ISC/GPL-2.0. The driver spec
+was produced by an AI agent that read the Linux source directly, making
+this implementation a derivative work. ISC is the permissive option of
+the two upstream licenses, compatible with FreeBSD in-tree inclusion,
+and includes a no-warranty clause that disclaims liability for damages.
+
+Copyright notices:
+- `Copyright (c) 2010-2022 Broadcom Corporation` — upstream Linux driver
+- `Copyright (c) brcmfmac-freebsd contributors` — this implementation
+
 ## Native FreeBSD vs LinuxKPI
 
 **Decision**: Use native FreeBSD APIs instead of LinuxKPI.

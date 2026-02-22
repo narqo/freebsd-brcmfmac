@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: ISC
+/*
+ * Copyright (c) 2010-2022 Broadcom Corporation
+ * Copyright (c) brcmfmac-freebsd contributors
+ *
+ * Based on the Linux brcmfmac driver.
+ */
+
 /* Chip core management: enumeration, reset, firmware download state */
 
 #include <sys/param.h>

@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: ISC
+/*
+ * Copyright (c) 2010-2022 Broadcom Corporation
+ * Copyright (c) brcmfmac-freebsd contributors
+ *
+ * Based on the Linux brcmfmac driver.
+ */
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/stdarg.h>

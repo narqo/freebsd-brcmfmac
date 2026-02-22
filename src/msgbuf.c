@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: ISC
+/*
+ * Copyright (c) 2010-2022 Broadcom Corporation
+ * Copyright (c) brcmfmac-freebsd contributors
+ *
+ * Based on the Linux brcmfmac driver.
+ */
+
 /* Message buffer protocol: ring operations, D2H processing, IOCTL handling */
 
 #include <sys/param.h>

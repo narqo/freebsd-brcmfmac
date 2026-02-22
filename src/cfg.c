@@ -1,3 +1,11 @@
+// SPDX-License-Identifier: ISC
+/*
+ * Copyright (c) 2010-2022 Broadcom Corporation
+ * Copyright (c) brcmfmac-freebsd contributors
+ *
+ * Based on the Linux brcmfmac driver.
+ */
+
 /* net80211 interface: VAP management, attach/detach, link events */
 
 #include <sys/param.h>

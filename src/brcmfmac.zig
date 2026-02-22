@@ -1,3 +1,10 @@
+// SPDX-License-Identifier: ISC
+//
+// Copyright (c) 2010-2022 Broadcom Corporation
+// Copyright (c) brcmfmac-freebsd contributors
+//
+// Based on the Linux brcmfmac driver.
+
 extern fn brcmf_dbg(fmt: [*:0]const u8, ...) void;
 
 pub const CID_ID_MASK: u32 = 0x0000ffff;
