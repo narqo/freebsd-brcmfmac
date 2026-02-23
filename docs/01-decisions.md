@@ -448,7 +448,9 @@ communication is short-circuited:
 - Flowring create/delete waits bail out
 
 The flag is set by:
-1. Any ioctl timeout (first timeout marks the device dead)
+1. Three consecutive ioctl timeouts (`ioctl_timeouts >= 3`) — transient
+   timeouts during firmware state transitions (e.g., after DISASSOC)
+   are tolerated; the counter resets on any successful ioctl.
 2. The watchdog callout (5s interval), which reads BAR0 mailbox
    register — `0xffffffff` means PCIe link is down
 
