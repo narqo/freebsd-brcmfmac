@@ -1187,6 +1187,17 @@ brcmf_pcie_detach(device_t dev)
 
 	sc = device_get_softc(dev);
 
+	/*
+	 * Mark dead and detaching before cfg_detach. This causes any
+	 * inflight or newly-enqueued callbacks (link_task, key_delete,
+	 * state transitions) to skip firmware ioctls and return
+	 * immediately rather than sleeping on a dead firmware.
+	 */
+	sc->detaching = 1;
+	sc->fw_dead = 1;
+	wakeup(&sc->ioctl_completed);
+	wakeup(&sc->flowring_create_done);
+
 	brcmf_cfg_detach(sc);
 	brcmf_pcie_free_irq(sc);
 	brcmf_msgbuf_cleanup(sc);

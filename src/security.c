@@ -144,6 +144,15 @@ brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k)
 	struct brcmf_wsec_key key;
 	int error, com_locked, node_locked;
 
+	/*
+	 * Skip when the interface is down. brcmf_parent already cleared
+	 * wsec/wpa_auth, so the firmware won't use stale keys. Issuing
+	 * wsec_key ioctls while the firmware is tearing down a DFS channel
+	 * association causes 2s timeouts that cascade into fw_dead.
+	 */
+	if (!sc->running)
+		return 1;
+
 	memset(&key, 0, sizeof(key));
 	key.index = htole32(k->wk_keyix);
 	key.algo = htole32(CRYPTO_ALGO_OFF);

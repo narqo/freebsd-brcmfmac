@@ -47,6 +47,9 @@ brcmf_link_task(void *arg, int pending)
 	uint32_t channum;
 	int error;
 
+	if (sc->detaching)
+		return;
+
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
 		return;
@@ -346,6 +349,9 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	IEEE80211_UNLOCK(ic);
 
+	if (sc->detaching)
+		goto done;
+
 	switch (nstate) {
 	case IEEE80211_S_INIT:
 		if (sc->link_up) {
@@ -405,6 +411,7 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		break;
 	}
 
+done:
 	IEEE80211_LOCK(ic);
 	return (bvap->newstate(vap, nstate, arg));
 }
@@ -514,6 +521,9 @@ brcmf_parent(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
 	int startall = 0;
+
+	if (sc->detaching)
+		return;
 
 	if (ic->ic_nrunning > 0) {
 		if (!sc->running) {
@@ -841,5 +851,14 @@ brcmf_cfg_detach(struct brcmf_softc *sc)
 		return;
 	sc->cfg_attached = 0;
 	sysctl_ctx_free(&sc->sysctl_ctx);
+
+	/*
+	 * Drain tasks that may issue firmware ioctls before tearing down
+	 * net80211. Both run on taskqueue_thread; sc->detaching ensures
+	 * they exit without touching the firmware if re-enqueued.
+	 */
+	taskqueue_drain(taskqueue_thread, &sc->link_task);
+	taskqueue_drain(taskqueue_thread, &sc->restart_task);
+
 	ieee80211_ifdetach(ic);
 }

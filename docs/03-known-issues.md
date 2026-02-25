@@ -10,10 +10,18 @@ in practice. Net80211 reports `11a ht/40+`.
 
 Root cause unclear — may be NVRAM/firmware default or DFS channel limitation.
 
-### Rapid interface cycling unreliable
+### Rapid interface cycling unreliable on DFS channels
 
-Down/up cycles with <3s gaps can hit firmware ioctl timeouts. Three consecutive
-timeouts set `fw_dead`, requiring kldunload/kldload. Intervals of ≥5s are reliable.
+Down/up cycles with <5s gaps do not complete WPA2 association in time on DFS
+channels (ch60). The firmware takes longer to teardown and rejoin on DFS channels
+due to radar detection and CAC requirements.
+
+5s gaps: reliable (5/5 in testing on ch60). 2s gaps: not enough — wpa_state
+stays ASSOCIATING after 10s wait. No IOCTL timeouts or fw_dead with current fix.
+
+2s-gap cycling with wpa_supplicant running additionally hits a deadlock in the
+net80211 state machine (suspected lock ordering between `IEEE80211_LOCK` and
+wpa_supplicant's ioctl dispatch). Requires VM reset. Not yet diagnosed.
 
 ### wpa_supplicant DELKEY warning at startup
 
@@ -32,6 +40,41 @@ Likely AP/ISP issue rather than driver — no driver-side fix identified.
 ---
 
 ## Resolved
+
+### IOCTL timeouts cascading into fw_dead during DFS cycling (FIXED)
+
+On DFS channels the firmware is busy with radar detection/CAC and doesn't
+respond to host ioctls for several seconds after DISASSOC. Three consecutive
+2s timeouts set `fw_dead`, making the driver permanently unusable until
+kldunload/kldload. Happened on every rapid down/up cycle on ch60.
+
+Two fixes:
+1. `brcmf_key_delete`: skip `wsec_key` ioctl when `!sc->running`. Net80211
+   calls `iv_key_delete` on every down; on DFS the firmware timed out here
+   first. `brcmf_parent` already clears `wsec`/`wpa_auth`, so key delete
+   is redundant.
+2. Removed `ioctl_timeouts → fw_dead` escalation from `brcmf_msgbuf_ioctl`.
+   Individual ioctl timeouts during teardown are expected on DFS channels and
+   should not permanently kill the driver. `fw_dead` is now set only by the
+   watchdog (BAR0 returns 0xffffffff), which detects true chip death.
+
+### kldunload/cycling deadlock with fw_dead (PARTIALLY FIXED)
+
+With `fw_dead=1`, `kldunload` hung because `ieee80211_ifdetach` internally
+spins on `ieee80211_com_vdetach` waiting for COM refs to drop, while ioctl
+threads holding those refs were sleeping waiting for firmware responses.
+
+Fixed by:
+- Setting `sc->detaching=1` and `sc->fw_dead=1` at the top of
+  `brcmf_pcie_detach` with `wakeup` on all blocked waiters, before
+  `ieee80211_ifdetach`.
+- Draining `link_task` and `restart_task` before `ieee80211_ifdetach`.
+- Gating `brcmf_link_task`, `brcmf_newstate`, and `brcmf_parent` on
+  `!sc->detaching` to prevent new firmware ioctls during detach.
+
+Verified: kldunload after 5s-gap cycling with wpa_supplicant running is clean.
+
+
 
 ### High latency and D2H ring processing in interrupt context (FIXED, M16)
 

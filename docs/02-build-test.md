@@ -142,6 +142,34 @@ When testing code that may crash:
 4. After a potential crash, wait ~15 seconds for VM to reboot and savecore to complete
 5. Check VM state from build host: `sudo vm list vm0`
 
+### Verifying traffic goes over WiFi
+
+The VM has two interfaces: `vtnet0` (ethernet, default route) and `wlan0` (WiFi).
+The default route goes via vtnet0 — any test that doesn't account for this will
+silently send traffic over ethernet instead of WiFi.
+
+**Always verify the interface before testing:**
+```sh
+route get <target-ip>   # must show interface: wlan0
+```
+
+**For connectivity tests, target an IP in the `192.168.188.0/24` subnet** (the
+WiFi AP's LAN). That subnet is only reachable via wlan0, so the kernel routes it
+correctly regardless of the default route.
+
+```sh
+# Correct: target is in 192.168.188.0/24, routed via wlan0
+ping -c 10 192.168.188.1
+
+# Wrong: goes via vtnet0 (default route), not WiFi
+ping -c 10 8.8.8.8
+fetch http://example.com/
+```
+
+Note: `-S 192.168.188.103` (source address binding) does not force the packet
+out via wlan0 — it only sets the source IP. The outgoing interface is still
+determined by the routing table.
+
 Example safe test pattern:
 ```sh
 # Step 1: Load module (separate command)

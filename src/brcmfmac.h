@@ -207,7 +207,7 @@ struct brcmf_softc {
 
 	/* Firmware health */
 	int fw_dead;
-	int ioctl_timeouts;
+	int detaching;
 	struct callout watchdog;
 
 	/* net80211 */

@@ -959,17 +959,12 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	}
 
 	if (!sc->ioctl_completed) {
-		if (timeout <= 0) {
+		if (timeout <= 0)
 			device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n",
 			    cmd);
-			if (++sc->ioctl_timeouts >= 3)
-				sc->fw_dead = 1;
-		}
 		mtx_unlock(&sc->ioctl_mtx);
 		return (ETIMEDOUT);
 	}
-
-	sc->ioctl_timeouts = 0;
 
 	if (error != 0 && error != EWOULDBLOCK) {
 		mtx_unlock(&sc->ioctl_mtx);

@@ -4,9 +4,10 @@
 
 **Milestones 1-16 complete.** Driver connects to WPA2 APs on 2.4GHz
 and 5GHz, handles link loss recovery, interface cycling. Throughput
-~14 Mbps (ISP-limited). All crash bugs from M15 fixed and verified.
-M16 hardening done: ISR taskqueue, ioctl mutex, watchdog, memory
-leak fix, D2H ring wraparound fix.
+~64 Mbps on 5GHz HT40+ (LAN), ~14 Mbps ISP-limited on internet.
+Post-M16 testing found and fixed two bugs: kldunload deadlock when
+fw_dead=1, and interface cycling on DFS channels causing IOCTL
+timeouts that cascaded into fw_dead.
 
 ## Milestones
 
@@ -231,6 +232,12 @@ and produce RSN capabilities `0x000c`, matching the firmware.
 - [x] Error path review (TX DMA tag/map cleanup, callout_init ordering)
 - [x] Locking audit (ioctl_mtx serialization, removed unused scan_mtx)
 - [x] sysctl tuning interface (dev.brcmfmac.0.pm, debug, psk)
+- [x] Remove ioctl_timeouts→fw_dead escalation; fw_dead now only via watchdog
+- [x] Skip wsec_key delete in brcmf_key_delete when !sc->running (DFS cycling)
+- [x] detaching flag: gates newstate/parent/link_task from issuing ioctls on detach
+- [x] Drain link_task/restart_task before ieee80211_ifdetach in cfg_detach
+- [x] kldunload after 5s-gap cycling with wpa_supplicant: clean
+- [ ] 2s-gap cycling deadlock with wpa_supplicant: net80211 lock ordering, not yet fixed
 
 ### Milestone 17: Packaging (TODO)
 
@@ -244,8 +251,9 @@ and produce RSN capabilities `0x000c`, matching the firmware.
   `BRCMF_C_DOWN` returns NOTDOWN. Actual mode is HT40+.
 - **wpa_supplicant DELKEY warning**: `ioctl[SIOCS80211, op=20]:
   Invalid argument` at startup. Benign — key flush on empty keyring.
-- **Rapid cycling unreliable**: <3s between down/up can hit firmware
-  ioctl timeouts. ≥5s intervals are reliable.
+- **Rapid cycling slow on DFS channels**: <5s between down/up leaves
+  WPA2 ASSOCIATING after 10s on DFS ch60. ≥5s intervals are reliable
+  (5/5 in testing). No longer causes fw_dead or IOCTL timeouts.
 - **Long downloads stall on DFS channels**: 100MB download stalls
   after ~24s on ch116. Likely AP/ISP issue, not driver — 10MB
   transfers complete reliably.
