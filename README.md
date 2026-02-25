@@ -69,6 +69,13 @@ wpa_supplicant -iwlan0 -c/etc/wpa_supplicant.conf -B
 dhclient wlan0
 ```
 
+Test the connection:
+
+```
+wpa_cli -i wlan0 status
+ping -S <wlan0_addr> -c 5 freebsd.org
+```
+
 To load at boot, add to `/boot/loader.conf`:
 
 ```
