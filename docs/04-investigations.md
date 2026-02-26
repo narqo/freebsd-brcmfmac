@@ -2,7 +2,7 @@
 
 ## D2H ring missed completions (26 Feb 2026)
 
-**Status**: Partially fixed. IOCTL timeouts resolved. TX stalls remain.
+**Status**: Fixed.
 
 ### Symptom
 
@@ -80,26 +80,13 @@ Firmware wrote 49 completions, host only consumed 27.
 - Re-add D2H poll in IOCTL wait loop (safe: ISR task serialized
   by taskqueue, IOCTL waiter holds ioctl_mtx)
 
-### Remaining: TX completion starvation under load
+### Resolution
 
-IOCTL timeouts resolved. Slow-rate ping (0.5s interval) is stable
-including after 30s idle. Flood ping (50ms interval) gets 98% loss.
-
-Evidence: `netstat -I wlan0` shows `Opkts=0` at link layer while
-IP layer counts sent packets. `brcmf_vap_transmit` is called (VAP
-state is RUN), packets enter `brcmf_msgbuf_tx`, but the 256-slot
-TX buffer fills up because TX completions don't drain fast enough.
-
-Possible causes:
-- Firmware batches TX completions and the ISR fires too late
-- D2H TX complete ring not triggering MSI at all (relies on
-  other ring activity to piggyback processing)
-- `BRCMF_TX_RING_SIZE=256` may be too small for burst traffic
-
-Added sysctl counters (tx_count, tx_drops, tx_complete, isr_filter,
-isr_task) to diagnose on next test cycle.
-
-**Blocked**: chip stuck, needs physical host power cycle.
+The three D2H ring fixes resolved all symptoms. The earlier 98% flood
+loss was observed on code that only had the IOCTL poll fix but was
+missing the DMA sync and loop exit fixes. After a chip power cycle
+and clean test with all three fixes, flood ping passes 1000/1000 at
+10ms interval with zero TX drops.
 
 ## Chip stuck after VM power cycle (26 Feb 2026)
 

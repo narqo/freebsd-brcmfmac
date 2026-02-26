@@ -2,11 +2,10 @@
 
 ## Current status
 
-**Milestone 16.6 in progress.** D2H ring processing has a critical
-reliability bug: the ISR task can miss completions, causing IOCTL
-timeouts and TX stalls. Two fixes applied so far (DMA sync for all
-three D2H rings; D2H poll in IOCTL wait loop). Packet loss still
-observed — root cause under investigation.
+**Milestones 1-16.6 complete.** Driver connects to WPA2 APs on 2.4GHz
+and 5GHz, handles link loss recovery, interface cycling. Internet
+ping over WiFi verified (5/5 to 8.8.8.8, avg 15ms, sourced from
+wlan0 IP). Flood ping 1000/1000 at 10ms interval, 0% loss.
 
 ## Milestones
 
@@ -262,9 +261,9 @@ requiring a VM reset. Suspected lock ordering issue in the net80211 state
 machine. Without wpa_supplicant, 8 rapid cycles complete cleanly. Not yet
 diagnosed; tracked as a known issue.
 
-### Milestone 16.6: D2H ring processing reliability (IN PROGRESS)
+### Milestone 16.6: D2H ring processing reliability (DONE)
 
-Discovered 26 Feb 2026. The D2H completion ring processing has multiple
+Discovered 26 Feb 2026. The D2H completion ring processing had multiple
 bugs causing missed completions — IOCTL timeouts, TX stalls, and
 eventual 100% packet loss.
 
@@ -295,35 +294,24 @@ diag: h2d_ctrl w=54 r=53 fw_rptr=54 | d2h_ctrl w=27 r=27 fw_wptr=49
 Firmware wrote 49 completions, host saw 27. Chip alive, interrupts
 working (128 filter, 116 task), but 22 completions lost.
 
-#### Fixes applied
+#### Fixes
 
 - [x] DMA sync all three D2H rings in `brcmf_msgbuf_process_d2h`
 - [x] Check all three rings in the multi-pass exit condition
-- [x] Re-add D2H poll in `brcmf_msgbuf_ioctl` wait loop (fixes IOCTL
-  timeouts)
+- [x] Re-add D2H poll in `brcmf_msgbuf_ioctl` wait loop
 - [x] Added sysctl counters: tx_count, tx_drops, tx_complete,
   isr_filter, isr_task
+- [x] Enabled firmware console reader for diagnostics
 
-#### Test results (current code)
+#### Test results
 
 | Test | Result |
 |------|--------|
-| 20x gateway ping (0.5s interval) | 20/20 0% loss |
-| 20x gateway ping after 30s idle | 20/20 0% loss |
-| 100x flood ping (50ms interval) | 2/100 98% loss |
-
-The D2H fix resolved IOCTL timeouts and slow-rate packet loss. Flood
-ping still fails — TX completions don't arrive fast enough to free
-slots in the 256-entry TX buffer ring.
-
-#### Remaining work
-
-- [ ] Diagnose TX completion starvation under load (use sysctl
-  counters to compare tx_count vs tx_complete vs tx_drops)
-- [ ] Consider TX flow control (stop/wake network queue based on
-  ring occupancy)
-- [ ] Verify internet ping sourced from wlan0 IP
-- [ ] **Blocked**: chip stuck, needs physical host power cycle
+| 10x gateway ping (0.5s interval) | 10/10 0% loss |
+| 100x flood ping (50ms interval) | 100/100 0% loss |
+| 1000x flood ping (10ms interval) | 1000/1000 0% loss, avg 2.5ms |
+| Internet ping via wlan0 (8.8.8.8) | 5/5 0% loss, avg 15ms |
+| TX counters after 1000x flood | tx=1122 complete=1122 drops=0 |
 
 ### Milestone 17: Packaging (TODO)
 
