@@ -99,4 +99,53 @@ Possible causes:
 Added sysctl counters (tx_count, tx_drops, tx_complete, isr_filter,
 isr_task) to diagnose on next test cycle.
 
-**Blocked**: chip stuck after panic, needs physical host power cycle.
+**Blocked**: chip stuck, needs physical host power cycle.
+
+## Chip stuck after VM power cycle (26 Feb 2026)
+
+**Status**: Blocked. Needs physical host power cycle.
+
+### Sequence
+
+1. Driver loaded, WPA2 associated, gateway ping working (20/20)
+2. Ran 100x flood ping at 50ms interval → 98% loss (TX ring full)
+3. `vm poweroff vm0; vm start vm0` to load updated .ko
+4. On reboot, `kldload` → "chip ID read failed" (BAR0 reads 0xffffffff)
+5. `devctl reset`, additional `vm poweroff`/`vm start` — no recovery
+
+### Analysis
+
+The chip was alive after the flood ping (TX drops are handled in
+software — mbufs freed, no firmware crash). The `vm poweroff` is the
+trigger.
+
+bhyve sends ACPI shutdown to the guest. The guest kernel shuts down
+but the BCM4350 — passed through via PCI passthrough — does not
+receive a Function Level Reset (FLR) or secondary bus reset. The
+firmware's ARM core is left in whatever state it was in when the VM
+disappeared.
+
+Previous `vm poweroff`/`vm start` cycles worked because the driver was
+either unloaded cleanly first (kldunload drains rings and sends
+BRCMF_C_DOWN) or the chip was idle. This time, the driver was active
+with a flowring, TX buffers DMA-mapped, and firmware mid-operation.
+The firmware's DMA engine may have been writing to host memory that
+vanished, leaving the ARM core hung.
+
+### Scope
+
+VM-only problem. bhyve PCI passthrough doesn't issue FLR or bus reset
+on passed-through devices when the VM shuts down.
+
+On real hardware, `shutdown -p` triggers D3 transition and cold boot
+resets the PCI bus via platform firmware. The only real-hardware
+equivalent is a kernel panic followed by warm reboot (no bus reset).
+Cold power cycle always recovers.
+
+### Prevention (VM workflow)
+
+Before `vm poweroff`, always:
+1. `pkill wpa_supplicant` (with 2s pause)
+2. `ifconfig wlan0 destroy` (with 2s pause)
+3. `kldunload if_brcmfmac`
+4. Then `vm poweroff`
