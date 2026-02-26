@@ -301,9 +301,29 @@ working (128 filter, 116 task), but 22 completions lost.
 - [x] Check all three rings in the multi-pass exit condition
 - [x] Re-add D2H poll in `brcmf_msgbuf_ioctl` wait loop (fixes IOCTL
   timeouts)
-- [ ] Diagnose remaining packet loss (TX stalls after ~30s)
-- [ ] Verify sustained gateway ping (>100 packets, 0% loss)
+- [x] Added sysctl counters: tx_count, tx_drops, tx_complete,
+  isr_filter, isr_task
+
+#### Test results (current code)
+
+| Test | Result |
+|------|--------|
+| 20x gateway ping (0.5s interval) | 20/20 0% loss |
+| 20x gateway ping after 30s idle | 20/20 0% loss |
+| 100x flood ping (50ms interval) | 2/100 98% loss |
+
+The D2H fix resolved IOCTL timeouts and slow-rate packet loss. Flood
+ping still fails — TX completions don't arrive fast enough to free
+slots in the 256-entry TX buffer ring.
+
+#### Remaining work
+
+- [ ] Diagnose TX completion starvation under load (use sysctl
+  counters to compare tx_count vs tx_complete vs tx_drops)
+- [ ] Consider TX flow control (stop/wake network queue based on
+  ring occupancy)
 - [ ] Verify internet ping sourced from wlan0 IP
+- [ ] **Blocked**: chip stuck, needs physical host power cycle
 
 ### Milestone 17: Packaging (TODO)
 

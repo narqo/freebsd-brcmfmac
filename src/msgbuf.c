@@ -541,6 +541,7 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 				    sc->txbuf[idx].dma_map);
 				m_freem(sc->txbuf[idx].m);
 				sc->txbuf[idx].m = NULL;
+				sc->tx_complete_count++;
 			}
 		}
 
@@ -681,12 +682,18 @@ next:
 void
 brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 {
-	struct brcmf_pcie_ringbuf *rx_ring;
+	struct brcmf_pcie_ringbuf *ctrl_ring, *tx_ring, *rx_ring;
 	int pass;
 
+	ctrl_ring = sc->commonrings[BRCMF_D2H_MSGRING_CONTROL_COMPLETE];
+	tx_ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
 	rx_ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
 
 	for (pass = 0; pass < 5; pass++) {
+		bus_dmamap_sync(ctrl_ring->dma_tag, ctrl_ring->dma_map,
+		    BUS_DMASYNC_POSTREAD);
+		bus_dmamap_sync(tx_ring->dma_tag, tx_ring->dma_map,
+		    BUS_DMASYNC_POSTREAD);
 		bus_dmamap_sync(rx_ring->dma_tag, rx_ring->dma_map,
 		    BUS_DMASYNC_POSTREAD);
 
@@ -694,9 +701,13 @@ brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 		brcmf_msgbuf_process_tx_complete(sc);
 		brcmf_msgbuf_process_rx_complete(sc);
 
-		/* Check if more work arrived during processing */
+		/* Re-check all three rings for new work */
+		brcmf_ring_read_wptr(sc, ctrl_ring);
+		brcmf_ring_read_wptr(sc, tx_ring);
 		brcmf_ring_read_wptr(sc, rx_ring);
-		if (rx_ring->w_ptr == rx_ring->r_ptr)
+		if (ctrl_ring->w_ptr == ctrl_ring->r_ptr &&
+		    tx_ring->w_ptr == tx_ring->r_ptr &&
+		    rx_ring->w_ptr == rx_ring->r_ptr)
 			break;
 	}
 }
@@ -956,6 +967,11 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 		    PCATCH, "brcmioctl", hz / 10);
 		if (error != 0 && error != EWOULDBLOCK)
 			break;
+		if (!sc->ioctl_completed) {
+			mtx_unlock(&sc->ioctl_mtx);
+			brcmf_msgbuf_process_d2h(sc);
+			mtx_lock(&sc->ioctl_mtx);
+		}
 		timeout -= 100;
 	}
 
@@ -1262,6 +1278,7 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 	/* Find a free TX buffer slot */
 	pktid = sc->tx_pktid_next;
 	if (sc->txbuf[pktid % BRCMF_TX_RING_SIZE].m != NULL) {
+		sc->tx_drops++;
 		m_freem(m);
 		return (ENOBUFS);
 	}
@@ -1339,6 +1356,7 @@ brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m)
 	tx->data_len = htole16(m->m_pkthdr.len - ETH_HLEN);
 
 	sc->tx_pktid_next++;
+	sc->tx_count++;
 
 	brcmf_msgbuf_ring_submit(sc, ring);
 

@@ -211,8 +211,11 @@ struct brcmf_softc {
 	struct callout watchdog;
 
 	/* Diagnostic counters */
-	volatile uint32_t isr_filter_count;
-	volatile uint32_t isr_task_count;
+	uint32_t isr_filter_count;
+	uint32_t isr_task_count;
+	uint32_t tx_count;
+	uint32_t tx_drops;
+	uint32_t tx_complete_count;
 
 	/* net80211 */
 	struct ieee80211com ic;

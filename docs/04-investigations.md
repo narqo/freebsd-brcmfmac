@@ -80,9 +80,23 @@ Firmware wrote 49 completions, host only consumed 27.
 - Re-add D2H poll in IOCTL wait loop (safe: ISR task serialized
   by taskqueue, IOCTL waiter holds ioctl_mtx)
 
-### Remaining issue
+### Remaining: TX completion starvation under load
 
-IOCTL timeouts resolved, but TX stalls after ~30s. `Opkts=0` at link
-layer while IP layer shows packets sent. Flowring may be full with no
-TX completions being processed — same missed-completion pattern but
-in the TX complete ring. Under investigation.
+IOCTL timeouts resolved. Slow-rate ping (0.5s interval) is stable
+including after 30s idle. Flood ping (50ms interval) gets 98% loss.
+
+Evidence: `netstat -I wlan0` shows `Opkts=0` at link layer while
+IP layer counts sent packets. `brcmf_vap_transmit` is called (VAP
+state is RUN), packets enter `brcmf_msgbuf_tx`, but the 256-slot
+TX buffer fills up because TX completions don't drain fast enough.
+
+Possible causes:
+- Firmware batches TX completions and the ISR fires too late
+- D2H TX complete ring not triggering MSI at all (relies on
+  other ring activity to piggyback processing)
+- `BRCMF_TX_RING_SIZE=256` may be too small for burst traffic
+
+Added sysctl counters (tx_count, tx_drops, tx_complete, isr_filter,
+isr_task) to diagnose on next test cycle.
+
+**Blocked**: chip stuck after panic, needs physical host power cycle.

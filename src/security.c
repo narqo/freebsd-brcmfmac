@@ -267,4 +267,20 @@ brcmf_security_sysctl_init(struct brcmf_softc *sc)
 	SYSCTL_ADD_INT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "debug", CTLFLAG_RW, &sc->debug, 0,
 	    "Debug verbosity (0=off, 1=events, 2=verbose)");
+
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "tx_count", CTLFLAG_RD, &sc->tx_count, 0,
+	    "TX packets submitted to flowring");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "tx_drops", CTLFLAG_RD, &sc->tx_drops, 0,
+	    "TX packets dropped (ring full)");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "tx_complete", CTLFLAG_RD, &sc->tx_complete_count, 0,
+	    "TX completions processed");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "isr_filter", CTLFLAG_RD, &sc->isr_filter_count, 0,
+	    "ISR filter invocations");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "isr_task", CTLFLAG_RD, &sc->isr_task_count, 0,
+	    "ISR task invocations");
 }
