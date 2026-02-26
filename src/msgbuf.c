@@ -28,6 +28,7 @@
 
 /* PCIe register offsets */
 #define BRCMF_PCIE_PCIE2REG_H2D_MAILBOX_0 0x140
+#define BRCMF_PCIE_PCIE2REG_MAILBOXINT    0x48
 
 /* Buffer sizes */
 #define BRCMF_MSGBUF_MAX_CTL_PKT_SIZE	   8192
@@ -959,9 +960,45 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	}
 
 	if (!sc->ioctl_completed) {
-		if (timeout <= 0)
+		if (timeout <= 0) {
+			struct brcmf_pcie_ringbuf *h2d_ctrl, *d2h_ctrl;
+			uint32_t chipid, mboxint;
+
 			device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n",
 			    cmd);
+
+			brcmf_pcie_select_core(sc, &sc->pciecore);
+			chipid = brcmf_reg_read(sc, 0);
+			mboxint = brcmf_reg_read(sc,
+			    BRCMF_PCIE_PCIE2REG_MAILBOXINT);
+			device_printf(sc->dev,
+			    "  diag: chipid=0x%08x mboxint=0x%08x "
+			    "isr_filter=%u isr_task=%u\n",
+			    chipid, mboxint,
+			    sc->isr_filter_count, sc->isr_task_count);
+
+			h2d_ctrl = sc->commonrings[
+			    BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
+			d2h_ctrl = sc->commonrings[
+			    BRCMF_D2H_MSGRING_CONTROL_COMPLETE];
+			if (h2d_ctrl != NULL && d2h_ctrl != NULL) {
+				uint16_t h2d_fw_rptr, d2h_fw_wptr;
+				h2d_fw_rptr = brcmf_tcm_read16(sc,
+				    h2d_ctrl->r_idx_addr);
+				d2h_fw_wptr = brcmf_tcm_read16(sc,
+				    d2h_ctrl->w_idx_addr);
+				device_printf(sc->dev,
+				    "  diag: h2d_ctrl w=%u r=%u "
+				    "fw_rptr=%u | d2h_ctrl w=%u r=%u "
+				    "fw_wptr=%u\n",
+				    h2d_ctrl->w_ptr, h2d_ctrl->r_ptr,
+				    h2d_fw_rptr,
+				    d2h_ctrl->w_ptr, d2h_ctrl->r_ptr,
+				    d2h_fw_wptr);
+			}
+
+			brcmf_pcie_console_read(sc);
+		}
 		mtx_unlock(&sc->ioctl_mtx);
 		return (ETIMEDOUT);
 	}

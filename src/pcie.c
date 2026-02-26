@@ -666,6 +666,7 @@ brcmf_pcie_isr_filter(void *arg)
 	brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT, status);
 	brcmf_pcie_intr_disable(sc);
 
+	sc->isr_filter_count++;
 	taskqueue_enqueue(sc->isr_tq, &sc->isr_task);
 
 	return (FILTER_HANDLED);
@@ -682,6 +683,8 @@ brcmf_pcie_isr_task(void *arg, int pending)
 	status = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
 	if (status != 0 && status != 0xffffffff)
 		brcmf_reg_write(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT, status);
+
+	sc->isr_task_count++;
 
 	if (status & BRCMF_PCIE_MB_INT_FN0)
 		brcmf_pcie_handle_mb_data(sc);
@@ -1161,23 +1164,54 @@ brcmf_pcie_console_read(struct brcmf_softc *sc)
 {
 	uint32_t console_addr = sc->shared.console_addr;
 	uint32_t buf_addr, bufsize, writeidx;
-	static uint32_t readidx;
-	static int inited;
 	char line[256];
 	int pos = 0;
+	uint32_t readidx, count;
 
-	if (console_addr == 0)
+	if (console_addr == 0) {
+		device_printf(sc->dev, "  fwcon: no console address\n");
+		return;
+	}
+
+	buf_addr = brcmf_tcm_read32(sc,
+	    console_addr + BRCMF_CONSOLE_BUFADDR_OFFSET);
+	bufsize = brcmf_tcm_read32(sc,
+	    console_addr + BRCMF_CONSOLE_BUFSIZE_OFFSET);
+	writeidx = brcmf_tcm_read32(sc,
+	    console_addr + BRCMF_CONSOLE_WRITEIDX_OFFSET);
+
+	device_printf(sc->dev,
+	    "  fwcon: addr=0x%x buf=0x%x size=%u widx=%u\n",
+	    console_addr, buf_addr, bufsize, writeidx);
+
+	if (bufsize == 0 || bufsize > 0x100000 || buf_addr == 0)
 		return;
 
-	/* Firmware console logging disabled by default */
-	(void)console_addr;
-	(void)buf_addr;
-	(void)bufsize;
-	(void)writeidx;
-	(void)readidx;
-	(void)inited;
-	(void)line;
-	(void)pos;
+	/* Dump the last 512 bytes (or less if buffer is smaller) */
+	count = bufsize < 512 ? bufsize : 512;
+	if (writeidx < count)
+		readidx = bufsize - (count - writeidx);
+	else
+		readidx = writeidx - count;
+
+	while (readidx != writeidx) {
+		char ch = brcmf_tcm_read8(sc, buf_addr + readidx);
+		if (ch == '\n' || pos >= (int)sizeof(line) - 1) {
+			line[pos] = '\0';
+			if (pos > 0)
+				device_printf(sc->dev, "  fwcon: %s\n", line);
+			pos = 0;
+		} else if (ch >= ' ' && ch <= '~') {
+			line[pos++] = ch;
+		}
+		readidx++;
+		if (readidx >= bufsize)
+			readidx = 0;
+	}
+	if (pos > 0) {
+		line[pos] = '\0';
+		device_printf(sc->dev, "  fwcon: %s\n", line);
+	}
 }
 
 int

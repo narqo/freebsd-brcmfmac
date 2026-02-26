@@ -210,6 +210,10 @@ struct brcmf_softc {
 	int detaching;
 	struct callout watchdog;
 
+	/* Diagnostic counters */
+	volatile uint32_t isr_filter_count;
+	volatile uint32_t isr_task_count;
+
 	/* net80211 */
 	struct ieee80211com ic;
 	uint8_t macaddr[ETHER_ADDR_LEN];
