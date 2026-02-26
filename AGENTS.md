@@ -9,31 +9,20 @@ Build a working brcmfmac driver for BCM4350 (MacBook Pro 2016) on FreeBSD 15.
 
 Target hardware: PCI device `0x14e4:0x43a3`
 
-## Constraints
-
-- Use native FreeBSD APIs (no LinuxKPI)
-- Cannot use Zig's `@cImport` with kernel headers (see decisions doc)
-- C for kernel API calls; Zig for pure logic only
-- Build/test requires remote FreeBSD 15 host
-
-## Build environment
-
-The code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE, with Zig 0.16-dev.
-
-The local machine **cannot** build the project -- FreeBSD kernel headers are required.
-
 ## Before starting work
 
-**Read the docs/ directory first:**
+Read the docs/ directory first:
 
 - **docs/00-progress.md** - Current status, milestones, what's done and what's next
 - **docs/01-decisions.md** - Design decisions and rationale (especially the C/Zig split)
+- **docs/02-build-test.md** - Build/deploy workflow, crash analysis
+- **docs/03-known-issues.md** - Open and resolved bugs
 
 These documents are the source of truth for project state and architecture choices.
 
 ## Driver specification
 
-The **spec/** directory contains the brcmfmac driver specification:
+The spec/ directory contains the brcmfmac driver specification:
 
 | File | Description |
 |------|-------------|
@@ -48,6 +37,18 @@ The **spec/** directory contains the brcmfmac driver specification:
 | spec/08-data-path.md | TX/RX packet flow |
 | spec/09-firmware-commands.md | Command reference |
 | spec/10-structures-reference.md | Firmware structure definitions |
+
+## Build environment
+
+The code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE, with Zig 0.16-dev.
+The local machine **cannot** build the project -- FreeBSD kernel headers are required.
+
+## Constraints
+
+- Use native FreeBSD APIs (no LinuxKPI)
+- Cannot use Zig's `@cImport` with kernel headers (see decisions doc)
+- C for kernel API calls; Zig for pure logic only
+- Build/test requires remote FreeBSD 15 host
 
 ## Linker limitations
 
@@ -107,26 +108,32 @@ const M_TEMP = @extern(*c.struct_malloc_type, .{ .name = "M_TEMP", .visibility =
 
 ## Zig translate-c limitations
 
-Zig's `@cImport` does not work reliably with FreeBSD kernel headers due to:
-
-- Generated headers (vnode_if.h) not in source tree
-- Implicit function declarations (panic, printf, vsnprintf)
-- Complex include order dependencies
-- Bitfield structs requiring workarounds
+Zig's `@cImport` does not work reliably with FreeBSD kernel headers. See **docs/01-decisions.md**
+for full rationale.
 
 **Current approach:** Avoid `@cImport`. Use `@extern` for function declarations.
 Keep kernel interactions in C code.
 
-See docs/01-decisions.md for full rationale.
-
-### Zig translate-c bitfield limitation
+### Bitfield structs
 
 Zig's C translator demotes structs with bitfields to opaque types (ref "[Translation failures][1]"). FreeBSD headers
 use bitfields in `struct user_segment_descriptor` and `struct gate_descriptor`, which are embedded in `struct pcpu`.
 
-The `src/hack.h` header provides bitfield-free replacements. It must be included before other system headers in `@cImport` if @cImport is used in the future.
+The `src/hack.h` header provides bitfield-free replacements. It must be included before other system headers if `@cImport` is used in the future.
 
 [1]: https://ziglang.org/documentation/master/#Translation-failures
+
+### LLVM printf optimization
+
+Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as
+libc printf and optimizes calls like `printf("foo\n")` to `puts("foo")`. The kernel
+does not export `puts`, causing link failures.
+
+Use `@extern` to import as a function pointer, which defeats the optimization:
+
+```zig
+const printf = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "printf" });
+```
 
 ## net80211 swscan private struct layout
 
@@ -153,33 +160,6 @@ ABORT=0x10, RUNNING=0x20.
 checking abort flags. If `ss_vap` is NULL, the kernel faults at address 0x6a
 (`vap->iv_debug` offset). Pre-set `ic->ic_scan->ss_vap` in vap_create.
 
-## Firmware BSS info struct alignment (RESOLVED)
-
-The firmware's `brcmf_bss_info_le` uses natural alignment, NOT packed.
-`sizeof` is 128 bytes. Using `__packed` produces a 117-byte struct
-that misaligns `chanspec` (offset 71 instead of 72), `RSSI`, and all
-subsequent fields.
-
-**Fix**: Remove `__packed` from the struct definition. The compiler's
-natural alignment matches the firmware layout exactly.
-
-## WPA2 RSN IE mismatch (RESOLVED)
-
-The firmware's RSN IE capabilities field is `0x000c` (16 PTKSA replay
-counters). wpa_supplicant defaults to `0x0000`. The mismatch causes the
-AP to reject EAPOL frame 2/4.
-
-**Root cause**: wpa_supplicant sets replay counter bits only when
-`sm->wmm_enabled` is true, which requires a WMM vendor IE in the BSS
-scan entry.
-
-**Fix**: Inject a synthetic WMM IE into scan results for BSSes with RSN
-but no WMM IE.
-
-**Do NOT use** the `wpaie` iovar on this firmware — any `wpaie` set
-(raw, bsscfg-prefixed, matching or mismatching) causes `SET_SSID
-failed, status=1` and corrupts the firmware WPA state persistently.
-
 ## Group key EA field
 
 The `wsec_key` iovar for group keys requires `ea` field set to all zeros.
@@ -196,16 +176,6 @@ The Linux driver leaves `ea` zeroed for group keys in STA mode.
 - `sup_wpa=1` + `SET_WSEC_PMK` returns BCME_BADARG (-23). The firmware
   does not support internal supplicant mode.
 - Must use `sup_wpa=0` for host-managed WPA.
-
-## Firmware stale encryption keys on reassociation
-
-After a successful WPA handshake, the firmware retains encryption keys
-across DISASSOC. On the next association, the firmware encrypts EAPOL
-frame 2/4 using old keys. The AP can't decrypt it and deauths after its
-handshake timeout (~1s).
-
-**Fix**: Clear `wsec=0` and `wpa_auth=0` on interface down (in
-`brcmf_parent`) before the next association cycle.
 
 ## net80211 regdomain channel filtering
 
@@ -231,15 +201,3 @@ state and the backplane ignores reads.
 - VM reboot does not help (QEMU PCI passthrough doesn't reset the
   physical device)
 - **Physical host power cycle required** to restore the chip
-
-## LLVM printf optimization
-
-Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as
-libc printf and optimizes calls like `printf("foo\n")` to `puts("foo")`. The kernel
-does not export `puts`, causing link failures.
-
-Use `@extern` to import as a function pointer, which defeats the optimization:
-
-```zig
-const printf = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "printf" });
-```
