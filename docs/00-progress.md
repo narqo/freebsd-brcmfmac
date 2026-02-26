@@ -2,13 +2,11 @@
 
 ## Current status
 
-**Milestones 1-16 complete.** Driver connects to WPA2 APs on 2.4GHz
-and 5GHz, handles link loss recovery, interface cycling. Internet
-access over WiFi verified (5/5 ping to 8.8.8.8, avg 17ms, via AP NAT
-on wlan0 as default route). Post-M16 testing found and fixed three
-bugs: IOCTL timeouts cascading into fw_dead on DFS channel cycling,
-kldunload deadlock when detaching, and wsec_key delete stalling on
-DFS teardown.
+**Milestone 16.6 in progress.** D2H ring processing has a critical
+reliability bug: the ISR task can miss completions, causing IOCTL
+timeouts and TX stalls. Two fixes applied so far (DMA sync for all
+three D2H rings; D2H poll in IOCTL wait loop). Packet loss still
+observed — root cause under investigation.
 
 ## Milestones
 
@@ -263,6 +261,49 @@ Rapid down/up cycles (<3s) with wpa_supplicant running deadlock the kernel,
 requiring a VM reset. Suspected lock ordering issue in the net80211 state
 machine. Without wpa_supplicant, 8 rapid cycles complete cleanly. Not yet
 diagnosed; tracked as a known issue.
+
+### Milestone 16.6: D2H ring processing reliability (IN PROGRESS)
+
+Discovered 26 Feb 2026. The D2H completion ring processing has multiple
+bugs causing missed completions — IOCTL timeouts, TX stalls, and
+eventual 100% packet loss.
+
+#### Root cause
+
+`brcmf_msgbuf_process_d2h` had three defects:
+
+1. **Missing DMA sync on ctrl/tx complete rings.** Only the RX complete
+   ring got `bus_dmamap_sync(POSTREAD)`. Firmware writes to ctrl and TX
+   complete rings were invisible to the host on non-coherent DMA.
+
+2. **Loop exit checked only RX ring.** The multi-pass "more work" loop
+   exited when `rx_ring->w_ptr == rx_ring->r_ptr`, ignoring pending
+   work in the ctrl or TX complete rings.
+
+3. **No D2H polling in IOCTL wait loop.** M16 removed concurrent D2H
+   polling to fix a double-processing crash, but left no fallback for
+   missed interrupts. If the ISR task ran just before firmware wrote
+   the IOCTL completion, nobody re-processed the ring.
+
+#### Diagnostic evidence
+
+```
+diag: chipid=0x00000396 mboxint=0x00010000 isr_filter=128 isr_task=116
+diag: h2d_ctrl w=54 r=53 fw_rptr=54 | d2h_ctrl w=27 r=27 fw_wptr=49
+```
+
+Firmware wrote 49 completions, host saw 27. Chip alive, interrupts
+working (128 filter, 116 task), but 22 completions lost.
+
+#### Fixes applied
+
+- [x] DMA sync all three D2H rings in `brcmf_msgbuf_process_d2h`
+- [x] Check all three rings in the multi-pass exit condition
+- [x] Re-add D2H poll in `brcmf_msgbuf_ioctl` wait loop (fixes IOCTL
+  timeouts)
+- [ ] Diagnose remaining packet loss (TX stalls after ~30s)
+- [ ] Verify sustained gateway ping (>100 packets, 0% loss)
+- [ ] Verify internet ping sourced from wlan0 IP
 
 ### Milestone 17: Packaging (TODO)
 

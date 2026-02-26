@@ -1,9 +1,8 @@
 # Investigations
 
-## IOCTL timeout at init (26 Feb 2026)
+## D2H ring missed completions (26 Feb 2026)
 
-**Status**: Not reproduced. Diagnostic instrumentation added; waiting
-for next occurrence.
+**Status**: Partially fixed. IOCTL timeouts resolved. TX stalls remain.
 
 ### Symptom
 
@@ -42,35 +41,48 @@ On IOCTL timeout, the driver now prints:
 - **Firmware console** — last 512 bytes from shared memory console
   buffer; shows boot progress or assert (H1)
 
-### Hypotheses
+### Findings
 
-| # | Hypothesis | Check |
-|---|-----------|-------|
-| H1 | Firmware not booted / not processing rings | Console output, D2H ring pointers |
-| H2 | Doorbell write not reaching firmware | BAR0 window, register read-back |
-| H3 | IOCTL response buffer DMA addresses invalid | Print DMA addrs at post time |
-| H4 | MSI not arriving / completion path broken | ISR counters, MAILBOXINT read |
-| H5 | Chip stuck from prior crash | Chip ID read (0xffffffff) |
-| H6 | Missing bus barrier on w_ptr TCM write | Ring pointer comparison host vs firmware |
+Diagnostic output from two IOCTL timeout events confirmed:
 
-### Investigation order
+- **H5 ruled out**: chipid=0x396 (alive)
+- **H4 ruled out**: isr_filter=128, isr_task=116 (MSI working)
+- **H1 confirmed (partial)**: firmware booted and processed requests
+  (fw_rptr matched host w_ptr), but D2H completions were lost
+- Root cause is in `brcmf_msgbuf_process_d2h`, not firmware
 
-1. Chip ID after firmware boot — rules out H5
-2. ISR filter counter after first timeout — rules out H4
-3. MAILBOXINT register after timeout — firmware raised IRQ?
-4. Firmware console buffer — rules out H1
-5. DMA addresses of ioctlresp/ioctlbuf — rules out H3
-6. Bus barrier before w_ptr write — rules out H6
-7. Doorbell register read-back — rules out H2
+Key diagnostic line:
+```
+d2h_ctrl w=27 r=27 fw_wptr=49
+```
+Firmware wrote 49 completions, host only consumed 27.
 
-### IOCTL path (reference)
+### Bugs found
 
-1. `brcmf_msgbuf_tx_ioctl`: write `MSGBUF_TYPE_IOCTLPTR_REQ` to H2D
-   control submit ring, update w_ptr in TCM, doorbell write to
-   `BRCMF_PCIE_PCIE2REG_H2D_MAILBOX_0`
-2. `brcmf_msgbuf_ioctl`: `msleep` on `sc->ioctl_completed`, 2s timeout
-3. Firmware writes `MSGBUF_TYPE_IOCTL_CMPLT` to D2H control complete
-   ring, raises MSI
-4. `brcmf_pcie_isr_filter` → ack + disable → enqueue ISR task
-5. `brcmf_pcie_isr_task` → `brcmf_msgbuf_process_d2h` → set
-   `ioctl_completed=1` → `wakeup`
+1. **DMA sync only covered RX ring.** `process_d2h` called
+   `bus_dmamap_sync(POSTREAD)` on `rx_ring` only. Control and TX
+   complete ring DMA writes were not synced, making firmware writes
+   invisible to the CPU on non-coherent DMA.
+
+2. **Loop exit only checked RX ring.** The "more work" loop exited
+   when `rx_ring->w_ptr == rx_ring->r_ptr`, even if ctrl or TX
+   complete rings had pending entries.
+
+3. **No D2H polling fallback.** M16 removed D2H polling from the
+   IOCTL wait loop to fix a double-processing crash. But without
+   polling, a completion written between ISR task processing and
+   the next interrupt was permanently lost.
+
+### Fixes applied
+
+- DMA sync all three D2H rings per pass
+- Exit only when all three rings drained
+- Re-add D2H poll in IOCTL wait loop (safe: ISR task serialized
+  by taskqueue, IOCTL waiter holds ioctl_mtx)
+
+### Remaining issue
+
+IOCTL timeouts resolved, but TX stalls after ~30s. `Opkts=0` at link
+layer while IP layer shows packets sent. Flowring may be full with no
+TX completions being processed — same missed-completion pattern but
+in the TX complete ring. Under investigation.
