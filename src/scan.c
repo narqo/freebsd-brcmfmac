@@ -127,7 +127,7 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	uint16_t bss_count;
 
 	if (datalen < 12) {
-		printf("brcmfmac: escan result too short: %u\n", datalen);
+		device_printf(sc->dev, "escan result too short: %u\n", datalen);
 		return;
 	}
 
@@ -402,7 +402,7 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	IEEE80211_ADDR_COPY(wh.i_addr3, sr->bssid);
 
 	if (sp.rates == NULL) {
-		printf("brcmfmac: skip scan entry %02x:%02x:%02x:%02x:%02x:%02x"
+		BRCMF_DBG(sc, "skip scan entry %02x:%02x:%02x:%02x:%02x:%02x"
 		    " - no rates\n",
 		    sr->bssid[0], sr->bssid[1], sr->bssid[2],
 		    sr->bssid[3], sr->bssid[4], sr->bssid[5]);

@@ -350,7 +350,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	pktid = le32toh(msg->request_id);
 
 	if (pktid < 0x20000 || pktid >= 0x20000 + BRCMF_MSGBUF_MAX_EVENTBUF_POST) {
-		printf("brcmfmac: event with invalid pktid 0x%x\n", pktid);
+		device_printf(sc->dev, "event with invalid pktid 0x%x\n", pktid);
 		return;
 	}
 
@@ -358,7 +358,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	cb = &sc->event_buf[idx];
 
 	if (cb->buf == NULL) {
-		printf("brcmfmac: event buffer %d is NULL\n", idx);
+		device_printf(sc->dev, "event buffer %d is NULL\n", idx);
 		return;
 	}
 
@@ -368,7 +368,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	event = cb->buf;
 
 	if (memcmp(event->oui, BRCM_OUI, 3) != 0) {
-		printf("brcmfmac: event with invalid OUI %02x:%02x:%02x\n",
+		device_printf(sc->dev, "event with invalid OUI %02x:%02x:%02x\n",
 		    event->oui[0], event->oui[1], event->oui[2]);
 		goto repost;
 	}
@@ -475,7 +475,7 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 			break;
 
 		default:
-			printf("brcmfmac: ctrl complete unknown msgtype 0x%x\n",
+			device_printf(sc->dev, "ctrl complete unknown msgtype 0x%x\n",
 			    msg->msgtype);
 			break;
 		}
@@ -526,7 +526,7 @@ brcmf_msgbuf_process_tx_complete(struct brcmf_softc *sc)
 		pktid = le32toh(tx->msg.request_id);
 
 		if (le16toh(tx->tx_status) != 0)
-			printf("brcmfmac: tx_complete status=%u pktid=0x%x\n",
+			BRCMF_DBG(sc, "tx_complete status=%u pktid=0x%x\n",
 			    le16toh(tx->tx_status), pktid);
 
 		/* Validate and free TX buffer */
@@ -631,7 +631,7 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 
 		/* Validate pktid */
 		if (pktid < 0x30000 || pktid >= 0x30000 + sc->rxbufpost) {
-			printf("brcmfmac: RX with invalid pktid 0x%x\n", pktid);
+			device_printf(sc->dev, "RX with invalid pktid 0x%x\n", pktid);
 			goto next;
 		}
 
@@ -639,7 +639,7 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 		cb = &sc->rxbuf[idx];
 
 		if (cb->buf == NULL) {
-			printf("brcmfmac: RX buffer %d is NULL\n", idx);
+			device_printf(sc->dev, "RX buffer %d is NULL\n", idx);
 			goto next;
 		}
 
@@ -782,7 +782,7 @@ brcmf_msgbuf_init_ioctlresp(struct brcmf_softc *sc)
 	}
 
 	sc->cur_ioctlrespbuf = BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST;
-	device_printf(sc->dev, "posted %d IOCTL response buffers\n",
+	BRCMF_DBG(sc, "posted %d IOCTL response buffers\n",
 	    BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST);
 	return (0);
 }
@@ -814,7 +814,7 @@ brcmf_msgbuf_init_event(struct brcmf_softc *sc)
 	}
 
 	sc->cur_eventbuf = BRCMF_MSGBUF_MAX_EVENTBUF_POST;
-	device_printf(sc->dev, "posted %d event buffers\n",
+	BRCMF_DBG(sc, "posted %d event buffers\n",
 	    BRCMF_MSGBUF_MAX_EVENTBUF_POST);
 	return (0);
 }
@@ -878,7 +878,7 @@ brcmf_msgbuf_init_rxbuf(struct brcmf_softc *sc)
 	brcmf_msgbuf_ring_submit(sc, ring);
 
 	sc->rxbufpost = count;
-	device_printf(sc->dev, "posted %u RX data buffers\n", count);
+	BRCMF_DBG(sc, "posted %u RX data buffers\n", count);
 	return (0);
 }
 
@@ -1198,7 +1198,7 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 		return (EIO);
 	}
 
-	device_printf(sc->dev, "flowring %d created\n", flowid);
+	BRCMF_DBG(sc, "flowring %d created\n", flowid);
 	return (0);
 }
 

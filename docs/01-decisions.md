@@ -131,13 +131,31 @@ Steps:
 
 ## Logging approach
 
-**Decision**: Use kernel printf, avoid Zig std.log and std.debug.
+**Decision**: Use `device_printf` for errors and one-time boot identity
+messages. Use `BRCMF_DBG(sc, ...)` macro for verbose/trace output,
+gated on `sc->debug >= 2`. Avoid Zig `std.log` and `std.debug`.
 
 **Rationale**:
 
-- std.log and std.debug use TLS → linker fails
-- Kernel printf works but needs careful declaration (see AGENTS.md for printf optimization issue)
+- `std.log` and `std.debug` use TLS → linker fails
+- Kernel printf works but needs careful declaration (see AGENTS.md
+  for printf optimization issue)
 - `brcmf_dbg()` wrapper function in C for Zig to call
+- Default boot output is minimal: chip ID, firmware version, MAC
+  address. EROM enumeration, ring info, buffer posting counts, and
+  firmware download trace are suppressed unless `sysctl
+  dev.brcmfmac.0.debug=2`.
+
+**Categories**:
+
+| Category | Function | When |
+|----------|----------|------|
+| Errors | `device_printf` | Always |
+| Boot identity (chip, firmware, MAC) | `device_printf` | Always |
+| Verbose/trace (EROM, rings, buffers, flowrings) | `BRCMF_DBG` | `debug >= 2` |
+
+`BRCMF_DBG` is defined in `brcmfmac.h`. The `debug` sysctl is
+registered in `security.c:brcmf_security_sysctl_init`.
 
 ## EROM parsing results (BCM4350)
 

@@ -393,9 +393,9 @@ brcmf_pcie_init_ringinfo(struct brcmf_softc *sc)
 		sc->max_completionrings = BRCMF_NROF_D2H_COMMON_MSGRINGS;
 	}
 
-	device_printf(sc->dev, "ringinfo: max_flowrings=%d max_sub=%d max_cmp=%d\n",
+	BRCMF_DBG(sc, "ringinfo: max_flowrings=%d max_sub=%d max_cmp=%d\n",
 	    sc->max_flowrings, sc->max_submissionrings, sc->max_completionrings);
-	device_printf(sc->dev, "ringinfo: ringmem=0x%x h2d_w=0x%x h2d_r=0x%x d2h_w=0x%x d2h_r=0x%x\n",
+	BRCMF_DBG(sc, "ringinfo: ringmem=0x%x h2d_w=0x%x h2d_r=0x%x d2h_w=0x%x d2h_r=0x%x\n",
 	    sc->ringmem_addr, sc->h2d_w_idx_addr, sc->h2d_r_idx_addr,
 	    sc->d2h_w_idx_addr, sc->d2h_r_idx_addr);
 
@@ -916,7 +916,7 @@ brcmf_pcie_init_shared(struct brcmf_softc *sc, uint32_t sharedram_addr)
 	addr = sharedram_addr + BRCMF_SHARED_RING_INFO_ADDR_OFFSET;
 	shared->ring_info_addr = brcmf_tcm_read32(sc, addr);
 
-	device_printf(sc->dev, "shared: version=%d flags=0x%x max_rxbufpost=%d rx_dataoffset=%d\n",
+	BRCMF_DBG(sc, "shared: version=%d flags=0x%x max_rxbufpost=%d rx_dataoffset=%d\n",
 	    shared->version, shared->flags, shared->max_rxbufpost, shared->rx_dataoffset);
 
 	return (0);
@@ -1113,7 +1113,7 @@ brcmf_pcie_attach(device_t dev)
 	sc->ram_base = BCM4350_RAM_BASE;
 	sc->ram_size = BCM4350_RAM_SIZE;
 
-	device_printf(sc->dev, "ram_base=0x%x ram_size=0x%x (%uKB)\n", sc->ram_base,
+	BRCMF_DBG(sc, "ram_base=0x%x ram_size=0x%x (%uKB)\n", sc->ram_base,
 	    sc->ram_size, sc->ram_size / 1024);
 
 	fwname = (sc->chiprev <= 7) ? BRCMF_FW_NAME_C2 : BRCMF_FW_NAME;

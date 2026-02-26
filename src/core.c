@@ -78,7 +78,7 @@ brcmf_chip_enumerate_cores(struct brcmf_softc *sc)
 	brcmf_reg_read(sc, 0);
 
 	erombase = brcmf_reg_read(sc, 0xfc);
-	printf("brcmfmac: EROM base=0x%x\n", erombase);
+	BRCMF_DBG(sc, "EROM base=0x%x\n", erombase);
 
 	/* Find ARM CR4 core */
 	sc->armcore = brcmf_find_core(erombase, brcmf_erom_read, sc,
@@ -87,7 +87,7 @@ brcmf_chip_enumerate_cores(struct brcmf_softc *sc)
 		device_printf(sc->dev, "ARM CR4 core not found\n");
 		return (ENODEV);
 	}
-	printf("brcmfmac: ARM CR4: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
+	BRCMF_DBG(sc, "ARM CR4: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
 	    sc->armcore.id, sc->armcore.rev, sc->armcore.base,
 	    sc->armcore.wrapbase);
 
@@ -95,7 +95,7 @@ brcmf_chip_enumerate_cores(struct brcmf_softc *sc)
 	sc->ramcore = brcmf_find_core(erombase, brcmf_erom_read, sc,
 	    BCMA_CORE_SOCRAM);
 	if (sc->ramcore.id != 0) {
-		printf("brcmfmac: SOCRAM: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
+		BRCMF_DBG(sc, "SOCRAM: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
 		    sc->ramcore.id, sc->ramcore.rev, sc->ramcore.base,
 		    sc->ramcore.wrapbase);
 	}
@@ -104,7 +104,7 @@ brcmf_chip_enumerate_cores(struct brcmf_softc *sc)
 	sc->d11core = brcmf_find_core(erombase, brcmf_erom_read, sc,
 	    BCMA_CORE_80211);
 	if (sc->d11core.id != 0) {
-		printf("brcmfmac: D11: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
+		BRCMF_DBG(sc, "D11: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
 		    sc->d11core.id, sc->d11core.rev, sc->d11core.base,
 		    sc->d11core.wrapbase);
 	}
@@ -116,7 +116,7 @@ brcmf_chip_enumerate_cores(struct brcmf_softc *sc)
 		device_printf(sc->dev, "PCIe core not found\n");
 		return (ENODEV);
 	}
-	printf("brcmfmac: PCIe2: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
+	BRCMF_DBG(sc, "PCIe2: id=0x%x rev=%u base=0x%x wrap=0x%x\n",
 	    sc->pciecore.id, sc->pciecore.rev, sc->pciecore.base,
 	    sc->pciecore.wrapbase);
 
@@ -194,7 +194,7 @@ brcmf_core_reset(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 	}
 
 	if (val & BCMA_RESET_CTL_RESET) {
-		printf("brcmfmac: core 0x%x reset timeout\n", core->id);
+		device_printf(sc->dev, "core 0x%x reset timeout\n", core->id);
 		return;
 	}
 
@@ -274,7 +274,7 @@ brcmf_chip_enter_download(struct brcmf_softc *sc)
 		return (EINVAL);
 	}
 
-	printf("brcmfmac: halting ARM at wrapper 0x%x\n", sc->armcore.wrapbase);
+	BRCMF_DBG(sc, "halting ARM at wrapper 0x%x\n", sc->armcore.wrapbase);
 
 	/* Read current IOCTL and preserve only CPUHALT bit */
 	val = brcmf_bp_read32(sc, sc->armcore.wrapbase + BCMA_IOCTL);
@@ -286,7 +286,7 @@ brcmf_chip_enter_download(struct brcmf_softc *sc)
 
 	/* Disable D11 core to let firmware enable it */
 	if (sc->d11core.id != 0 && sc->d11core.wrapbase != 0) {
-		printf("brcmfmac: disabling D11 core\n");
+		BRCMF_DBG(sc, "disabling D11 core\n");
 		brcmf_core_disable(sc, &sc->d11core,
 		    D11_BCMA_IOCTL_PHYRESET | D11_BCMA_IOCTL_PHYCLOCKEN,
 		    D11_BCMA_IOCTL_PHYCLOCKEN);
@@ -301,7 +301,7 @@ brcmf_chip_enter_download(struct brcmf_softc *sc)
 void
 brcmf_chip_exit_download(struct brcmf_softc *sc, uint32_t resetintr)
 {
-	printf("brcmfmac: writing reset vector 0x%x to TCM[0]\n", resetintr);
+	BRCMF_DBG(sc, "writing reset vector 0x%x to TCM[0]\n", resetintr);
 	brcmf_tcm_write32(sc, 0, resetintr);
 
 	if (sc->armcore.wrapbase == 0) {
@@ -311,5 +311,5 @@ brcmf_chip_exit_download(struct brcmf_softc *sc, uint32_t resetintr)
 	}
 
 	brcmf_core_reset(sc, &sc->armcore, BCMA_IOCTL_CPUHALT, 0, 0);
-	printf("brcmfmac: ARM released\n");
+	BRCMF_DBG(sc, "ARM released\n");
 }

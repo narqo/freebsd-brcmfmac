@@ -257,6 +257,13 @@ struct brcmf_softc {
 
 MALLOC_DECLARE(M_BRCMFMAC);
 
+/* Debug print: only emits when sc->debug >= level */
+#define BRCMF_DBG_VERBOSE 2
+#define BRCMF_DBG(sc, fmt, ...) do {					\
+	if ((sc)->debug >= BRCMF_DBG_VERBOSE)				\
+		device_printf((sc)->dev, fmt, ##__VA_ARGS__);		\
+} while (0)
+
 /* pcie.c - PCIe bus layer */
 int brcmf_pcie_attach(device_t dev);
 int brcmf_pcie_detach(device_t dev);
