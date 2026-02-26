@@ -152,10 +152,19 @@ gated on `sc->debug >= 2`. Avoid Zig `std.log` and `std.debug`.
 |----------|----------|------|
 | Errors | `device_printf` | Always |
 | Boot identity (chip, firmware, MAC) | `device_printf` | Always |
-| Verbose/trace (EROM, rings, buffers, flowrings) | `BRCMF_DBG` | `debug >= 2` |
+| net80211 capabilities (rates, MCS) | `ieee80211_announce` | `bootverbose` |
+| Verbose/trace (EROM, rings, buffers, flowrings) | `BRCMF_DBG` | `debug >= 2` or `bootverbose` |
 
-`BRCMF_DBG` is defined in `brcmfmac.h`. The `debug` sysctl is
-registered in `security.c:brcmf_security_sysctl_init`.
+`BRCMF_DBG` is defined in `brcmfmac.h`. It emits when either the
+per-device `debug` sysctl is >= 2 or the kernel-global `bootverbose`
+flag is set. The `debug` sysctl is registered in
+`security.c:brcmf_security_sysctl_init`.
+
+`bootverbose` is set at boot via `boot -v` or `boot_verbose="YES"`
+in `/boot/loader.conf`. FreeBSD WiFi drivers (`ath`, `iwm`, `rtwn`)
+use it to gate `ieee80211_announce`. It covers attach-time output
+that the per-device sysctl can't reach (debug defaults to 0 and
+can't be set before the module loads).
 
 ## EROM parsing results (BCM4350)
 

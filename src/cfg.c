@@ -836,7 +836,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	ic->ic_raw_xmit = brcmf_raw_xmit;
 	ic->ic_getradiocaps = brcmf_getradiocaps;
 
-	ieee80211_announce(ic);
+	if (bootverbose)
+		ieee80211_announce(ic);
 
 	sc->cfg_attached = 1;
 	return (0);

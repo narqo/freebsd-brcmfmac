@@ -257,10 +257,10 @@ struct brcmf_softc {
 
 MALLOC_DECLARE(M_BRCMFMAC);
 
-/* Debug print: only emits when sc->debug >= level */
+/* Debug print: emits when sc->debug >= 2 or bootverbose is set */
 #define BRCMF_DBG_VERBOSE 2
 #define BRCMF_DBG(sc, fmt, ...) do {					\
-	if ((sc)->debug >= BRCMF_DBG_VERBOSE)				\
+	if ((sc)->debug >= BRCMF_DBG_VERBOSE || bootverbose)		\
 		device_printf((sc)->dev, fmt, ##__VA_ARGS__);		\
 } while (0)
 
