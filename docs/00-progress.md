@@ -303,6 +303,20 @@ working (128 filter, 116 task), but 22 completions lost.
   isr_filter, isr_task
 - [x] Enabled firmware console reader for diagnostics
 
+#### Additional fix: scan_active stuck after link loss
+
+`sc->scan_active` stayed set if link dropped mid-escan, blocking all
+future scans. Fixed by clearing `scan_active` and `scan_complete` in
+`brcmf_link_event` on link-down events.
+
+#### Additional fix: D2H poll callout (replaces 5s watchdog)
+
+The ISR taskqueue thread stops executing under bhyve after ~10-15min.
+Converted the 5s watchdog to a 10ms callout that polls all three D2H
+rings on every tick. Also re-enables interrupts if stuck disabled,
+and checks chip liveness / firmware stalls every ~5s. Latency with
+poll-only: ~3ms gateway, ~15ms internet.
+
 #### Test results
 
 | Test | Result |
@@ -311,6 +325,7 @@ working (128 filter, 116 task), but 22 completions lost.
 | 100x flood ping (50ms interval) | 100/100 0% loss |
 | 1000x flood ping (10ms interval) | 1000/1000 0% loss, avg 2.5ms |
 | Internet ping via wlan0 (8.8.8.8) | 5/5 0% loss, avg 15ms |
+| HTTPS fetch freebsd.org via wlan0 | 15 kB, success |
 | TX counters after 1000x flood | tx=1122 complete=1122 drops=0 |
 
 ### Milestone 17: Packaging (TODO)

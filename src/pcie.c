@@ -745,22 +745,58 @@ static void
 brcmf_watchdog(void *arg)
 {
 	struct brcmf_softc *sc = arg;
-	uint32_t val;
+	uint32_t val, mask;
 
-	if (sc->fw_dead)
+	if (sc->fw_dead || sc->detaching)
 		return;
 
+	/* D2H poll: process completions that interrupts may have missed */
+	brcmf_msgbuf_process_d2h(sc);
+
+	/* Re-enable interrupts if stuck disabled */
 	brcmf_pcie_select_core(sc, &sc->pciecore);
-	val = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
-	if (val == 0xffffffff) {
-		device_printf(sc->dev, "device not responding, marking dead\n");
-		sc->fw_dead = 1;
-		wakeup(&sc->ioctl_completed);
-		wakeup(&sc->flowring_create_done);
-		return;
+	mask = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXMASK);
+	if (mask == 0)
+		brcmf_pcie_intr_enable(sc);
+
+	/* Every 500th tick (~5s): check chip liveness and firmware stalls */
+	sc->watchdog_tick++;
+	if (sc->watchdog_tick >= 500) {
+		sc->watchdog_tick = 0;
+
+		val = brcmf_reg_read(sc, BRCMF_PCIE_PCIE2REG_MAILBOXINT);
+		if (val == 0xffffffff) {
+			device_printf(sc->dev,
+			    "device not responding, marking dead\n");
+			sc->fw_dead = 1;
+			wakeup(&sc->ioctl_completed);
+			wakeup(&sc->flowring_create_done);
+			return;
+		}
+
+		if (!sc->ioctl_completed && sc->ioctl_trans_id > 0) {
+			if (sc->isr_task_count == sc->watchdog_last_isr) {
+				sc->watchdog_stall_count++;
+				if (sc->watchdog_stall_count >= 2) {
+					device_printf(sc->dev,
+					    "firmware not processing rings, "
+					    "marking dead (isr_task=%u)\n",
+					    sc->isr_task_count);
+					sc->fw_dead = 1;
+					wakeup(&sc->ioctl_completed);
+					wakeup(&sc->flowring_create_done);
+					return;
+				}
+			} else {
+				sc->watchdog_stall_count = 0;
+			}
+		} else {
+			sc->watchdog_stall_count = 0;
+		}
+		sc->watchdog_last_isr = sc->isr_task_count;
 	}
 
-	callout_reset(&sc->watchdog, 5 * hz, brcmf_watchdog, sc);
+	callout_reset(&sc->watchdog, hz / 100, brcmf_watchdog, sc);
 }
 
 /*
@@ -1034,7 +1070,7 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 
 	brcmf_pcie_intr_enable(sc);
 
-	callout_reset(&sc->watchdog, 5 * hz, brcmf_watchdog, sc);
+	callout_reset(&sc->watchdog, hz / 100, brcmf_watchdog, sc);
 
 	/* Get firmware version */
 	error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);

@@ -136,3 +136,110 @@ Before `vm poweroff`, always:
 2. `ifconfig wlan0 destroy` (with 2s pause)
 3. `kldunload if_brcmfmac`
 4. Then `vm poweroff`
+
+## Firmware hung after idle link loss (26 Feb 2026)
+
+**Status**: Fixed (watchdog enhancement).
+
+### Symptom
+
+After ~12 minutes idle, `wlan0: link state changed to DOWN` appeared.
+wpa_supplicant entered SCANNING but never reconnected — empty scan
+results, no ISR activity. `kldunload` hung indefinitely.
+
+### Analysis
+
+The AP disconnected the idle client (deauth or beacon miss). The
+driver correctly transitioned to SCAN state, but the firmware stopped
+processing rings entirely — zero new ISR interrupts after the link
+loss event. PCI MMIO still responded (not 0xffffffff), so the
+watchdog didn't trigger.
+
+The firmware's ARM core likely hit an internal error (assert, trap,
+or deadlock) coincident with or caused by the link loss. The PCI
+interface remained functional but the msgbuf ring processing loop
+stopped.
+
+Consequences:
+- No ESCAN_RESULT events → wpa_supplicant sees no APs
+- IOCTL timeouts on any new command
+- Flowring create timeout when trying to reconnect
+- `kldunload` hung because detach sends IOCTLs to dead firmware
+
+### Fix
+
+1. Enhanced watchdog to detect ring-level stalls: if an IOCTL is pending
+   and the ISR task count hasn't changed across two watchdog intervals
+   (~10s), firmware is declared dead.
+
+2. Converted watchdog to a 10ms D2H poll callout. The ISR taskqueue
+   thread stops executing tasks under bhyve (`taskqueue_enqueue` from
+   the filter context doesn't reliably wake the thread). D2H polling
+   at 10ms keeps RX alive regardless of whether the ISR task runs.
+   Heavy checks (chip liveness, firmware stall) run every ~5s.
+
+Previously the watchdog only checked for PCI bus death (MMIO returning
+0xffffffff) and ran every 5s.
+
+## scan_active stuck after link loss (26 Feb 2026)
+
+**Status**: Fixed.
+
+### Symptom
+
+After AP disconnects (idle timeout, DFS channel switch), wpa_supplicant
+enters SCANNING but never reconnects. `wpa_cli scan_results` and
+`ifconfig wlan0 list scan` both empty.
+
+### Root cause
+
+`sc->scan_active` was set to 1 when the escan IOCTL was sent. It's
+cleared when the firmware sends `ESCAN_RESULT` with status != partial
+(scan complete). If the link drops mid-escan, the firmware stops
+sending events, `scan_active` stays 1 forever, and
+`brcmf_scan_start` returns early on all subsequent scan attempts.
+
+### Fix
+
+Clear `scan_active` and `scan_complete` in `brcmf_link_event` on
+link down (both `BRCMF_E_LINK` with link=0 and
+`DEAUTH`/`DISASSOC` events). This allows new scans to start after
+link loss.
+
+## ISR taskqueue thread stops executing under bhyve (26 Feb 2026)
+
+**Status**: Worked around with D2H poll callout.
+
+### Symptom
+
+After ~10-15 minutes, the ISR taskqueue thread stops processing tasks.
+`isr_filter_count` increments (MSI fires, filter runs) but
+`isr_task_count` stays frozen. The thread is alive (sleeping in
+`taskqueue_thread_loop`) but `taskqueue_enqueue` from the filter
+context doesn't wake it.
+
+Consequences: D2H rings stop draining, RX dies, link events are lost,
+IOCTL completions only arrive via the ioctl poll fallback.
+
+### Analysis
+
+The filter handler runs at interrupt priority, disables interrupts,
+and calls `taskqueue_enqueue`. The taskqueue thread sleeps in `_sleep`
+waiting for work. Under bhyve, `wakeup_one` from filter context
+doesn't always reach the sleeping thread.
+
+Not reproduced on real hardware (untested). May be a bhyve-specific
+issue with MSI delivery or wakeup signaling from interrupt context.
+
+### Workaround
+
+Converted the 5s watchdog callout to a 10ms D2H poll. Every tick:
+1. `brcmf_msgbuf_process_d2h(sc)` — drain all three D2H rings
+2. Check MAILBOXMASK — re-enable interrupts if stuck disabled
+
+Every 500th tick (~5s): chip liveness check (MMIO 0xffffffff) and
+firmware stall detection (ISR count frozen during pending IOCTL).
+
+This makes the driver independent of the ISR taskqueue for D2H
+processing. The ISR task still runs when it can (reducing latency
+to sub-ms), but the poll provides a guaranteed 10ms fallback.

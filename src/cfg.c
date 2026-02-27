@@ -186,6 +186,10 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 
 	case BRCMF_E_LINK:
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
+		if (!sc->link_up) {
+			sc->scan_active = 0;
+			sc->scan_complete = 0;
+		}
 		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		break;
 
@@ -195,6 +199,8 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 	case BRCMF_E_DISASSOC_IND:
 		if (sc->link_up) {
 			sc->link_up = 0;
+			sc->scan_active = 0;
+			sc->scan_complete = 0;
 			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
 		break;

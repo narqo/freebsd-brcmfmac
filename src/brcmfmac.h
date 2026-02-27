@@ -216,6 +216,9 @@ struct brcmf_softc {
 	uint32_t tx_count;
 	uint32_t tx_drops;
 	uint32_t tx_complete_count;
+	uint32_t watchdog_last_isr;
+	uint32_t watchdog_stall_count;
+	uint32_t watchdog_tick;
 
 	/* net80211 */
 	struct ieee80211com ic;
