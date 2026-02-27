@@ -1,9 +1,9 @@
-# FreeBSD Kernel Module in Zig
+# FreeBSD Kernel Module
 
 This project builds a brcmfmac WiFi driver for FreeBSD as a kernel module (KLD),
 using Zig for pure logic and C for kernel interactions.
 
-## Goal
+## Ultimate goal
 
 Build a working brcmfmac driver for BCM4350 (MacBook Pro 2016) on FreeBSD 15.
 
@@ -22,7 +22,7 @@ These documents are the source of truth for project state and architecture choic
 
 ## Driver specification
 
-The spec/ directory contains the brcmfmac driver specification:
+Study the spec/ directory for the brcmfmac driver specification:
 
 | File | Description |
 |------|-------------|
@@ -37,6 +37,10 @@ The spec/ directory contains the brcmfmac driver specification:
 | spec/08-data-path.md | TX/RX packet flow |
 | spec/09-firmware-commands.md | Command reference |
 | spec/10-structures-reference.md | Firmware structure definitions |
+
+## Source code
+
+The source code is in the src/ directory.
 
 ## Build environment
 
