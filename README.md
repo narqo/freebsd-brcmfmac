@@ -72,8 +72,45 @@ dhclient wlan0
 Test the connection:
 
 ```
+ifconfig wlan0
+wlan0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500
+	options=0
+	ether f4:0f:24:2a:72:e3
+	inet 192.168.188.103 netmask 0xffffff00 broadcast 192.168.188.255
+	groups: wlan
+	ssid █████████ channel 60 (5300 MHz 11a ht/40+) bssid 1c██████:3c
+	country 511 authmode WPA2/802.11i privacy ON deftxkey UNDEF
+	AES-CCM 2:128-bit AES-CCM 3:128-bit AES-CCM ucast:128-bit txpower 0
+	bmiss 7 mcastrate 6 mgmtrate 6 scanvalid 60 -ht -htcompat -ampdu
+	ampdulimit 64k -amsdu -stbc -ldpc -uapsd wme roaming MANUAL
+	parent interface: brcmfmac0
+	media: IEEE 802.11 Wireless Ethernet MCS mode 11na
+	status: associated
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>
+	
 wpa_cli -i wlan0 status
-ping -S <wlan0_addr> -c 5 freebsd.org
+bssid=1c██████:3c
+freq=0
+ssid=█████████
+id=0
+mode=station
+pairwise_cipher=CCMP
+group_cipher=CCMP
+key_mgmt=WPA2-PSK
+wpa_state=COMPLETED
+ip_address=192.168.188.103
+address=f4:0f:24:2a:72:e3
+uuid=d03cceab-ae63-5d24-a150-7e37e9b1eddd
+
+traceroute -iwlan0 1.1.1.1
+traceroute to 1.1.1.1 (1.1.1.1), 64 hops max, 40 byte packets
+ 1  192.168.188.1 (192.168.188.1)  12.302 ms  7.721 ms  9.861 ms
+ 2  ██████  9.397 ms  11.290 ms  9.459 ms
+ 3  ██████  9.886 ms  11.670 ms  9.882 ms
+ 4  i689729BA.versanet.de (104.151.41.186)  9.751 ms  8.576 ms  9.460 ms
+ 5  62.214.73.216 (62.214.73.216)  9.396 ms  12.534 ms  9.304 ms
+ 6  62.214.73.217 (62.214.73.217)  9.658 ms  12.861 ms  9.257 ms
+ 7  one.one.one.one (1.1.1.1)  9.818 ms  8.199 ms  10.187 ms
 ```
 
 To load at boot, add to `/boot/loader.conf`:
