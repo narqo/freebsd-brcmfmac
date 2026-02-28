@@ -26,25 +26,6 @@ overwrite entries being read.
 
 ---
 
-## P2-4: `brcmf_link_task` accesses `vap->iv_bss` without node lock
-
-```c
-ni = vap->iv_bss;
-if (ni != NULL) {
-    IEEE80211_ADDR_COPY(ni->ni_bssid, bssid);
-    ni->ni_chan = chan;
-    ...
-```
-
-`iv_bss` can be swapped by net80211 concurrently (e.g., during
-`ieee80211_sta_join`). The reference could become stale. Other
-FreeBSD drivers use `ieee80211_ref_node(vap->iv_bss)` under the
-COM lock.
-
-**File:** `cfg.c:brcmf_link_task`
-
----
-
 ## P2-5: `brcmf_detect_security` misidentifies WEP as WPA2
 
 ```c
@@ -328,3 +309,17 @@ is a no-op.
 
 **Tested:** Association + traffic (flowring create happy path),
 interface cycling (flowring delete + recreate). No crash, no leak.
+
+### P2-4: `brcmf_link_task` accesses `vap->iv_bss` without lock — FIXED
+
+`iv_bss` can be swapped by net80211 (`ieee80211_sta_join`) on
+a different thread. Reading and writing `ni->ni_*` fields without
+COM lock is a use-after-free risk.
+
+**Fix:** Wrapped the `iv_bss` access block (BSSID, channel, HT/VHT
+caps, ESSID writes, plus `ic_curchan`/`ic_bsschan`) in
+`IEEE80211_LOCK`/`IEEE80211_UNLOCK`. Sleeping calls
+(`ieee80211_new_state`, flowring ops, allmulti iovar) remain outside
+the lock.
+
+**Tested:** Association, DHCP, ping, interface cycling — all pass.

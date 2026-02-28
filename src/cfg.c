@@ -119,6 +119,8 @@ brcmf_link_task(void *arg, int pending)
 				chan = &ic->ic_channels[0];
 		}
 
+		/* COM lock guarantees iv_bss won't be freed by ieee80211_sta_join */
+		IEEE80211_LOCK(ic);
 		ic->ic_curchan = chan;
 		ic->ic_bsschan = chan;
 
@@ -153,6 +155,10 @@ brcmf_link_task(void *arg, int pending)
 				memcpy(ni->ni_essid, vap->iv_des_ssid[0].ssid,
 				    ni->ni_esslen);
 			}
+		}
+		IEEE80211_UNLOCK(ic);
+
+		if (ni != NULL) {
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 
