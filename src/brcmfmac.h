@@ -26,9 +26,6 @@
 
 #include "debug.h"
 
-/* Ethernet address length */
-#define ETHER_ADDR_LEN 6
-
 /* PCI IDs */
 #define PCI_VENDOR_BROADCOM 0x14e4
 #define PCI_DEVICE_BCM4350  0x43a3

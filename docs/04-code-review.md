@@ -10,83 +10,6 @@ Review date: 28 Feb 2026. Focus: correctness and security.
 
 ---
 
-## P2-1: Scan result buffer TOCTOU between ISR and scan task
-
-`brcmf_escan_result` (called from ISR task context) writes to
-`sc->scan_results[]` and `sc->scan_nresults`.
-`brcmf_scan_complete_task` (called from `taskqueue_thread`) reads
-the same fields. No lock protects them. A new escan starting between
-the snapshot (`n = sc->scan_nresults`) and the result iteration can
-overwrite entries being read.
-
-**Files:** `scan.c`, `cfg.c`
-
-**Fix:** Either copy the result buffer locally in
-`brcmf_scan_complete_task`, or add a mutex around scan result access.
-
----
-
-## P2-6: RX path copies every packet — unnecessary data copy
-
-`brcmf_rx_deliver` allocates a fresh mbuf via `m_get2` and copies
-the entire packet from the DMA buffer. Every received packet incurs
-a full-length `memcpy`. This halves the effective memory bandwidth
-for RX.
-
-**File:** `msgbuf.c:brcmf_rx_deliver`
-
-**Fix:** Use `m_extadd` or a custom external mbuf that references
-the DMA buffer directly, deferring the free to mbuf release. This
-requires a different RX buffer lifecycle (don't repost until mbuf
-is freed). Lower priority than correctness issues.
-
----
-
-## P2-7: No DMA sync before H2D ring writes
-
-Ring buffers are allocated with `BUS_DMA_COHERENT`. On x86 this is
-a no-op, but on non-coherent architectures (ARM), writes to the ring
-buffer via `brcmf_msgbuf_ring_reserve` are not guaranteed to be
-visible to the device without `bus_dmamap_sync(PREWRITE)`.
-
-**Files:** `msgbuf.c:brcmf_msgbuf_ring_reserve`,
-`msgbuf.c:brcmf_msgbuf_ring_submit`
-
-**Fix:** Add `bus_dmamap_sync(ring->dma_tag, ring->dma_map,
-BUS_DMASYNC_PREWRITE)` in `brcmf_msgbuf_ring_submit`, before
-writing the write index. Low priority for x86-only target.
-
----
-
-## P2-9: Event datalen bounds check is off by one direction
-
-```c
-if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))
-    brcmf_escan_result(sc, (uint8_t *)cb->buf + sizeof(*event), datalen);
-```
-
-The check prevents reading past the buffer, but the firmware is
-trusted to write a well-formed event. A compromised firmware could
-write `event_code = BRCMF_E_ESCAN_RESULT` with a crafted
-`datalen` just under the limit, causing `brcmf_escan_result` to
-parse attacker-controlled data. The escan parser validates
-`buflen` and `bi_len` internally, so this is defense-in-depth
-rather than exploitable today.
-
-**File:** `msgbuf.c:brcmf_msgbuf_process_event`
-
----
-
-## P3-1: Dead header file `pcie.h`
-
-`src/pcie.h` includes `<linux/pci.h>` and declares `struct
-pci_driver`. It is never included anywhere in the build and would
-fail to compile. Leftover from an early LinuxKPI attempt.
-
-**Fix:** Delete the file.
-
----
-
 ## P3-2: Duplicate macro definitions
 
 `BRCMF_RING_MEM_BASE_ADDR_OFFSET`, `BRCMF_RING_MAX_ITEM_OFFSET`,
@@ -97,19 +20,6 @@ Event codes `BRCMF_E_SET_SSID`, `BRCMF_E_DEAUTH`, etc., are defined
 in both `cfg.h` and `msgbuf.c`.
 
 **Fix:** Move shared definitions to a single header.
-
----
-
-## P3-3: `ETHER_ADDR_LEN` redefined
-
-```c
-#define ETHER_ADDR_LEN 6
-```
-
-Already defined in `<net/ethernet.h>`, which is included via the
-same header chain.
-
-**File:** `brcmfmac.h`
 
 ---
 
@@ -161,21 +71,6 @@ events drive state transitions asynchronously, it's more likely to
 cause state machine confusion.
 
 **File:** `cfg.c:brcmf_newstate`
-
----
-
-## P3-7: NVRAM parser allocation margin undocumented
-
-```c
-buf = malloc(size + 8, M_BRCMFMAC, M_NOWAIT | M_ZERO);
-```
-
-The `+ 8` is the worst-case overhead: 1 byte NUL terminator for the
-last line + 3 bytes padding + 4 bytes footer. The margin is exact
-with no room for error. A comment explaining the budget would
-prevent future regressions.
-
-**File:** `pcie.c:brcmf_nvram_parse`
 
 ---
 
@@ -309,3 +204,45 @@ local copies for matching. `brcmf_join_bss_direct` and
 `ieee80211_scan_done` remain outside the lock (both sleep).
 
 **Tested:** WPA2 association + DHCP + ping pass.
+
+### P2-1: Scan result buffer TOCTOU between ISR and scan task — DECLINED
+
+The race is real (`brcmf_escan_result` on `isr_tq`,
+`brcmf_scan_complete_task` on `taskqueue_thread`), but the worst
+outcome is a garbled scan result entry — no crash, no kernel memory
+corruption. Entries are self-contained value types (no pointers into
+shared memory). A proper fix requires a mutex around all
+`scan_results` access including the hot ISR path, or a double-buffer
+swap. The complexity isn't justified by the impact.
+
+### P2-6: RX path copies every packet — DECLINED
+
+Performance optimization. Requires redesigning the RX buffer
+lifecycle (`m_extadd` with deferred repost). Not a correctness
+issue.
+
+### P2-7: No DMA sync before H2D ring writes — DECLINED
+
+Rings are allocated with `BUS_DMA_COHERENT`. On x86 (the only
+target), `bus_dmamap_sync` is a no-op. Would matter for ARM ports
+but this driver targets BCM4350 on amd64 only.
+
+### P2-9: Event datalen bounds check — DECLINED
+
+The reviewer acknowledges "defense-in-depth rather than exploitable
+today." The escan parser validates `buflen` and `bi_len` internally.
+The existing bounds check prevents reading past the event buffer.
+
+### P3-1: Dead header file `pcie.h` — FIXED
+
+Deleted `src/pcie.h`. LinuxKPI leftover, never included, would not
+compile.
+
+### P3-3: `ETHER_ADDR_LEN` redefined — FIXED
+
+Removed redundant `#define ETHER_ADDR_LEN 6` from `brcmfmac.h`.
+Already provided by `<net/ethernet.h>`.
+
+### P3-7: NVRAM parser `+8` undocumented — FIXED
+
+Added comment: `/* +8: 1 trailing NUL + 3 pad-to-4 + 4 length footer */`

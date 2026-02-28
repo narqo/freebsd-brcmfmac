@@ -839,6 +839,7 @@ brcmf_nvram_parse(const void *data, size_t size, uint32_t *lenp)
 		return (NULL);
 	}
 
+	/* +8: 1 trailing NUL + 3 pad-to-4 + 4 length footer */
 	buf = malloc(size + 8, M_BRCMFMAC, M_NOWAIT | M_ZERO);
 	if (buf == NULL) {
 		*lenp = 0;
