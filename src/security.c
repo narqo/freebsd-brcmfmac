@@ -175,44 +175,21 @@ brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k)
 	return 1;
 }
 
-int
-brcmf_set_pmk(struct brcmf_softc *sc, const char *psk, int psk_len)
-{
-	struct brcmf_wsec_pmk_le pmk;
-	int error;
-
-	if (psk_len == 0 || psk_len > BRCMF_WSEC_MAX_PSK_LEN)
-		return (EINVAL);
-
-	memset(&pmk, 0, sizeof(pmk));
-	pmk.key_len = htole16(psk_len);
-	pmk.flags = htole16(BRCMF_WSEC_PASSPHRASE);
-	memcpy(pmk.key, psk, psk_len);
-
-	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_WSEC_PMK,
-	    &pmk, sizeof(pmk));
-	if (error != 0)
-		device_printf(sc->dev, "SET_WSEC_PMK failed: %d\n", error);
-
-	return (error);
-}
-
 static int
 brcmf_sysctl_psk(SYSCTL_HANDLER_ARGS)
 {
 	struct brcmf_softc *sc = arg1;
 	char buf[65];
-	int error;
+	int error, len;
 
+	/* Never expose the PSK on reads */
 	memset(buf, 0, sizeof(buf));
-	if (sc->psk_len > 0)
-		memcpy(buf, sc->psk, sc->psk_len);
 
 	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
 	if (error != 0 || req->newptr == NULL)
 		return (error);
 
-	int len = strlen(buf);
+	len = strlen(buf);
 	if (len < 8 || len > 63) {
 		device_printf(sc->dev, "PSK must be 8-63 characters\n");
 		return (EINVAL);

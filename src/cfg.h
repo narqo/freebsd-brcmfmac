@@ -222,7 +222,7 @@ int brcmf_set_security(struct brcmf_softc *sc, uint32_t wsec,
     uint32_t wpa_auth);
 int brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k);
 int brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k);
-int brcmf_set_pmk(struct brcmf_softc *sc, const char *psk, int psk_len);
+
 void brcmf_security_sysctl_init(struct brcmf_softc *sc);
 
 /* cfg.c (internal, used by scan.c) */

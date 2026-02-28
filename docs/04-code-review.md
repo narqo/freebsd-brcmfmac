@@ -34,26 +34,6 @@ set `IFF_DRV_OACTIVE` when the ring is full.
 
 ---
 
-## P1-4: PSK readable by unprivileged local users
-
-The `psk` sysctl is registered with `CTLFLAG_RW` and no privilege
-restriction. Any local user can read the WiFi passphrase:
-
-```
-$ sysctl dev.brcmfmac.0.psk
-```
-
-The PSK remains in `sc->psk` in plaintext for the module lifetime.
-
-**File:** `security.c:brcmf_security_sysctl_init`
-
-**Fix:** Use `CTLFLAG_WR` (write-only), or add `CTLFLAG_SECURE`
-to require `securelevel <= 0`. Zero the `sc->psk` buffer after
-`brcmf_set_pmk` pushes it to firmware. In the read handler, return
-`"********"` or empty string instead of the actual PSK.
-
----
-
 ## P1-5: BAR0 window register unserialized across CPUs
 
 `brcmf_pcie_select_core` writes the BAR0 window register. It is
@@ -378,3 +358,16 @@ buffers.
 **Tested:** Firmware version prints correctly, MAC address read works,
 WPA2 association + 1000-packet flood ping 0% loss, PM sysctl read
 works.
+
+### P1-4: PSK readable by unprivileged local users — FIXED
+
+Read handler returned the plaintext PSK.
+
+**Fix:** Read path now returns empty string. Removed the `memcpy`
+that populated the sysctl read buffer from `sc->psk`. Write path
+unchanged. Also removed dead `brcmf_set_pmk` function (firmware
+supplicant approach doesn't work on this firmware; see
+`01-decisions.md` WPA2 supplicant section).
+
+**Tested:** `sysctl dev.brcmfmac.0.psk` returns empty. Write +
+validation still works. WPA2 association unaffected.
