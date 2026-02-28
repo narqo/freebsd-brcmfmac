@@ -515,8 +515,9 @@ brcmf_vap_delete(struct ieee80211vap *vap)
 	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_vap *bvap = BRCMF_VAP(vap);
 
-	ieee80211_vap_detach(vap);
+	/* Drain before detach; scan tasks dereference vap */
 	brcmf_drain_scan_tasks(ic);
+	ieee80211_vap_detach(vap);
 	free(bvap, M_80211_VAP);
 }
 

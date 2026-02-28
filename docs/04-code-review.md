@@ -10,51 +10,6 @@ Review date: 28 Feb 2026. Focus: correctness and security.
 
 ---
 
-## P1-3: TX pktid slot overwrite when ring is full
-
-`brcmf_msgbuf_tx` checks only the single slot at
-`txbuf[pktid % BRCMF_TX_RING_SIZE]`. If all 256 slots are occupied
-(completions lagging), `tx_pktid_next` advances past the ring size
-and `pktid % 256` wraps back to a slot with an inflight mbuf. The
-check `txbuf[...].m != NULL` catches this for the *current* `pktid`,
-but only rejects and drops the new packet. The real problem: there is
-no backpressure signal. Under sustained TX pressure with delayed
-completions, the driver silently drops every packet once the ring
-fills, with no indication to the network stack.
-
-More concerning: if `tx_complete` processing races (see P1-1), a
-slot's `m` could be NULLed while the DMA is still inflight, and the
-next TX overwrites it.
-
-**File:** `msgbuf.c:brcmf_msgbuf_tx`
-
-**Fix:** Track in-flight count explicitly. Return `ENOBUFS` when
-count equals `BRCMF_TX_RING_SIZE`. Consider `if_setdrvflagbits` to
-set `IFF_DRV_OACTIVE` when the ring is full.
-
----
-
-## P1-5: BAR0 window register unserialized across CPUs
-
-`brcmf_pcie_select_core` writes the BAR0 window register. It is
-called from:
-
-- `brcmf_pcie_isr_filter` (hard IRQ context, any CPU)
-- `brcmf_pcie_isr_task` (ISR taskqueue thread)
-- `brcmf_watchdog` (callout, potentially on a different CPU)
-- `brcmf_bp_read32` / `brcmf_bp_write32` (used during attach)
-
-If the watchdog callout runs on CPU1 while the ISR filter fires on
-CPU0, both write the BAR0 window register concurrently. One reads
-the wrong 4K window.
-
-**Files:** `pcie.c`, `core.c`
-
-**Fix:** Serialize BAR0 window access with a spinlock (MTX_SPIN,
-since it's used in filter context).
-
----
-
 ## P2-1: Scan result buffer TOCTOU between ISR and scan task
 
 `brcmf_escan_result` (called from ISR task context) writes to
@@ -68,44 +23,6 @@ overwrite entries being read.
 
 **Fix:** Either copy the result buffer locally in
 `brcmf_scan_complete_task`, or add a mutex around scan result access.
-
----
-
-## P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach`
-
-```c
-ieee80211_vap_detach(vap);     // frees internal VAP state
-brcmf_drain_scan_tasks(ic);   // tasks may still reference vap
-free(bvap, M_80211_VAP);
-```
-
-If `scan_curchan_task` fires between `vap_detach` and
-`drain_scan_tasks`, it accesses `ss->ss_vap` which points to freed
-memory.
-
-**File:** `cfg.c:brcmf_vap_delete`
-
-**Fix:** Drain scan tasks before `ieee80211_vap_detach`.
-
----
-
-## P2-3: `brcmf_msgbuf_init_flowring` leaks on partial failure
-
-`sc->flowring` is set to the allocated ring **before** the create
-request is submitted. If `brcmf_msgbuf_ring_reserve` fails (returns
-`ENOBUFS`), the function returns with `sc->flowring` pointing to an
-orphaned ring. The caller doesn't clean it up, and the next
-`brcmf_msgbuf_delete_flowring` will try to send a delete request to
-firmware for a ring that was never created.
-
-Similarly, on create timeout (`flowring_create_done == 0`), the
-function sets `fw_dead = 1` but doesn't free the DMA buffer or
-reset `sc->flowring`.
-
-**File:** `msgbuf.c:brcmf_msgbuf_init_flowring`
-
-**Fix:** Move `sc->flowring = ring` to after successful completion.
-On failure paths, free the ring and DMA resources.
 
 ---
 
@@ -371,3 +288,43 @@ supplicant approach doesn't work on this firmware; see
 
 **Tested:** `sysctl dev.brcmfmac.0.psk` returns empty. Write +
 validation still works. WPA2 association unaffected.
+
+### P1-3: TX pktid slot overwrite when ring is full — DECLINED
+
+The `txbuf[pktid % 256].m != NULL` check prevents slot overwrite.
+`brcmf_msgbuf_tx` returns `ENOBUFS` to the caller, which is the
+standard backpressure signal. The race concern (paragraph 2) is
+resolved by P1-1's atomic guard — TX submit and TX complete no
+longer run concurrently. `IFF_DRV_OACTIVE` would be a minor
+optimization, not a correctness fix.
+
+### P1-5: BAR0 window register unserialized across CPUs — DECLINED
+
+All post-attach callers of `brcmf_pcie_select_core` select the
+same core (`sc->pciecore`). Two CPUs writing the same value to
+the PCI config BAR0 window register is benign. The callers that
+select other cores (`brcmf_bp_read32`/`brcmf_bp_write32`) run
+only during attach (single-threaded).
+
+### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
+
+Scan tasks dereference `ss->ss_vap`, which is freed by
+`ieee80211_vap_detach`. Reordered: drain scan tasks first,
+then detach.
+
+**Tested:** Two VAP create/destroy cycles with wpa_supplicant,
+no crash. Reconnect after recreate works.
+
+### P2-3: `brcmf_msgbuf_init_flowring` leaks on partial failure — FIXED
+
+Three failure paths (ring_reserve ENOBUFS, create timeout, create
+status != 0) leaked the DMA buffer and ring struct because
+`sc->flowring` was set before the create request.
+
+**Fix:** Moved `sc->flowring = ring` to after successful completion.
+All failure paths goto a common `fail` label that frees DMA buffer
+and ring struct. `brcmf_msgbuf_delete_flowring` sees `NULL` and
+is a no-op.
+
+**Tested:** Association + traffic (flowring create happy path),
+interface cycling (flowring delete + recreate). No crash, no leak.

@@ -1211,14 +1211,13 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	brcmf_tcm_write32(sc, desc_addr + BRCMF_RING_MEM_BASE_ADDR_OFFSET + 4,
 	    (uint32_t)(ring->dma_handle >> 32));
 
-	sc->flowring = ring;
-
 	/* Send flow ring create request */
 	ctrl = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
 	create = brcmf_msgbuf_ring_reserve(sc, ctrl);
 	if (create == NULL) {
 		device_printf(sc->dev, "no space for flowring create\n");
-		return (ENOBUFS);
+		error = ENOBUFS;
+		goto fail;
 	}
 
 	memset(create, 0, sizeof(*create));
@@ -1228,7 +1227,6 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	memcpy(create->da, da, 6);
 	memcpy(create->sa, sc->macaddr, 6);
 	create->tid = 0;
-	/* Flow ring ID is flowid + NROF_H2D_COMMON_MSGRINGS */
 	create->flow_ring_id = htole16(BRCMF_NROF_H2D_COMMON_MSGRINGS + flowid);
 	create->max_items = htole16(BRCMF_FLOWRING_SIZE);
 	create->len_item = htole16(BRCMF_FLOWRING_ITEM_SIZE);
@@ -1248,17 +1246,25 @@ brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da)
 	if (!sc->flowring_create_done) {
 		device_printf(sc->dev, "flowring create timeout\n");
 		sc->fw_dead = 1;
-		return (ENXIO);
+		error = ENXIO;
+		goto fail;
 	}
 
 	if (sc->flowring_create_status != 0) {
 		device_printf(sc->dev, "flowring create failed: %d\n",
 		    sc->flowring_create_status);
-		return (EIO);
+		error = EIO;
+		goto fail;
 	}
 
+	sc->flowring = ring;
 	BRCMF_DBG(sc, "flowring %d created\n", flowid);
 	return (0);
+
+fail:
+	brcmf_free_dma_buf(ring->dma_tag, ring->dma_map, ring->buf);
+	free(ring, M_BRCMFMAC);
+	return (error);
 }
 
 /*
