@@ -303,15 +303,13 @@ brcmf_get_macaddr(struct brcmf_softc *sc)
 {
 	int error;
 
-	error = brcmf_fil_iovar_data_get(sc, "cur_etheraddr", NULL,
+	error = brcmf_fil_iovar_data_get(sc, "cur_etheraddr", sc->macaddr,
 	    ETHER_ADDR_LEN);
 	if (error != 0) {
 		device_printf(sc->dev, "failed to get MAC address: %d\n",
 		    error);
 		return (error);
 	}
-
-	memcpy(sc->macaddr, sc->ioctlbuf, ETHER_ADDR_LEN);
 	device_printf(sc->dev, "MAC address %02x:%02x:%02x:%02x:%02x:%02x\n",
 	    sc->macaddr[0], sc->macaddr[1], sc->macaddr[2],
 	    sc->macaddr[3], sc->macaddr[4], sc->macaddr[5]);

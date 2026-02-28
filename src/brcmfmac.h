@@ -210,6 +210,7 @@ struct brcmf_softc {
 	/* Firmware health */
 	int fw_dead;
 	int detaching;
+	volatile u_int d2h_processing;
 	struct callout watchdog;
 
 	/* Diagnostic counters */

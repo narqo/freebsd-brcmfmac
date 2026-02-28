@@ -685,6 +685,10 @@ brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 	struct brcmf_pcie_ringbuf *ctrl_ring, *tx_ring, *rx_ring;
 	int pass;
 
+	/* ISR task, watchdog callout, and ioctl poll can race here */
+	if (!atomic_cmpset_int(&sc->d2h_processing, 0, 1))
+		return;
+
 	ctrl_ring = sc->commonrings[BRCMF_D2H_MSGRING_CONTROL_COMPLETE];
 	tx_ring = sc->commonrings[BRCMF_D2H_MSGRING_TX_COMPLETE];
 	rx_ring = sc->commonrings[BRCMF_D2H_MSGRING_RX_COMPLETE];
@@ -710,6 +714,8 @@ brcmf_msgbuf_process_d2h(struct brcmf_softc *sc)
 		    rx_ring->w_ptr == rx_ring->r_ptr)
 			break;
 	}
+
+	atomic_store_rel_int(&sc->d2h_processing, 0);
 }
 
 /*

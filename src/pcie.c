@@ -1073,13 +1073,17 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 	callout_reset(&sc->watchdog, hz / 100, brcmf_watchdog, sc);
 
 	/* Get firmware version */
-	error = brcmf_fil_iovar_data_get(sc, "ver", NULL, 256);
-	if (error == 0 && sc->ioctl_resp_len > 0) {
-		char *ver = sc->ioctlbuf;
-		char *nl = strchr(ver, '\n');
-		if (nl)
-			*nl = '\0';
-		device_printf(sc->dev, "firmware: %s\n", ver);
+	{
+		char ver[256]; /* generous for a version string */
+		memset(ver, 0, sizeof(ver));
+		error = brcmf_fil_iovar_data_get(sc, "ver", ver,
+		    sizeof(ver) - 1);
+		if (error == 0) {
+			char *nl = strchr(ver, '\n');
+			if (nl)
+				*nl = '\0';
+			device_printf(sc->dev, "firmware: %s\n", ver);
+		}
 	}
 
 	/* Disable MPC during init */

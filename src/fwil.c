@@ -29,17 +29,23 @@ int
 brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
     void *data, uint32_t len)
 {
+	char buf[512]; /* must fit name + response; largest is ~256 (ver) */
 	uint32_t namelen;
+	int error;
 
 	namelen = strlen(name) + 1;
-	if (namelen + len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+	if (namelen + len > sizeof(buf))
 		return (EINVAL);
 
-	memset(sc->ioctlbuf, 0, namelen + len);
-	memcpy(sc->ioctlbuf, name, namelen);
+	memset(buf, 0, namelen + len);
+	memcpy(buf, name, namelen);
 
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_GET_VAR, sc->ioctlbuf,
+	error = brcmf_msgbuf_ioctl(sc, BRCMF_C_GET_VAR, buf,
 	    namelen + len, NULL);
+	if (error == 0 && data != NULL && len > 0)
+		memcpy(data, buf, len);
+
+	return (error);
 }
 
 /*
@@ -49,17 +55,18 @@ int
 brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
     const void *data, uint32_t len)
 {
+	char buf[512]; /* must fit name + data; largest is ~170 (wsec_key) */
 	uint32_t namelen;
 
 	namelen = strlen(name) + 1;
-	if (namelen + len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+	if (namelen + len > sizeof(buf))
 		return (EINVAL);
 
-	memcpy(sc->ioctlbuf, name, namelen);
+	memcpy(buf, name, namelen);
 	if (data != NULL && len > 0)
-		memcpy((char *)sc->ioctlbuf + namelen, data, len);
+		memcpy(buf + namelen, data, len);
 
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_SET_VAR, sc->ioctlbuf,
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_SET_VAR, buf,
 	    namelen + len, NULL);
 }
 
@@ -80,11 +87,12 @@ brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name, uint32_t val)
 int
 brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name, uint32_t *val)
 {
+	uint32_t tmp;
 	int error;
 
-	error = brcmf_fil_iovar_data_get(sc, name, NULL, sizeof(*val));
+	error = brcmf_fil_iovar_data_get(sc, name, &tmp, sizeof(tmp));
 	if (error == 0 && val != NULL)
-		*val = le32toh(*(uint32_t *)sc->ioctlbuf);
+		*val = le32toh(tmp);
 
 	return (error);
 }
@@ -96,13 +104,7 @@ int
 brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
     const void *data, uint32_t len)
 {
-	if (len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
-		return (EINVAL);
-
-	if (data != NULL && len > 0)
-		memcpy(sc->ioctlbuf, data, len);
-
-	return brcmf_msgbuf_ioctl(sc, cmd, sc->ioctlbuf, len, NULL);
+	return brcmf_msgbuf_ioctl(sc, cmd, __DECONST(void *, data), len, NULL);
 }
 
 /*
@@ -112,13 +114,7 @@ int
 brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
     void *data, uint32_t len)
 {
-	int error;
-
-	error = brcmf_msgbuf_ioctl(sc, cmd, sc->ioctlbuf, len, NULL);
-	if (error == 0 && data != NULL && len > 0)
-		memcpy(data, sc->ioctlbuf, len);
-
-	return error;
+	return brcmf_msgbuf_ioctl(sc, cmd, data, len, NULL);
 }
 
 /*

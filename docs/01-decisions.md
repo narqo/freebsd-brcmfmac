@@ -385,51 +385,29 @@ session state and blocks subsequent association attempts.
   }
   ```
 
-## D2H ring processing: single-owner via ISR taskqueue
+## D2H ring processing: atomic exclusion
 
-**Decision**: All D2H ring processing runs exclusively in a dedicated
-`brcmfmac_isr` taskqueue. No other context may call
-`brcmf_msgbuf_process_d2h`.
+**Decision**: `brcmf_msgbuf_process_d2h` uses an atomic try-lock
+(`d2h_processing`) to ensure at most one caller processes rings at
+a time. Three contexts may call it:
 
-**Problem**: The original design ran D2H processing in two places
-concurrently:
+1. `brcmf_pcie_isr_task` — ISR taskqueue (primary)
+2. `brcmf_watchdog` — 10ms callout (catches missed interrupts)
+3. `brcmf_msgbuf_ioctl` — ioctl wait loop (when completion not yet seen)
 
-1. The interrupt filter (`brcmf_pcie_intr`) — hard interrupt context
-2. Polling loops in `brcmf_msgbuf_ioctl` and flowring create/delete
-   wait paths — thread context
+**History**: M16 moved all D2H processing to the ISR taskqueue
+exclusively, fixing the concurrent-access crashes (core.txt.3).
+M16.6 re-introduced polling from the watchdog and ioctl paths
+because the ISR taskqueue thread stops executing under bhyve after
+~10-15 minutes. The polling is necessary for reliability, but
+without synchronization it re-introduced the original race.
 
-This caused two classes of crashes:
-
-- **Socket buffer corruption (core.txt.3)**: `sbcut_internal` page
-  fault at address 0x8. The filter handler delivered RX packets via
-  `if_input` in hard interrupt context. Under heavy RX, TCP socket
-  buffer accounting (`sb_ccc`) became corrupt — claimed 8688 bytes
-  but the mbuf chain was empty.
-- **Concurrent ring access**: The ioctl wait loop polled D2H rings
-  while the filter handler could fire and process the same rings
-  simultaneously. No locking protected ring pointer updates, so
-  the same RX completion could be processed twice or ring state
-  could be torn.
-
-**Solution**: Split the interrupt into filter + taskqueue:
-
-- `brcmf_pcie_isr_filter`: acks the mailbox interrupt, disables
-  further interrupts, enqueues `isr_task`. Runs in hard IRQ; does
-  no ring processing.
-- `brcmf_pcie_isr_task`: runs in the `brcmfmac_isr` taskqueue at
-  `PI_NET` priority. Processes all D2H rings (ctrl complete, TX
-  complete, RX complete), then re-enables interrupts.
-- Ioctl and flowring waits use `tsleep`/`wakeup` only. The ISR task
-  processes the completion ring entry and calls `wakeup`. No polling.
-- `brcmf_msgbuf_repost_rxbufs` removed — it wrote to the H2D RXPOST
-  ring from `brcmf_link_task` (net80211 taskqueue), racing with the
-  ISR task which reposts buffers during RX completion. The ISR task
-  is now the sole writer to H2D RXPOST.
-
-**Invariant**: `brcmf_msgbuf_process_d2h` is called from exactly one
-place: `brcmf_pcie_isr_task`. All ring pointer updates, RX delivery,
-ioctl completion wakeups, and flowring completion wakeups happen in
-this single-threaded context.
+**Solution**: `atomic_cmpset_int(&sc->d2h_processing, 0, 1)` at
+entry; `atomic_store_rel_int(&sc->d2h_processing, 0)` at exit.
+If another context is already processing, the caller returns
+immediately — the active processor will drain all pending work.
+This is safe in callout context (no sleeping) and eliminates
+double-processing of ring entries.
 
 ## COM/node lock and firmware ioctls
 
@@ -498,6 +476,14 @@ handler (`brcmf_set_pmk`), and `brcmf_key_set`/`brcmf_key_delete`
 request-response cycle. `msleep` atomically releases it while
 waiting for the firmware response, allowing other threads to
 queue up without corrupting the shared ioctl buffer.
+
+The fwil layer does not access `sc->ioctlbuf` directly. Iovar
+functions assemble name+data in a local stack buffer and pass it
+to `brcmf_msgbuf_ioctl`. Command functions pass the caller's
+buffer. `brcmf_msgbuf_tx_ioctl` copies the buffer into `ioctlbuf`
+under the lock; the response path copies out under the lock. This
+eliminates the race where two threads could write to `ioctlbuf`
+before either acquires the mutex.
 
 **fw_dead threshold**: A single ioctl timeout does not mark the
 firmware dead — transient timeouts occur during firmware state

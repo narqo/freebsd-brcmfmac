@@ -10,54 +10,6 @@ Review date: 28 Feb 2026. Focus: correctness and security.
 
 ---
 
-## P1-1: Concurrent D2H ring processing from three contexts
-
-`brcmf_msgbuf_process_d2h` is called from:
-
-1. `brcmf_pcie_isr_task` (ISR taskqueue)
-2. `brcmf_watchdog` (callout, every 10ms)
-3. `brcmf_msgbuf_ioctl` (ioctl wait loop, on timeout retry)
-
-The ring pointer fields (`r_ptr`, `w_ptr`) have no synchronization.
-Two concurrent callers can read the same `w_ptr`, process the same
-completion entry, and deliver the same RX mbuf twice (double-free)
-or complete the same TX buffer twice. This was the root cause of the
-M16 socket buffer corruption crash (core.txt.3). The M16.6 changes
-re-introduced polling from the watchdog and ioctl paths, breaking
-the single-owner invariant documented in `01-decisions.md`.
-
-**Files:** `pcie.c:brcmf_watchdog`, `msgbuf.c:brcmf_msgbuf_ioctl`,
-`msgbuf.c:brcmf_msgbuf_process_d2h`
-
-**Fix:** Either (a) protect `brcmf_msgbuf_process_d2h` with an
-atomic flag or mutex so only one caller processes at a time, or
-(b) remove the direct calls from watchdog and ioctl paths and
-instead enqueue the ISR task (`taskqueue_enqueue(sc->isr_tq,
-&sc->isr_task)`).
-
----
-
-## P1-2: IOCTL buffer race between preparation and submission
-
-The shared `sc->ioctlbuf` DMA buffer is written in `brcmf_fil_*`
-functions **before** `brcmf_msgbuf_ioctl` acquires `ioctl_mtx`.
-Two concurrent callers (e.g., `brcmf_link_task` on `taskqueue_thread`
-and `brcmf_sysctl_pm` on a sysctl thread) both write to `ioctlbuf`,
-then one enters the mutex and submits the other's data.
-
-Affected functions: `brcmf_fil_iovar_data_get`,
-`brcmf_fil_iovar_data_set`, `brcmf_fil_cmd_data_set`,
-`brcmf_fil_cmd_data_get`.
-
-**Files:** `fwil.c`
-
-**Fix:** Move the `ioctl_mtx` acquisition into the fwil layer so it
-covers buffer preparation through response copy-out. Alternatively,
-have `brcmf_msgbuf_ioctl` accept the data to copy into `ioctlbuf`
-under the lock.
-
----
-
 ## P1-3: TX pktid slot overwrite when ring is full
 
 `brcmf_msgbuf_tx` checks only the single slot at
@@ -386,3 +338,43 @@ with no room for error. A comment explaining the budget would
 prevent future regressions.
 
 **File:** `pcie.c:brcmf_nvram_parse`
+
+---
+
+## Addressed
+
+### P1-1: Concurrent D2H ring processing from three contexts — FIXED
+
+`brcmf_msgbuf_process_d2h` is called from three contexts (ISR
+taskqueue, watchdog callout, ioctl wait loop). All three callers
+are necessary — the ISR taskqueue stops executing under bhyve, so
+the watchdog and ioctl paths provide fallback D2H processing.
+
+**Fix:** Added `atomic_cmpset_int` try-lock (`d2h_processing` flag
+in softc) at entry, `atomic_store_rel_int` at exit. If another
+context is already processing, the caller returns immediately.
+Updated `01-decisions.md` to document the new invariant.
+
+**Tested:** 1000-packet flood ping 0% loss, TX counters balanced
+(1111/1111), interface cycling stable, no panics.
+
+### P1-2: IOCTL buffer race between preparation and submission — FIXED
+
+The fwil layer wrote to the shared `sc->ioctlbuf` DMA buffer before
+`brcmf_msgbuf_ioctl` acquired `ioctl_mtx`. Two concurrent callers
+could corrupt each other's request data.
+
+**Fix:** Eliminated all direct `sc->ioctlbuf` access from fwil.c.
+Iovar functions assemble name+data in a stack buffer (512 bytes),
+then pass it to `brcmf_msgbuf_ioctl`. Command functions pass the
+caller's buffer directly. `brcmf_msgbuf_tx_ioctl` copies into
+`ioctlbuf` under the lock; the response path copies out under the
+lock. No code outside msgbuf.c touches `ioctlbuf` anymore.
+
+Also fixed two callers that read `ioctlbuf` after the ioctl returned
+(cfg.c `cur_etheraddr`, pcie.c `ver`) — they now pass proper output
+buffers.
+
+**Tested:** Firmware version prints correctly, MAC address read works,
+WPA2 association + 1000-packet flood ping 0% loss, PM sysctl read
+works.
