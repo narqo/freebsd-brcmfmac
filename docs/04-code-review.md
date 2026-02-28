@@ -58,23 +58,6 @@ writing the write index. Low priority for x86-only target.
 
 ---
 
-## P2-8: `brcmf_scan_complete_task` accesses VAP fields without COM lock
-
-```c
-vap->iv_roaming
-vap->iv_des_nssid
-vap->iv_des_ssid[0]
-vap->iv_des_bssid
-```
-
-These fields can be modified concurrently by `ifconfig` or
-`wpa_supplicant` via net80211 ioctls. Reading them without the COM
-lock is a data race.
-
-**File:** `scan.c:brcmf_scan_complete_task`
-
----
-
 ## P2-9: Event datalen bounds check is off by one direction
 
 ```c
@@ -315,3 +298,14 @@ skipped on the direct-join path.
 
 **Tested:** WPA2 association via wpa_supplicant unaffected (uses
 separate security setup path).
+
+### P2-8: `brcmf_scan_complete_task` accesses VAP fields without COM lock — FIXED
+
+`iv_roaming`, `iv_des_nssid`, `iv_des_ssid`, `iv_des_bssid` read
+without COM lock in the direct-join decision block.
+
+**Fix:** Snapshot all VAP fields under `IEEE80211_LOCK`, then use
+local copies for matching. `brcmf_join_bss_direct` and
+`ieee80211_scan_done` remain outside the lock (both sleep).
+
+**Tested:** WPA2 association + DHCP + ping pass.

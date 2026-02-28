@@ -440,21 +440,43 @@ brcmf_scan_complete_task(void *arg, int pending)
 	 * Direct join only when net80211 controls roaming (not
 	 * wpa_supplicant). When iv_roaming == MANUAL, the
 	 * supplicant drives association via MLME ioctls.
+	 *
+	 * Snapshot VAP fields under COM lock; ioctls may modify
+	 * them concurrently.
 	 */
-	if (!sc->link_up &&
-	    vap->iv_roaming != IEEE80211_ROAMING_MANUAL &&
-	    vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
-		static const uint8_t zerobssid[6] = {0, 0, 0, 0, 0, 0};
-		int bssid_any = IEEE80211_ADDR_EQ(vap->iv_des_bssid,
-		    ieee80211broadcastaddr) ||
-		    IEEE80211_ADDR_EQ(vap->iv_des_bssid, zerobssid);
-		for (i = 0; i < n; i++) {
-			struct brcmf_scan_result *sr = &sc->scan_results[i];
-			if (sr->ssid_len == vap->iv_des_ssid[0].len &&
-			    memcmp(sr->ssid, vap->iv_des_ssid[0].ssid, sr->ssid_len) == 0 &&
-			    (bssid_any || IEEE80211_ADDR_EQ(sr->bssid, vap->iv_des_bssid))) {
-				brcmf_join_bss_direct(sc, sr);
-				return;
+	{
+		struct ieee80211_scan_ssid des_ssid;
+		uint8_t des_bssid[6];
+		int do_join;
+
+		IEEE80211_LOCK(ic);
+		do_join = !sc->link_up &&
+		    vap->iv_roaming != IEEE80211_ROAMING_MANUAL &&
+		    vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0;
+		if (do_join) {
+			des_ssid = vap->iv_des_ssid[0];
+			IEEE80211_ADDR_COPY(des_bssid, vap->iv_des_bssid);
+		}
+		IEEE80211_UNLOCK(ic);
+
+		if (do_join) {
+			static const uint8_t zerobssid[6];
+			int bssid_any =
+			    IEEE80211_ADDR_EQ(des_bssid,
+				ieee80211broadcastaddr) ||
+			    IEEE80211_ADDR_EQ(des_bssid, zerobssid);
+			for (i = 0; i < n; i++) {
+				struct brcmf_scan_result *sr =
+				    &sc->scan_results[i];
+				if (sr->ssid_len == des_ssid.len &&
+				    memcmp(sr->ssid, des_ssid.ssid,
+					sr->ssid_len) == 0 &&
+				    (bssid_any ||
+				     IEEE80211_ADDR_EQ(sr->bssid,
+					 des_bssid))) {
+					brcmf_join_bss_direct(sc, sr);
+					return;
+				}
 			}
 		}
 	}
