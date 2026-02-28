@@ -24,6 +24,8 @@
 
 #include <net80211/ieee80211_var.h>
 
+#include "debug.h"
+
 /* Ethernet address length */
 #define ETHER_ADDR_LEN 6
 
@@ -266,13 +268,6 @@ struct brcmf_softc {
 };
 
 MALLOC_DECLARE(M_BRCMFMAC);
-
-/* Debug print: emits when sc->debug >= 2 or bootverbose is set */
-#define BRCMF_DBG_VERBOSE 2
-#define BRCMF_DBG(sc, fmt, ...) do {					\
-	if ((sc)->debug >= BRCMF_DBG_VERBOSE || bootverbose)		\
-		device_printf((sc)->dev, fmt, ##__VA_ARGS__);		\
-} while (0)
 
 /* pcie.c - PCIe bus layer */
 int brcmf_pcie_attach(device_t dev);
