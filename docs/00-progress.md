@@ -328,7 +328,9 @@ poll-only: ~3ms gateway, ~15ms internet.
 | HTTPS fetch freebsd.org via wlan0 | 15 kB, success |
 | TX counters after 1000x flood | tx=1122 complete=1122 drops=0 |
 
-### Milestone 17: Packaging (TODO)
+### Milestone X: Automated testing (TODO)
+
+### Milestone X: Packaging (TODO)
 
 - [ ] FreeBSD port/package
 - [ ] man page
