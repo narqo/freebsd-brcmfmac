@@ -216,6 +216,9 @@ struct brcmf_softc {
 	uint32_t tx_count;
 	uint32_t tx_drops;
 	uint32_t tx_complete_count;
+	uint32_t rx_complete_count;
+	uint32_t rx_deliver_fail;  /* m_get2 allocation failures */
+	uint32_t rx_repost_fail;   /* H2D rxpost ring full at repost time */
 	uint32_t watchdog_last_isr;
 	uint32_t watchdog_stall_count;
 	uint32_t watchdog_tick;

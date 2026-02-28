@@ -35,10 +35,20 @@ ioctl[SIOCS80211, op=20]: Invalid argument
 Benign — wpa_supplicant flushes keys on an empty keyring at startup. No functional
 impact.
 
-### Long downloads stall on DFS channels
+### Long downloads stall on DFS channels (RESOLVED: not a driver issue)
 
-100MB downloads stall after ~24s on ch116 (DFS). 10MB transfers complete reliably.
-Likely AP/ISP issue rather than driver — no driver-side fix identified.
+Apparent stall was caused by the fixed-size test file completing and the server
+closing the TCP connection. The client-side nc kept the half-closed connection
+open, making throughput appear to drop to zero.
+
+Investigation (ch116, DFS, sustained nc download):
+- rx_repost_fail=0, rx_deliver_fail=0 throughout
+- ping to gateway works normally during apparent stall (5/5, ~10ms)
+- netstat shows TCP receive queue empty — no buffer overflow
+- Continuous `/dev/zero` stream over same channel: 100s, 0 stalls, 0 drops
+
+Conclusion: driver and firmware handle sustained DFS channel throughput correctly.
+The original "stall" was a test artifact.
 
 ---
 

@@ -575,8 +575,10 @@ brcmf_rx_deliver(struct brcmf_softc *sc, void *data, uint16_t len)
 		return;
 
 	m = m_get2(len, M_NOWAIT, MT_DATA, M_PKTHDR);
-	if (m == NULL)
+	if (m == NULL) {
+		sc->rx_deliver_fail++;
 		return;
+	}
 
 	m_copyback(m, 0, len, data);
 	m->m_pkthdr.len = m->m_len = len;
@@ -631,6 +633,8 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 		data_offset = le16toh(rx->data_offset);
 		flags = le16toh(rx->flags);
 
+		sc->rx_complete_count++;
+
 		/* Validate pktid */
 		if (pktid < 0x30000 || pktid >= 0x30000 + sc->rxbufpost) {
 			device_printf(sc->dev, "RX with invalid pktid 0x%x\n", pktid);
@@ -658,8 +662,10 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 		}
 
 		/* Repost the buffer */
-		brcmf_msgbuf_post_rxbuf(sc, cb);
-		repost_count++;
+		if (brcmf_msgbuf_post_rxbuf(sc, cb) != 0)
+			sc->rx_repost_fail++;
+		else
+			repost_count++;
 
 next:
 		ring->r_ptr++;

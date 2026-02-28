@@ -328,6 +328,23 @@ poll-only: ~3ms gateway, ~15ms internet.
 | HTTPS fetch freebsd.org via wlan0 | 15 kB, success |
 | TX counters after 1000x flood | tx=1122 complete=1122 drops=0 |
 
+### Milestone 16.7: Download stall investigation (DONE)
+
+Investigated "long downloads stall on DFS channels" known issue.
+
+Added diagnostic sysctl counters: `rx_complete`, `rx_deliver_fail`,
+`rx_repost_fail`.
+
+Findings (ch116, sustained nc download from build host):
+- rx_repost_fail=0, rx_deliver_fail=0 across all runs
+- Apparent stalls always at ~27s = when fixed-size (200MB) server file finished
+- Ping to AP gateway unaffected during stalls: 5/5, ~10ms RTT
+- TCP netstat shows empty receive queue during "stall" — no buffer overflow
+- Continuous `/dev/zero` stream: 100s clean, 0 stalls, 0 drop counters
+
+Root cause: test artifact. Fixed-size file completion closes the TCP connection;
+nc client stays in half-close, reporting zero throughput. Not a driver bug.
+
 ### Milestone X: Automated testing (TODO)
 
 ### Milestone X: Packaging (TODO)
@@ -349,9 +366,10 @@ poll-only: ~3ms gateway, ~15ms internet.
 - **2s-gap cycling deadlock with wpa_supplicant**: kernel deadlock
   requiring VM reset. Without wpa_supplicant, 8 rapid cycles complete
   cleanly. Not yet diagnosed.
-- **Long downloads stall on DFS channels**: 100MB download stalls
-  after ~24s on ch116. Likely AP/ISP issue, not driver — 10MB
-  transfers complete reliably.
+- **Long downloads stall on DFS channels**: RESOLVED — not a driver
+  issue. Fixed-size test file completing (server close) was mistaken
+  for a stall. Continuous streams run indefinitely on ch116 with zero
+  rx_repost_fail/rx_deliver_fail. Ping unaffected during apparent stall.
 
 ## Code structure
 

@@ -263,4 +263,13 @@ brcmf_security_sysctl_init(struct brcmf_softc *sc)
 	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "isr_task", CTLFLAG_RD, &sc->isr_task_count, 0,
 	    "ISR task invocations");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "rx_complete", CTLFLAG_RD, &sc->rx_complete_count, 0,
+	    "RX completions processed");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "rx_deliver_fail", CTLFLAG_RD, &sc->rx_deliver_fail, 0,
+	    "RX mbuf allocation failures");
+	SYSCTL_ADD_UINT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "rx_repost_fail", CTLFLAG_RD, &sc->rx_repost_fail, 0,
+	    "RX buffer repost failures (H2D rxpost ring full)");
 }
