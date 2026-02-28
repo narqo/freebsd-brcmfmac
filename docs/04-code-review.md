@@ -26,29 +26,6 @@ overwrite entries being read.
 
 ---
 
-## P2-5: `brcmf_detect_security` misidentifies WEP as WPA2
-
-```c
-if (sr->capinfo & IEEE80211_CAPINFO_PRIVACY) {
-    *wpa_auth = WPA2_AUTH_PSK;
-    return AES_ENABLED;
-}
-```
-
-Any BSS with the PRIVACY capability bit (including WEP) is tagged as
-WPA2-PSK/AES. Currently harmless because the direct-join path rejects
-`wpa_auth != WPA_AUTH_DISABLED`, but if that guard is removed, the
-driver will attempt WPA2 association to WEP networks.
-
-**File:** `security.c:brcmf_detect_security`
-
-**Fix:** Parse the RSN/WPA IEs from `sr->ie` to determine the actual
-security suite, or simply set `WSEC_NONE` / `WPA_AUTH_DISABLED` for
-all BSS in this function (since the direct-join path already rejects
-WPA, and the wpa_supplicant path sets security independently).
-
----
-
 ## P2-6: RX path copies every packet — unnecessary data copy
 
 `brcmf_rx_deliver` allocates a fresh mbuf via `m_get2` and copies
@@ -323,3 +300,18 @@ caps, ESSID writes, plus `ic_curchan`/`ic_bsschan`) in
 the lock.
 
 **Tested:** Association, DHCP, ping, interface cycling — all pass.
+
+### P2-5: `brcmf_detect_security` misidentifies WEP as WPA2 — FIXED
+
+PRIVACY capability bit was mapped to WPA2-PSK/AES. The bit only
+means "encryption required" — distinguishing WEP from WPA requires
+RSN/WPA IE parsing.
+
+**Fix:** Return `WEP_ENABLED` (not `AES_ENABLED`) for PRIVACY bit,
+and `WPA_AUTH_DISABLED` always (no IE parsing). Updated caller
+`brcmf_join_bss_direct` to reject `wsec != WSEC_NONE` in addition
+to `wpa_auth != WPA_AUTH_DISABLED`, so encrypted networks are
+skipped on the direct-join path.
+
+**Tested:** WPA2 association via wpa_supplicant unaffected (uses
+separate security setup path).

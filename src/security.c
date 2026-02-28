@@ -27,12 +27,15 @@
 uint32_t
 brcmf_detect_security(struct brcmf_scan_result *sr, uint32_t *wpa_auth)
 {
+	/*
+	 * PRIVACY bit alone doesn't distinguish WEP from WPA/WPA2;
+	 * that requires parsing RSN/WPA IEs. Flag it as "encrypted"
+	 * so the caller can reject what it can't handle.
+	 */
 	*wpa_auth = WPA_AUTH_DISABLED;
 
-	if (sr->capinfo & IEEE80211_CAPINFO_PRIVACY) {
-		*wpa_auth = WPA2_AUTH_PSK;
-		return AES_ENABLED;
-	}
+	if (sr->capinfo & IEEE80211_CAPINFO_PRIVACY)
+		return WEP_ENABLED;
 
 	return WSEC_NONE;
 }

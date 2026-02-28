@@ -229,11 +229,10 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	wsec = brcmf_detect_security(sr, &wpa_auth);
 
 	/*
-	 * Skip WPA networks on the direct-join path. Without an
-	 * external supplicant (wpa_supplicant) nobody will handle
-	 * the 4-way handshake, and the AP will deauth us.
+	 * Skip encrypted networks on the direct-join path.
+	 * WPA/WPA2 needs a supplicant; WEP needs key setup.
 	 */
-	if (wpa_auth != WPA_AUTH_DISABLED)
+	if (wpa_auth != WPA_AUTH_DISABLED || wsec != WSEC_NONE)
 		return (EINVAL);
 
 	error = brcmf_set_security(sc, wsec, wpa_auth);
