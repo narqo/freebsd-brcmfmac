@@ -355,21 +355,8 @@ nc client stays in half-close, reporting zero throughput. Not a driver bug.
 
 ## Known issues
 
-- **5GHz limited to HT40**: Firmware reports `bw_cap(5G)=0x1` (20MHz).
-  `BRCMF_C_DOWN` returns NOTDOWN. Actual mode is HT40+.
-- **wpa_supplicant DELKEY warning**: `ioctl[SIOCS80211, op=20]:
-  Invalid argument` at startup. Benign — key flush on empty keyring.
-- **Rapid cycling slow on DFS channels**: <5s between down/up leaves
-  WPA2 ASSOCIATING after 10s on DFS channels. ≥5s intervals are
-  reliable (5/5 in testing on ch116). No longer causes fw_dead or
-  IOCTL timeouts.
-- **2s-gap cycling deadlock with wpa_supplicant**: kernel deadlock
-  requiring VM reset. Without wpa_supplicant, 8 rapid cycles complete
-  cleanly. Not yet diagnosed.
-- **Long downloads stall on DFS channels**: RESOLVED — not a driver
-  issue. Fixed-size test file completing (server close) was mistaken
-  for a stall. Continuous streams run indefinitely on ch116 with zero
-  rx_repost_fail/rx_deliver_fail. Ping unaffected during apparent stall.
+Issue tracking is maintained in `docs/03-known-issues.md`. This file is focused
+on milestone status and outcomes.
 
 ## Code structure
 

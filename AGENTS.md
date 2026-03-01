@@ -14,11 +14,13 @@ Target hardware: PCI device `0x14e4:0x43a3`
 Read the docs/ directory first:
 
 - **docs/00-progress.md** - Current status, milestones, what's done and what's next
-- **docs/01-decisions.md** - Design decisions and rationale (especially the C/Zig split)
+- **docs/01-decisions.md** - Design decisions and rationale
 - **docs/02-build-test.md** - Build/deploy workflow, crash analysis
 - **docs/03-known-issues.md** - Open and resolved bugs
 
 These documents are the source of truth for project state and architecture choices.
+
+Use the docs/10-investigations.md document to persist mid-session investigation scratch notes.
 
 ## Driver specification
 

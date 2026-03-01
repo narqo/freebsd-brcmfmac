@@ -452,12 +452,12 @@ communication is short-circuited:
 - `brcmf_msgbuf_tx` drops packets immediately
 - Flowring create/delete waits bail out
 
-The flag is set by:
-1. Three consecutive ioctl timeouts (`ioctl_timeouts >= 3`) — transient
-   timeouts during firmware state transitions (e.g., after DISASSOC)
-   are tolerated; the counter resets on any successful ioctl.
-2. The watchdog callout (5s interval), which reads BAR0 mailbox
-   register — `0xffffffff` means PCIe link is down
+The flag is set by the watchdog liveness check (BAR0 mailbox read
+returns `0xffffffff`, indicating PCIe link failure / dead chip).
+
+Historical note: the older `ioctl_timeouts >= 3` escalation path was
+removed because DFS teardown can produce expected transient timeouts.
+Those timeouts should not permanently mark firmware dead.
 
 The watchdog also wakes any threads sleeping on ioctl or flowring
 completion, so they don't have to wait for their individual timeouts.
