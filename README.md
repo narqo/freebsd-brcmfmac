@@ -49,7 +49,9 @@ These are the standard Linux firmware files from `linux-firmware`.
 Copy the built module to `/boot/modules/` and load the module:
 
 ```
-cp if_brcmfmac.ko /boot/modules/
+# copy if_brcmfmac.ko to /boot/modules/
+make install
+
 kldload if_brcmfmac
 ```
 
@@ -113,10 +115,10 @@ traceroute to 1.1.1.1 (1.1.1.1), 64 hops max, 40 byte packets
  7  one.one.one.one (1.1.1.1)  9.818 ms  8.199 ms  10.187 ms
 ```
 
-To load at boot, add to `/boot/loader.conf`:
+To load at boot, add the module to `kld_list` in `/etc/rc.conf`:
 
 ```
-if_brcmfmac_load="YES"
+sysrc kld_list+=if_brcmfmac
 ```
 
 ## Sysctls
