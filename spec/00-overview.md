@@ -1,109 +1,91 @@
 # brcmfmac Driver Specification
 
-## Overview
+## Scope
 
-brcmfmac is a Linux FullMAC WiFi driver for Broadcom wireless chipsets. This specification documents the driver architecture for re-implementation on FreeBSD.
+This document specifies the Linux brcmfmac FullMAC WiFi driver for Broadcom wireless chipsets, covering target configurations:
 
-**Target hardware**: BCM4350 (PCI device `0x14e4:0x43a3`)
+| Target | Bus | Chip ID | Protocol | Firmware |
+|--------|-----|---------|----------|----------|
+| BCM4345/6 | SDIO | `0x4345` | BCDC | `brcmfmac43455-sdio.bin` |
+| BCM4350 | PCIe | `0x4350` | msgbuf | `brcmfmac4350c2-pcie.bin` |
 
-**Key distinction**: brcmfmac is a FullMAC driver. The firmware handles 802.11 MAC layer operations (scanning, authentication, association). The host driver communicates with firmware via commands and events.
-
----
-**Hardware-specific notes**
-
-Throughout this specification, sections marked with "**BCM4350 note**" contain hardware-specific details discovered during FreeBSD driver development. These notes apply to firmware version 7.35.180.133 and may not apply to other Broadcom chips or firmware versions.
-
----
+The driver is FullMAC: firmware handles the 802.11 MAC (scanning, authentication, association). The host sends high-level commands and exchanges Ethernet frames, not 802.11 frames.
 
 ## Document structure
 
-| File | Description |
-|------|-------------|
-| **00-overview.md** | This file, high-level architecture |
-| **01-data-structures.md** | Core data structures |
-| **02-bus-layer.md** | PCIe bus interface and DMA rings |
-| **03-protocol-layer.md** | msgbuf protocol for host-firmware communication |
-| **04-firmware-interface.md** | FWIL layer (firmware ioctl/iovar) |
-| **05-event-handling.md** | Firmware event processing |
-| **06-cfg80211-operations.md** | Wireless configuration operations |
-| **07-initialization.md** | Driver and firmware initialization sequence |
-| **08-data-path.md** | TX/RX packet flow |
-| **09-firmware-commands.md** | Command reference |
-| **10-structures-reference.md** | Firmware structure definitions |
+The specification is ordered bottom-up: hardware and bus first, then protocol, firmware interface, wireless operations, and finally lifecycle (initialization, data path).
 
-## Architecture layers
+| Chapter | Content |
+|---------|---------|
+| [00-overview](00-overview.md) | Architecture, key concepts (this file) |
+| [01-bus-pcie](01-bus-pcie.md) | PCIe bus: BAR mapping, DMA rings, interrupts, firmware download |
+| [02-bus-sdio](02-bus-sdio.md) | SDIO bus: backplane window, SDPCM framing, clock/power, DPC |
+| [03-protocol-msgbuf](03-protocol-msgbuf.md) | msgbuf protocol (PCIe): ring messages, IOCTL, flow rings |
+| [04-protocol-bcdc](04-protocol-bcdc.md) | BCDC protocol (SDIO): command/data headers, firmware signaling |
+| [05-firmware-interface](05-firmware-interface.md) | FWIL: ioctl/iovar encoding, command execution |
+| [06-event-handling](06-event-handling.md) | Firmware events: packet format, dispatch, handlers |
+| [07-cfg80211-operations](07-cfg80211-operations.md) | Wireless ops: scan, connect, keys, security, AP mode |
+| [08-initialization](08-initialization.md) | Probe, firmware download, attach, cfg80211 setup |
+| [09-data-path](09-data-path.md) | TX/RX packet flow for both bus types |
+| [10-chip-specifics](10-chip-specifics.md) | Per-chip: IDs, firmware selection, RAM layout, quirks |
+| [A1-firmware-commands](A1-firmware-commands.md) | Command and IOVAR reference |
+| [A2-structures](A2-structures.md) | Firmware structure definitions |
+| [A3-data-structures](A3-data-structures.md) | Host driver data structures |
+
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    cfg80211 / mac80211                  │
-│              (Wireless configuration API)               │
+│                       cfg80211                          │
+│              (wireless configuration API)                │
 ├─────────────────────────────────────────────────────────┤
-│                     brcmf_cfg80211                      │
-│         (cfg80211 ops: scan, connect, keys, etc.)       │
+│                    brcmf_cfg80211                        │
+│          (scan, connect, keys, AP mode, ...)             │
 ├─────────────────────────────────────────────────────────┤
-│                        FWIL                             │
-│    (Firmware Interface Layer: ioctl/iovar encoding)     │
-├─────────────────────────────────────────────────────────┤
-│                       Protocol                          │
-│  (BCDC for SDIO/USB, msgbuf for PCIe)                   │
-├─────────────────────────────────────────────────────────┤
-│                      Bus Layer                          │
-│    (PCIe/SDIO/USB - hardware abstraction)               │
-├─────────────────────────────────────────────────────────┤
-│                   Hardware + Firmware                   │
+│                        FWIL                              │
+│     (firmware interface: ioctl/iovar encoding)           │
+├───────────────────────┬─────────────────────────────────┤
+│    BCDC + fwsignal    │         msgbuf                  │
+│     (SDIO / USB)      │         (PCIe)                  │
+├───────────────────────┼─────────────────────────────────┤
+│     SDIO bus layer    │      PCIe bus layer             │
+│   (bcmsdh.c, sdio.c) │        (pcie.c)                 │
+├───────────────────────┴─────────────────────────────────┤
+│                  Hardware + Firmware                     │
 └─────────────────────────────────────────────────────────┘
 ```
 
+Everything above FWIL is bus-independent. The protocol layer and below differ by bus type.
+
 ## Key concepts
 
-### FullMAC vs SoftMAC
+### FullMAC communication model
 
-**SoftMAC** (mac80211): Host software handles 802.11 MAC operations. Driver receives/transmits raw 802.11 frames.
+```
+Host → Firmware:  Commands (scan, connect), Queries (get/set variables), TX data
+Firmware → Host:  Events (scan results, link status), RX data
+```
 
-**FullMAC** (cfg80211): Firmware handles 802.11 MAC. Host sends high-level commands (scan, connect). Driver receives/transmits Ethernet frames.
+All multi-byte firmware fields are little-endian, except event messages which are big-endian (they arrive in Ethernet frames with Broadcom OUI encapsulation).
 
-brcmfmac is FullMAC. The driver:
-- Sends commands to firmware (scan channels, connect to AP)
-- Receives events from firmware (scan results, connection status)
-- Exchanges Ethernet frames (not 802.11 frames)
+### Protocol selection
 
-### Communication model
-
-Host ↔ Firmware communication:
-
-1. **Commands** (host → firmware): Trigger actions (scan, associate)
-2. **Queries** (host ↔ firmware): Get/set variables
-3. **Events** (firmware → host): Async notifications (scan done, link up/down)
-4. **Data** (bidirectional): Ethernet frames
+Determined at probe time by bus type:
+- **PCIe** → `BRCMF_PROTO_MSGBUF`: DMA ring buffers, per-flow TX rings, pre-posted RX buffers
+- **SDIO** → `BRCMF_PROTO_BCDC`: byte-stream commands over SDPCM framing, TLV-based firmware signaling for flow control
 
 ### Interface model
 
-- `brcmf_pub`: Global driver context (one per physical device)
-- `brcmf_if`: Virtual interface (multiple per device, supports STA + AP + P2P)
-- `brcmf_cfg80211_vif`: cfg80211 virtual interface state
-- `brcmf_bus`: Bus abstraction (PCIe/SDIO/USB)
+- `brcmf_pub` — one per physical device; holds bus, protocol, cfg80211 state
+- `brcmf_if` — per virtual interface (up to 16); indexed by `bsscfgidx`
+- `brcmf_cfg80211_vif` — cfg80211 state per VIF (connection profile, SME state)
+- `brcmf_bus` — bus abstraction with ops table; union of PCIe/SDIO/USB private data
 
-## PCIe-specific details
+### Firmware files
 
-For BCM4350 (target hardware):
+Each chip+bus combination requires:
+1. **Firmware binary** (`.bin`) — dongle executable
+2. **NVRAM** (`.txt`, optional) — board-specific calibration and configuration
+3. **CLM blob** (`.clm_blob`, optional) — regulatory/country data
 
-- Protocol: msgbuf (ring-based DMA)
-- Shared memory: TCM (Tightly Coupled Memory) accessible via BAR1
-- Firmware: `brcmfmac4350c2-pcie.bin`
-- NVRAM: `brcmfmac4350c2-pcie.txt` (optional)
-
-### Memory regions
-
-| Region | BAR | Description |
-|--------|-----|-------------|
-| Registers | BAR0 | PCIe core, chip control |
-| TCM | BAR1 | Firmware memory, shared structures |
-
-### Interrupt model
-
-MSI interrupts from firmware to host:
-- Mailbox doorbell: Firmware signals new messages in D2H rings
-- Console output: Debug messages (optional)
-
-Host to firmware:
-- Write doorbell register to signal new messages in H2D rings
+File names are constructed from chip ID, revision, and bus type. Board-type-specific NVRAM is tried first (`<base>.<board_type>.txt`).
