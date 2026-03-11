@@ -113,6 +113,8 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 	}
 
 	if (k->wk_flags & IEEE80211_KEY_GROUP) {
+		/* BCM4350 note: ea must stay zeroed for group keys;
+		 * broadcast ea returns BCME_UNSUPPORTED. */
 		key.flags = htole32(BRCMF_PRIMARY_KEY);
 	} else {
 		macaddr = k->wk_macaddr;

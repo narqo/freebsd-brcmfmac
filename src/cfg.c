@@ -162,6 +162,10 @@ brcmf_link_task(void *arg, int pending)
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 
+			/* BCM4350 note: spec uses per-TID per-peer flow
+			 * rings, but one ring suffices for single-STA.
+			 * Must recreate on each assoc to flush stale
+			 * firmware-side state. */
 			brcmf_msgbuf_delete_flowring(sc);
 			brcmf_msgbuf_init_flowring(sc, bssid);
 
@@ -239,7 +243,8 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (error != 0)
 		return error;
 
-	/* Host-managed WPA; firmware supplicant broken on this chip */
+	/* BCM4350 note: spec uses sup_wpa=1 for firmware-managed WPA,
+	 * but v7.35.180.133 returns BCME_BADARG for SET_WSEC_PMK. */
 	brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 
 	memcpy(sc->join_bssid, sr->bssid, 6);
@@ -405,7 +410,8 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 				wsec |= AES_ENABLED;
 
 			brcmf_set_security(sc, wsec, wpa_auth);
-			/* Host-managed WPA; firmware supplicant broken on this chip */
+			/* BCM4350 note: spec uses sup_wpa=1, but
+			 * v7.35.180.133 returns BCME_BADARG. */
 			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 			brcmf_join_bss(sc, ni);
 		}
@@ -549,7 +555,8 @@ brcmf_parent(struct ieee80211com *ic)
 			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
 			    &val, sizeof(val));
 
-			/* Keep radio on during idle */
+			/* BCM4350 note: spec default is mpc=1, but we use 0
+			 * to avoid ~7ms wake latency after idle. */
 			brcmf_fil_iovar_int_set(sc, "mpc", 0);
 			/* No firmware-initiated roaming */
 			brcmf_fil_iovar_int_set(sc, "roam_off", 1);
@@ -575,8 +582,8 @@ brcmf_parent(struct ieee80211com *ic)
 			    &scbval, sizeof(scbval));
 			sc->link_up = 0;
 		}
-		/* Clear security state so stale keys don't interfere
-		 * with the next association's EAPOL handshake. */
+		/* BCM4350 note: firmware retains keys across DISASSOC
+		 * and may encrypt EAPOL 2/4 with stale keys. */
 		brcmf_fil_iovar_int_set(sc, "wsec", 0);
 		brcmf_fil_iovar_int_set(sc, "wpa_auth", 0);
 		sc->running = 0;

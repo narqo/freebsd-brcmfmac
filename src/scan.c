@@ -253,10 +253,10 @@ static const uint8_t default_rates_5g[] = {
 };
 
 /*
- * Minimal WMM Information Element. The firmware always sets 16 PTKSA
- * replay counters (RSN capabilities 0x000c) in its association request
- * RSN IE. wpa_supplicant only does the same when it sees a WMM IE in
- * the BSS, so inject one when the AP doesn't advertise WMM.
+ * BCM4350 note: spec sets RSN IE via "wpaie" iovar, but any wpaie set
+ * causes "SET_SSID failed, status=1" on v7.35.180.133. Instead, inject
+ * a synthetic WMM IE so wpa_supplicant sets 16 PTKSA replay counters
+ * (RSN capabilities 0x000c) to match what the firmware always sends.
  */
 static const uint8_t default_wmm_ie[] = {
 	IEEE80211_ELEMID_VENDOR, 0x07,

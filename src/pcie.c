@@ -35,7 +35,8 @@ MALLOC_DEFINE(M_BRCMFMAC, "brcmfmac", "Broadcom FullMAC WiFi driver");
 #define BCM4350_RAM_BASE 0x180000
 #define BCM4350_RAM_SIZE 0xC0000 /* 768KB */
 
-/* PCIe BAR0 register offsets */
+/* BCM4350 note: spec defines two register layouts (core rev < 64
+ * and >= 64). BCM4350 is rev < 64, so only legacy offsets are used. */
 #define BRCMF_PCIE_PCIE2REG_INTMASK	   0x24
 #define BRCMF_PCIE_PCIE2REG_MAILBOXINT	   0x48
 #define BRCMF_PCIE_PCIE2REG_MAILBOXMASK	   0x4C
@@ -1087,7 +1088,8 @@ brcmf_download_fw(struct brcmf_softc *sc, const struct firmware *fw)
 		}
 	}
 
-	/* Disable MPC during init */
+	/* BCM4350 note: spec default is mpc=1, but we use 0 to avoid
+	 * ~7ms wake latency on first TX after idle. */
 	brcmf_fil_iovar_int_set(sc, "mpc", 0);
 
 	return (0);

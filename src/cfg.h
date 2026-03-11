@@ -106,13 +106,9 @@ struct brcmf_wsec_key {
 #define DOT11_BSSTYPE_ANY	2
 #define BRCMF_E_STATUS_PARTIAL	8
 
-/*
- * Chanspec encoding (D11AC PHY format)
- * Bits 0-7:   channel number (or center for wide channels)
- * Bits 8-10:  control sideband
- * Bits 11-13: bandwidth
- * Bits 14-15: band
- */
+/* BCM4350 note: spec defines D11N and D11AC chanspec formats,
+ * selected at runtime via BRCMF_C_GET_VERSION. BCM4350 always
+ * uses D11AC, so only that format is implemented. */
 #define BRCMF_CHSPEC_D11AC_SB_MASK	0x0700
 #define BRCMF_CHSPEC_D11AC_SB_SHIFT	8
 #define BRCMF_CHSPEC_D11AC_BW_MASK	0x3800
