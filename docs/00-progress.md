@@ -345,6 +345,21 @@ Findings (ch116, sustained nc download from build host):
 Root cause: test artifact. Fixed-size file completion closes the TCP connection;
 nc client stays in half-close, reporting zero throughput. Not a driver bug.
 
+### Milestone 17: Spec alignment (TODO)
+
+Minor gaps found during spec review (11 Mar 2026). See
+`docs/04-code-review.md` section "Spec review" for details.
+
+- [ ] SR-1: Add missing init commands (scan times, FAKEFRAG, bcn_timeout, txbf, join_pref)
+- [ ] SR-1: CLM blob download
+- [ ] SR-2: Document MPC=0 as intentional deviation
+- [ ] SR-3: Switch to `"join"` bsscfg iovar for connect path
+- [ ] SR-4: Multi-flow ring support (per-TID per-peer)
+- [ ] SR-5: AMPDU RX reorder (verify firmware handles it; add if needed)
+- [ ] SR-6: Fix `brcmf_assoc_params_le` to use flexible array
+- [ ] SR-7: Runtime D11N/D11AC chanspec selection via `BRCMF_C_GET_VERSION`
+- [ ] SR-8: Power management (D3/D0 transitions, deep sleep)
+
 ### Milestone X: Automated testing (TODO)
 
 ### Milestone X: Packaging (TODO)

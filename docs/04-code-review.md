@@ -246,3 +246,99 @@ Already provided by `<net/ethernet.h>`.
 ### P3-7: NVRAM parser `+8` undocumented — FIXED
 
 Added comment: `/* +8: 1 trailing NUL + 3 pad-to-4 + 4 length footer */`
+
+---
+
+## Spec review (11 Mar 2026)
+
+Compared new spec (`spec/`) against implementation. No critical
+mismatches — driver is architecturally correct. The following are
+minor gaps where the driver deviates from the Linux driver's
+behavior described in the spec. All are non-blocking; the driver
+works end-to-end.
+
+### SR-1: Missing `brcmf_c_preinit_dcmds` initialization commands
+
+The spec lists several init commands sent in `brcmf_c_preinit_dcmds()`
+and `brcmf_config_dongle()` that the driver skips:
+
+- `BRCMF_C_SET_SCAN_CHANNEL_TIME` (cmd 185, 40ms)
+- `BRCMF_C_SET_SCAN_UNASSOC_TIME` (cmd 187, 40ms)
+- `BRCMF_C_SET_SCAN_PASSIVE_TIME` (cmd 258, 120ms)
+- `BRCMF_C_SET_FAKEFRAG` (cmd 219, val 1) — frameburst
+- `bcn_timeout` iovar
+- `join_pref` iovar (RSSI-based join preference)
+- `txbf` iovar (TX beamforming)
+- CLM blob download
+
+Firmware defaults apply. `FAKEFRAG` and `txbf` could improve
+throughput. `bcn_timeout` could improve link-loss detection speed.
+CLM blob would enable proper regulatory enforcement (currently
+using `country DE` + `SKU_DEBUG`).
+
+**Severity:** P3
+
+### SR-2: MPC polarity differs from spec
+
+Spec: `mpc=1` during preinit. Driver: `mpc=0` in two places (after
+firmware download and in `brcmf_parent`). Intentional per M11
+latency optimization — keeps radio on during idle to avoid ~7ms
+wake penalty. Document as deliberate deviation.
+
+**Severity:** P3 (document only)
+
+### SR-3: Uses `BRCMF_C_SET_SSID` instead of `"join"` bsscfg iovar
+
+The spec's primary connect path uses the `"join"` bsscfg iovar
+(`brcmf_ext_join_params_le`) with embedded scan parameters,
+falling back to `BRCMF_C_SET_SSID`. The driver always uses
+`BRCMF_C_SET_SSID` directly. Both achieve the same firmware
+result. The `"join"` iovar would let the firmware do a targeted
+scan-then-connect in one step.
+
+**Severity:** P3
+
+### SR-4: Single flow ring and fixed TX pool
+
+Spec: per-TID per-peer flow rings, 2048 TX pktids, bitmap-based
+TX worker. Driver: one flow ring, 256 TX slots, synchronous submit.
+Adequate for single-STA single-AP. Limits throughput under heavy
+TX load (TX drops when ring is full). Multi-flow support would be
+needed for AP mode or multi-peer scenarios.
+
+**Severity:** P3
+
+### SR-5: No AMPDU RX reorder
+
+Spec describes host-side AMPDU RX reorder via `brcmf_proto_rxreorder`.
+Driver does not implement it. Firmware handles AMPDU internally for
+FullMAC, so reorder events should not arrive. If they do, frames
+would be delivered out of order.
+
+**Severity:** P3
+
+### SR-6: `brcmf_assoc_params_le` has fixed `chanspec_list[1]`
+
+Defined with `chanspec_list[1]` instead of a flexible array. Sends
+2 extra zero bytes in `BRCMF_C_SET_SSID` when `chanspec_num=0`.
+Firmware ignores the extra bytes. Minor struct sizing waste.
+
+**Severity:** P3
+
+### SR-7: D11AC chanspec format hardcoded
+
+Spec selects D11N vs D11AC format at runtime via `BRCMF_C_GET_VERSION`.
+Driver hardcodes D11AC. Correct for BCM4350 but would break on
+older chips using D11N.
+
+**Severity:** P3
+
+### SR-8: No power management / deep sleep handling
+
+Spec describes D3/D0 transitions, deep sleep request/ack, and
+`BRCMF_D2H_DEV_DS_ENTER_REQ` / `BRCMF_H2D_HOST_DS_ACK` mailbox
+protocol. Driver only checks `BRCMF_D2H_DEV_FWHALT`. PM_OFF is
+set explicitly. Not needed for a desktop/VM use case but required
+for laptop power management.
+
+**Severity:** P3
