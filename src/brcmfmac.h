@@ -110,9 +110,22 @@ struct brcmf_txbuf {
 	bus_addr_t paddr;
 };
 
+struct brcmf_softc;
+
+/* Bus-agnostic operations (PCIe: msgbuf, SDIO: SDPCM+BCDC) */
+struct brcmf_bus_ops {
+	int (*ioctl)(struct brcmf_softc *sc, uint32_t cmd,
+	    void *buf, uint32_t len, uint32_t *resp_len);
+	int (*tx)(struct brcmf_softc *sc, struct mbuf *m);
+	int (*flowring_create)(struct brcmf_softc *sc, const uint8_t *da);
+	void (*flowring_delete)(struct brcmf_softc *sc);
+	void (*cleanup)(struct brcmf_softc *sc);
+};
+
 /* Per-device softc */
 struct brcmf_softc {
 	device_t dev;
+	const struct brcmf_bus_ops *bus_ops;
 	struct resource *reg_res; /* BAR0 */
 	struct resource *tcm_res; /* BAR2 (TCM) */
 	int reg_rid;

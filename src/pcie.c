@@ -25,6 +25,14 @@
 
 MALLOC_DEFINE(M_BRCMFMAC, "brcmfmac", "Broadcom FullMAC WiFi driver");
 
+static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
+	.ioctl		= brcmf_msgbuf_ioctl,
+	.tx		= brcmf_msgbuf_tx,
+	.flowring_create = brcmf_msgbuf_init_flowring,
+	.flowring_delete = brcmf_msgbuf_delete_flowring,
+	.cleanup	= brcmf_msgbuf_cleanup,
+};
+
 /* SI_ENUM_BASE - chip enumeration base address */
 #define SI_ENUM_BASE 0x18000000
 
@@ -1121,6 +1129,7 @@ brcmf_pcie_attach(device_t dev)
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
+	sc->bus_ops = &brcmf_pcie_bus_ops;
 
 	pci_enable_busmaster(dev);
 
@@ -1290,7 +1299,7 @@ brcmf_pcie_detach(device_t dev)
 
 	brcmf_cfg_detach(sc);
 	brcmf_pcie_free_irq(sc);
-	brcmf_msgbuf_cleanup(sc);
+	sc->bus_ops->cleanup(sc);
 	brcmf_pcie_free_rings(sc);
 	mtx_destroy(&sc->ioctl_mtx);
 

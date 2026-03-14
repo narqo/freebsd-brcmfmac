@@ -40,7 +40,7 @@ brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
 	memset(buf, 0, namelen + len);
 	memcpy(buf, name, namelen);
 
-	error = brcmf_msgbuf_ioctl(sc, BRCMF_C_GET_VAR, buf,
+	error = sc->bus_ops->ioctl(sc, BRCMF_C_GET_VAR, buf,
 	    namelen + len, NULL);
 	if (error == 0 && data != NULL && len > 0)
 		memcpy(data, buf, len);
@@ -66,7 +66,7 @@ brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
 	if (data != NULL && len > 0)
 		memcpy(buf + namelen, data, len);
 
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_SET_VAR, buf,
+	return sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
 	    namelen + len, NULL);
 }
 
@@ -104,7 +104,7 @@ int
 brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
     const void *data, uint32_t len)
 {
-	return brcmf_msgbuf_ioctl(sc, cmd, __DECONST(void *, data), len, NULL);
+	return sc->bus_ops->ioctl(sc, cmd, __DECONST(void *, data), len, NULL);
 }
 
 /*
@@ -114,7 +114,7 @@ int
 brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
     void *data, uint32_t len)
 {
-	return brcmf_msgbuf_ioctl(sc, cmd, data, len, NULL);
+	return sc->bus_ops->ioctl(sc, cmd, data, len, NULL);
 }
 
 /*
@@ -123,7 +123,7 @@ brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
 int
 brcmf_fil_bss_up(struct brcmf_softc *sc)
 {
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_UP, NULL, 0, NULL);
+	return sc->bus_ops->ioctl(sc, BRCMF_C_UP, NULL, 0, NULL);
 }
 
 /*
@@ -132,5 +132,5 @@ brcmf_fil_bss_up(struct brcmf_softc *sc)
 int
 brcmf_fil_bss_down(struct brcmf_softc *sc)
 {
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_DOWN, NULL, 0, NULL);
+	return sc->bus_ops->ioctl(sc, BRCMF_C_DOWN, NULL, 0, NULL);
 }

@@ -159,12 +159,10 @@ brcmf_link_task(void *arg, int pending)
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 
-			/* BCM4350 note: spec uses per-TID per-peer flow
-			 * rings, but one ring suffices for single-STA.
-			 * Must recreate on each assoc to flush stale
-			 * firmware-side state. */
-			brcmf_msgbuf_delete_flowring(sc);
-			brcmf_msgbuf_init_flowring(sc, bssid);
+			if (sc->bus_ops->flowring_delete != NULL)
+				sc->bus_ops->flowring_delete(sc);
+			if (sc->bus_ops->flowring_create != NULL)
+				sc->bus_ops->flowring_create(sc, bssid);
 
 			/* Receive all multicast frames (no filtering) */
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
@@ -685,7 +683,7 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 		return (ENETDOWN);
 	}
 
-	return brcmf_msgbuf_tx(sc, m);
+	return sc->bus_ops->tx(sc, m);
 }
 
 static int
