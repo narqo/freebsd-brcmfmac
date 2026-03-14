@@ -411,15 +411,4 @@ on milestone status and outcomes.
 
 ## Code structure
 
-| Module | Purpose |
-|--------|---------|
-| pcie.c | PCIe bus: BAR mapping, DMA, ISR taskqueue, firmware load |
-| msgbuf.c | msgbuf protocol: ring ops, D2H processing, IOCTL, TX/RX |
-| cfg.c | net80211: VAP lifecycle, attach/detach, link events, transmit |
-| cfg.h | Shared definitions for cfg/scan/security modules |
-| scan.c | Scan: escan requests, result processing, chanspec conversion |
-| security.c | Security: wsec/wpa_auth, key installation, PSK |
-| core.c | Chip core management: enumeration, reset, firmware download |
-| fwil.c | Firmware interface: IOVAR get/set |
-| brcmfmac.h | Main driver header: softc, firmware structs, constants |
-| brcmfmac.zig | EROM parser (pure Zig) |
+See src/

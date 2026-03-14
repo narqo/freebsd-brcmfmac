@@ -45,12 +45,12 @@ call — fragile if the code is refactored.
 
 ## P3-5: EROM scanner worst-case iteration count
 
-The Zig EROM scanner uses `safety` counters of 256 in nested loops.
+The EROM scanner uses `safety` counters of 256 in nested loops.
 If the EROM is corrupt, it spins for up to 65536 backplane reads
 (each going through the BAR0 window register) before returning.
 This runs during attach, so it blocks the boot path.
 
-**File:** `brcmfmac.zig:EromScanner`
+**File:** `core.c:brcmf_erom_get_regaddr`
 
 ---
 

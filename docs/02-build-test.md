@@ -18,7 +18,7 @@ Build happens on a remote FreeBSD host, testing on a separate VM with the target
 
 ```sh
 rsync -avz --exclude='*.ko' --exclude=.git/ --exclude=.jj/ --exclude=.claude/ \
-    --exclude='.zig-*/' --exclude-from=.gitignore --delete \
+    --exclude-from=.gitignore --delete \
     . varankinv@192.168.20.82:src/brcmfmac2/
 ```
 
@@ -81,7 +81,7 @@ kldunload if_brcmfmac
 Sync, build, upload, and load:
 ```sh
 rsync -avz --exclude='*.ko' --exclude=.git/ --exclude=.jj/ --exclude=.claude/ \
-    --exclude='.zig-*/' --exclude-from=.gitignore --delete \
+    --exclude-from=.gitignore --delete \
     . varankinv@192.168.20.82:src/brcmfmac2/ && \
 ssh varankinv@192.168.20.82 'cd src/brcmfmac2 && make clean && make && scp if_brcmfmac.ko root@192.168.200.10:'
 ```

@@ -5,9 +5,7 @@ built into the 2016 MacBook Pro (PCIe device `14e4:43a3`).
 
 ## Project status
 
-This is an experimental project. The module still shows stability problems. As of Feb 2026 I DO NOT recommend using it other than for testing purposes.
-
-Works for WPA2-PSK on 2.4GHz and 5GHz.
+This is an experimental project. As of Feb 2026 I DO NOT recommend using it other than for testing purposes.
 
 ### AI disclosure
 
@@ -31,22 +29,24 @@ none4@pci0:2:0:0:	class=0x028000 rev=0x05 hdr=0x00 vendor=0x14e4 device=0x43a3 s
 
 ## Build
 
-Requires FreeBSD 15 with kernel sources in `/usr/src` and Zig 0.16-dev.
+Requires FreeBSD 15 with kernel sources in `/usr/src`.
 
 ```
+pwd
+/home/varankinv/src/brcmfmac2
 make
 ```
 
 ## Install
 
-Copy the firmware file to `/boot/firmware/`:
+Copy the firmware files to `/boot/firmware/`:
 
 - `brcmfmac4350c2-pcie.bin` (required)
 - `brcmfmac4350c2-pcie.txt` (optional, NVRAM configuration)
 
 These are the standard Linux firmware files from `linux-firmware`.
 
-Copy the built module to `/boot/modules/` and load the module:
+Copy the built `if_brcmfmac.ko` module to `/boot/modules/` and load the module:
 
 ```
 # copy if_brcmfmac.ko to /boot/modules/

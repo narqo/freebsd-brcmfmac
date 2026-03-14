@@ -43,27 +43,16 @@ Copyright notices:
 | `msleep` | `pause_sbt` |
 | `udelay` | `DELAY` |
 
-## C/Zig split rationale
+## C implementation rationale
 
-**Decision**: Use C for kernel interactions, Zig for pure logic only.
+**Decision**: Use C for both kernel interactions and driver logic.
 
 **Rationale**:
 
-### Why not `@cImport` with kernel headers?
+FreeBSD kernel headers and kbuild-style generated interfaces are a natural fit for C.
 
-Zig's `@cImport` doesn't work reliably with FreeBSD kernel headers:
-
-1. **Generated headers not in source tree** - vnode_if.h, device_if.h generated during build
-2. **Implicit function declarations** - panic, printf, vsnprintf used without prototypes
-3. **Complex include order dependencies** - headers assume specific ordering
-4. **Bitfield structs** - Zig demotes bitfield structs to opaque (struct pcpu)
-
-### Current approach
-
-- **C code** (`src/main.c`, `src/pcie.c`): Kernel API calls, PCI operations, firmware loading
-- **Zig code** (`src/brcmfmac.zig`): Pure functions like chip ID parsing, EROM enumeration
-
-Functions exported from Zig use `extern` calling convention and are called from C.
+Historical context: tried building the driver in Zig, and a mix of Zig and C.
+Zig's interoperability with C (Zig 0.16-dev) din't work with kernel linker.
 
 ## Core enumeration approach
 
@@ -126,21 +115,18 @@ Steps:
 
 **Rationale**:
 
-- Zig's allocators (std.heap.*) use TLS internally → linker fails
 - `MALLOC_DEFINE(M_BRCMFMAC, ...)` provides tracking and debugging
 
 ## Logging approach
 
 **Decision**: Use `device_printf` for errors and one-time boot identity
 messages. Use `BRCMF_DBG(sc, ...)` macro for verbose/trace output,
-gated on `sc->debug >= 2`. Avoid Zig `std.log` and `std.debug`.
+gated on `sc->debug >= 2`.
 
 **Rationale**:
 
-- `std.log` and `std.debug` use TLS → linker fails
 - Kernel printf works but needs careful declaration (see AGENTS.md
   for printf optimization issue)
-- `brcmf_dbg()` wrapper function in C for Zig to call
 - Default boot output is minimal: chip ID, firmware version, MAC
   address. EROM enumeration, ring info, buffer posting counts, and
   firmware download trace are suppressed unless `sysctl
@@ -182,26 +168,6 @@ Successfully parsed EROM at `0x1810d000`:
 - Base: `0x18004000`
 - Wrapper: `0x18104000`
 
-## Firmware download init sequence (resolved)
-
-The firmware boot failure was caused by missing initialization steps.
-The working Linux driver does the following before firmware download:
-
-1. **Watchdog reset** - ChipCommon watchdog register write resets the whole chip
-2. **ASPM disable/restore** - around the watchdog reset
-3. **Mailbox interrupt clear** - after chip reset
-4. **set_passive** - `resetcore(arm, val, CPUHALT, CPUHALT)` + `coredisable(d11, ...)`
-5. **Firmware copy** to TCM at ram_base
-6. **NVRAM copy** to end of RAM (overlapping shared RAM address location)
-7. **set_active** - write reset vector (first firmware word) to TCM[0], then `resetcore(arm, CPUHALT, 0, 0)`
-
-Key differences from our original code:
-- Missing watchdog reset entirely
-- Using `ram_base` as reset vector instead of first firmware word
-- Only 8-bit core IDs in EROM parser (need 12-bit DMP part numbers)
-- Missing D11 core disable
-- Missing PCIe core enumeration
-
 ## EROM parsing
 
 **Decision**: Use proper DMP (Dotted Map Protocol) descriptor parsing.
@@ -215,7 +181,7 @@ DMP descriptors use:
 - Explicit address descriptor types for slave ports vs wrapper ports
 - Size type field to distinguish 4K/8K/descriptor-based sizes
 
-## Firmware file selection (resolved)
+## Firmware file selection
 
 Linux uses a revision bitmask table (`BRCMF_FW_ENTRY`) for firmware selection:
 - BCM4350 rev 0-7 (mask `0x000000FF`): `brcmfmac4350c2-pcie.bin`
@@ -361,30 +327,6 @@ managing the 4-way handshake, a WPA association succeeds at L2 but the
 AP deauthenticates after its EAPOL timeout. This pollutes the AP's
 session state and blocks subsequent association attempts.
 
-## Test environment
-
-- **Build host**: 192.168.20.82 (FreeBSD 15, Zig 0.16-dev)
-- **Target**: 192.168.200.10 (SSH via jump host 192.168.20.82)
-- **Hardware**: BCM4350c2 (PCI 0x14e4:0x43a3), firmware v7.35.180.133
-- **AP**: Raspberry Pi (dc:a6:32:5b:98:ad), channel 1, hostapd
-- **AP configs tested**:
-  - "TestAP1": WPA2-PSK CCMP (AKM type 2)
-  - "TestAP": WPA2-PSK-SHA256 CCMP (AKM type 6)
-  - Passphrase: "SuperSecret!Test1"
-- **Build/deploy**: `rsync` to build host → `make` → `scp` to target →
-  `kldunload/kldload`
-- **wpa.conf**: `/tmp/wpa_sha256.conf` on target (current):
-  ```
-  ctrl_interface=/var/run/wpa_supplicant
-  network={
-      ssid="TestAP"
-      psk="SuperSecret!Test1"
-      key_mgmt=WPA-PSK-SHA256
-      proto=RSN
-      pairwise=CCMP
-  }
-  ```
-
 ## D2H ring processing: atomic exclusion
 
 **Decision**: `brcmf_msgbuf_process_d2h` uses an atomic try-lock
@@ -408,104 +350,3 @@ If another context is already processing, the caller returns
 immediately — the active processor will drain all pending work.
 This is safe in callout context (no sleeping) and eliminates
 double-processing of ring entries.
-
-## COM/node lock and firmware ioctls
-
-**Problem**: `sta_newstate` (INIT from RUN) calls
-`ieee80211_sta_leave` → `ieee80211_node_delucastkey` →
-`ieee80211_crypto_delkey` → `brcmf_key_delete`. At this point both
-the COM lock and the node table lock are held. `brcmf_key_delete`
-calls a firmware ioctl which does `tsleep`. WITNESS panics:
-`sleeping thread holds brcmfmac0_com_l` (core.txt.1) or
-`sleeping thread holds brcmfmac0_node_` (core.txt.7).
-
-The call chain:
-```
-ieee80211_newstate_cb           [COM lock held]
-  brcmf_newstate                [drops COM, does fw work, re-acquires]
-    sta_newstate                [COM held]
-      ieee80211_sta_leave
-        ieee80211_node_delucastkey  [acquires node lock]
-          ieee80211_crypto_delkey
-            brcmf_key_delete        [COM + node held → tsleep → panic]
-```
-
-**Fix**: `brcmf_key_set` and `brcmf_key_delete` dynamically check
-and drop both COM and node locks before the firmware ioctl, then
-re-acquire after. Uses `IEEE80211_IS_LOCKED` / `IEEE80211_NODE_IS_LOCKED`
-to handle callers that may or may not hold these locks.
-
-Verified: interface cycling (which triggers `sta_newstate` INIT →
-key delete) no longer panics.
-
-## Firmware liveness and fw_dead flag
-
-**Problem**: Firmware can become unresponsive (ioctl timeouts, BAR0
-reads return 0xffffffff). When this happens during detach, each
-ioctl waits the full 2s timeout, making kldunload hang for tens of
-seconds. If the chip is physically gone (PCIe error), no amount of
-retrying will recover.
-
-**Design**: A `fw_dead` flag in softc. Once set, all firmware
-communication is short-circuited:
-- `brcmf_msgbuf_ioctl` returns `ENXIO` immediately
-- `brcmf_msgbuf_tx` drops packets immediately
-- Flowring create/delete waits bail out
-
-The flag is set by the watchdog liveness check (BAR0 mailbox read
-returns `0xffffffff`, indicating PCIe link failure / dead chip).
-
-Historical note: the older `ioctl_timeouts >= 3` escalation path was
-removed because DFS teardown can produce expected transient timeouts.
-Those timeouts should not permanently mark firmware dead.
-
-The watchdog also wakes any threads sleeping on ioctl or flowring
-completion, so they don't have to wait for their individual timeouts.
-
-## IOCTL serialization mutex
-
-**Problem**: The firmware IOCTL protocol is single-threaded
-(one outstanding request, shared `ioctlbuf`). Multiple kernel
-contexts can call firmware ioctls concurrently: `ic_tq` tasks
-(`brcmf_parent`, `brcmf_link_task`, `brcmf_newstate`), sysctl
-handler (`brcmf_set_pmk`), and `brcmf_key_set`/`brcmf_key_delete`
-(which drop COM+node locks before the ioctl).
-
-**Fix**: `ioctl_mtx` (MTX_DEF) serializes all calls to
-`brcmf_msgbuf_ioctl`. The mutex is held for the entire
-request-response cycle. `msleep` atomically releases it while
-waiting for the firmware response, allowing other threads to
-queue up without corrupting the shared ioctl buffer.
-
-The fwil layer does not access `sc->ioctlbuf` directly. Iovar
-functions assemble name+data in a local stack buffer and pass it
-to `brcmf_msgbuf_ioctl`. Command functions pass the caller's
-buffer. `brcmf_msgbuf_tx_ioctl` copies the buffer into `ioctlbuf`
-under the lock; the response path copies out under the lock. This
-eliminates the race where two threads could write to `ioctlbuf`
-before either acquires the mutex.
-
-**fw_dead threshold**: A single ioctl timeout does not mark the
-firmware dead — transient timeouts occur during firmware state
-transitions (e.g., after DISASSOC). Three consecutive timeouts
-set `fw_dead`, which permanently short-circuits all firmware
-communication. The watchdog callout also sets `fw_dead` on
-BAR0 read failure (PCIe link down).
-
-## D2H ring wraparound bug
-
-**Problem**: The available-entries calculation in D2H completion
-rings only counted entries from `r_ptr` to end-of-buffer when
-`w_ptr < r_ptr` (wraparound case). Entries from 0 to `w_ptr` were
-missed until the next ISR invocation. Under heavy traffic, TX
-completions in the wrapped region were never processed, the TX
-buffer ring filled up, and all TX stalled permanently.
-
-**Fix**: `avail = (ring->depth - ring->r_ptr) + ring->w_ptr` for
-the wraparound case. Applied to all three D2H rings (ctrl, TX, RX).
-
-Additionally, `brcmf_msgbuf_process_d2h` now loops up to 5 times,
-re-checking the RX completion ring w_ptr after each pass. This
-catches completions that arrive during processing, preventing stalls
-when the firmware writes new entries between the initial w_ptr read
-and the interrupt re-enable.
