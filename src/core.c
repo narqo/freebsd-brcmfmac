@@ -39,12 +39,23 @@
 /* BCMA_RESET_CTL bits */
 #define BCMA_RESET_CTL_RESET 0x0001
 
+/* Chip ID fields */
+#define CID_ID_MASK    0x0000ffff
+#define CID_REV_MASK   0x000f0000
+#define CID_REV_SHIFT  16
+#define CID_TYPE_MASK  0xf0000000
+#define CID_TYPE_SHIFT 28
+
+#define SOCI_SB 0
+#define SOCI_AI 1
+
+#define BRCM_CC_4350_CHIP_ID 0x4350
+
 /* Core IDs (12-bit DMP part numbers from EROM) */
-#define BCMA_CORE_CHIPCOMMON 0x800
-#define BCMA_CORE_SOCRAM     0x80e
-#define BCMA_CORE_80211	     0x812
-#define BCMA_CORE_ARM_CR4    0x83e
-#define BCMA_CORE_PCIE2	     0x83c
+#define BCMA_CORE_SOCRAM  0x80e
+#define BCMA_CORE_80211   0x812
+#define BCMA_CORE_ARM_CR4 0x83e
+#define BCMA_CORE_PCIE2   0x83c
 
 /* ChipCommon register offsets */
 #define CC_WATCHDOG 0x80
@@ -56,13 +67,224 @@
 #define BRCMF_PCIE_REG_LINK_STATUS_CTRL	   0xBC
 #define BRCMF_PCIE_LINK_STATUS_CTRL_ASPM_ENAB 3
 
+/* DMP (Dotted Map Protocol) EROM descriptor format */
+#define DMP_DESC_TYPE_MSK      0x0000000f
+#define DMP_DESC_EMPTY         0x00000000
+#define DMP_DESC_VALID         0x00000001
+#define DMP_DESC_COMPONENT     0x00000001
+#define DMP_DESC_MASTER_PORT   0x00000003
+#define DMP_DESC_ADDRESS       0x00000005
+#define DMP_DESC_ADDRSIZE_GT32 0x00000008
+#define DMP_DESC_EOT           0x0000000f
+
+#define DMP_COMP_PARTNUM   0x000fff00
+#define DMP_COMP_PARTNUM_S 8
+
+#define DMP_COMP_REVISION   0xff000000
+#define DMP_COMP_REVISION_S 24
+#define DMP_COMP_NUM_MWRAP  0x0007c000
+#define DMP_COMP_NUM_MWRAP_S 14
+#define DMP_COMP_NUM_SWRAP  0x00f80000
+#define DMP_COMP_NUM_SWRAP_S 19
+
+#define DMP_SLAVE_ADDR_BASE    0xfffff000
+#define DMP_SLAVE_TYPE         0x000000c0
+#define DMP_SLAVE_TYPE_S       6
+#define DMP_SLAVE_TYPE_SLAVE   0
+#define DMP_SLAVE_TYPE_BRIDGE  1
+#define DMP_SLAVE_TYPE_SWRAP   2
+#define DMP_SLAVE_TYPE_MWRAP   3
+#define DMP_SLAVE_SIZE_TYPE    0x00000030
+#define DMP_SLAVE_SIZE_TYPE_S  4
+#define DMP_SLAVE_SIZE_4K      0
+#define DMP_SLAVE_SIZE_8K      1
+#define DMP_SLAVE_SIZE_DESC    3
+
+struct brcmf_erom_scanner {
+	uint32_t erom_addr;
+	brcmf_erom_read_fn read_fn;
+	void *ctx;
+};
+
+static uint32_t
+brcmf_erom_get_desc(struct brcmf_erom_scanner *s)
+{
+	uint32_t val;
+
+	val = s->read_fn(s->ctx, s->erom_addr);
+	s->erom_addr += 4;
+	return (val);
+}
+
+static void
+brcmf_erom_backup(struct brcmf_erom_scanner *s)
+{
+	s->erom_addr -= 4;
+}
+
+static void
+brcmf_erom_get_regaddr(struct brcmf_erom_scanner *s, uint32_t *base,
+    uint32_t *wrap)
+{
+	uint32_t regbase, wrapbase, wraptype, val, desc_type;
+	uint32_t stype, sztype;
+	int safety, inner_safety;
+
+	regbase = 0;
+	wrapbase = 0;
+
+	val = brcmf_erom_get_desc(s);
+	desc_type = val & DMP_DESC_TYPE_MSK;
+
+	if (desc_type == DMP_DESC_MASTER_PORT)
+		wraptype = DMP_SLAVE_TYPE_MWRAP;
+	else if ((desc_type & ~DMP_DESC_ADDRSIZE_GT32) == DMP_DESC_ADDRESS) {
+		brcmf_erom_backup(s);
+		wraptype = DMP_SLAVE_TYPE_SWRAP;
+	} else {
+		brcmf_erom_backup(s);
+		*base = 0;
+		*wrap = 0;
+		return;
+	}
+
+	for (safety = 0; safety < 256; safety++) {
+		for (inner_safety = 0; inner_safety < 256; inner_safety++) {
+			val = brcmf_erom_get_desc(s);
+			desc_type = val & DMP_DESC_TYPE_MSK;
+			if (desc_type == DMP_DESC_EOT) {
+				brcmf_erom_backup(s);
+				*base = regbase;
+				*wrap = wrapbase;
+				return;
+			}
+			if ((desc_type & ~DMP_DESC_ADDRSIZE_GT32) == DMP_DESC_ADDRESS)
+				break;
+			if (desc_type == DMP_DESC_COMPONENT) {
+				brcmf_erom_backup(s);
+				*base = regbase;
+				*wrap = wrapbase;
+				return;
+			}
+		}
+
+		if ((val & DMP_DESC_ADDRSIZE_GT32) != 0)
+			(void)brcmf_erom_get_desc(s);
+
+		sztype = (val & DMP_SLAVE_SIZE_TYPE) >> DMP_SLAVE_SIZE_TYPE_S;
+		if (sztype == DMP_SLAVE_SIZE_DESC) {
+			uint32_t szdesc;
+
+			szdesc = brcmf_erom_get_desc(s);
+			if ((szdesc & DMP_DESC_ADDRSIZE_GT32) != 0)
+				(void)brcmf_erom_get_desc(s);
+		}
+
+		if (sztype != DMP_SLAVE_SIZE_4K && sztype != DMP_SLAVE_SIZE_8K)
+			continue;
+
+		stype = (val & DMP_SLAVE_TYPE) >> DMP_SLAVE_TYPE_S;
+		if (regbase == 0 && stype == DMP_SLAVE_TYPE_SLAVE)
+			regbase = val & DMP_SLAVE_ADDR_BASE;
+		if (wrapbase == 0 && stype == wraptype)
+			wrapbase = val & DMP_SLAVE_ADDR_BASE;
+
+		if (regbase != 0 && wrapbase != 0)
+			break;
+	}
+
+	*base = regbase;
+	*wrap = wrapbase;
+}
+
 /*
- * EROM read callback for Zig core enumeration.
+ * EROM read callback for core enumeration.
  */
 static uint32_t
 brcmf_erom_read(void *ctx, uint32_t offset)
 {
 	return brcmf_bp_read32(ctx, offset);
+}
+
+struct brcmf_coreinfo
+brcmf_find_core(uint32_t erom_base, brcmf_erom_read_fn read_fn, void *ctx,
+    uint32_t target_coreid)
+{
+	struct brcmf_erom_scanner s;
+	struct brcmf_coreinfo core;
+	uint32_t desc_type, val, id, rev, nmw, nsw, base, wrap;
+
+	s.erom_addr = erom_base;
+	s.read_fn = read_fn;
+	s.ctx = ctx;
+
+	core.id = 0;
+	core.rev = 0;
+	core.base = 0;
+	core.wrapbase = 0;
+
+	desc_type = 0;
+	while (desc_type != DMP_DESC_EOT) {
+		val = brcmf_erom_get_desc(&s);
+		if ((val & DMP_DESC_VALID) == 0)
+			continue;
+
+		desc_type = val & DMP_DESC_TYPE_MSK;
+		if (desc_type == DMP_DESC_EMPTY || desc_type == DMP_DESC_EOT)
+			continue;
+		if (desc_type != DMP_DESC_COMPONENT)
+			continue;
+
+		id = (val & DMP_COMP_PARTNUM) >> DMP_COMP_PARTNUM_S;
+
+		val = brcmf_erom_get_desc(&s);
+		rev = (val & DMP_COMP_REVISION) >> DMP_COMP_REVISION_S;
+		nmw = (val & DMP_COMP_NUM_MWRAP) >> DMP_COMP_NUM_MWRAP_S;
+		nsw = (val & DMP_COMP_NUM_SWRAP) >> DMP_COMP_NUM_SWRAP_S;
+		if (nmw + nsw == 0)
+			continue;
+
+		brcmf_erom_get_regaddr(&s, &base, &wrap);
+		if (id == target_coreid) {
+			core.id = id;
+			core.rev = rev;
+			core.base = base;
+			core.wrapbase = wrap;
+			return (core);
+		}
+	}
+
+	return (core);
+}
+
+struct brcmf_chipinfo
+brcmf_parse_chipid(uint32_t regdata)
+{
+	struct brcmf_chipinfo ci;
+
+	ci.chip = regdata & CID_ID_MASK;
+	ci.chiprev = (regdata & CID_REV_MASK) >> CID_REV_SHIFT;
+	ci.socitype = (regdata & CID_TYPE_MASK) >> CID_TYPE_SHIFT;
+	return (ci);
+}
+
+bool
+brcmf_chip_supported(uint32_t chip)
+{
+	return (chip == BRCM_CC_4350_CHIP_ID);
+}
+
+const char *
+brcmf_socitype_name(uint32_t socitype)
+{
+	switch (socitype) {
+	case SOCI_SB:
+		return ("SB");
+	case SOCI_AI:
+		return ("AXI");
+	default:
+		return ("unknown");
+	}
 }
 
 /*

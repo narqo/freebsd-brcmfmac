@@ -348,7 +348,7 @@ void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
 void brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
     uint32_t status, uint16_t flags);
 
-/* Zig functions (brcmfmac.zig) */
+/* core.c - chip parsing and EROM scan helpers */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);
 bool brcmf_chip_supported(uint32_t chip);
 const char *brcmf_socitype_name(uint32_t socitype);
