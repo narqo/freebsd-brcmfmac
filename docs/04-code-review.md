@@ -249,13 +249,12 @@ Added comment: `/* +8: 1 trailing NUL + 3 pad-to-4 + 4 length footer */`
 
 ---
 
-## Spec review (11 Mar 2026)
+## Spec review (13 Mar 2026, updated 14 Mar 2026)
 
-Compared new spec (`spec/`) against implementation. No critical
+Compared spec (`spec/`) against implementation. No critical
 mismatches — driver is architecturally correct. The following are
-minor gaps where the driver deviates from the Linux driver's
-behavior described in the spec. All are non-blocking; the driver
-works end-to-end.
+gaps where the driver deviates from the behavior described in the
+spec. All are non-blocking; the driver works end-to-end.
 
 ### SR-1: Missing `brcmf_c_preinit_dcmds` initialization commands
 
@@ -342,3 +341,139 @@ set explicitly. Not needed for a desktop/VM use case but required
 for laptop power management.
 
 **Severity:** P3
+
+### SR-9: Missing C_DOWN before dongle init configuration
+
+Spec 08-initialization.md says dongle init starts with `C_DOWN`
+to bring the firmware interface down for configuration, then
+`C_SET_INFRA`, country, `C_UP`. Driver never sends `C_DOWN`
+during init — goes straight to `C_UP` in `brcmf_parent`.
+`brcmf_fil_bss_down` exists in fwil.c but is never called.
+
+Works because firmware starts in a receptive state after boot,
+but spec says configuration should be done while firmware is
+down.
+
+**Severity:** P3
+
+### SR-10: IOCTL request DMA buffer oversized
+
+Spec says the IOCTL request payload DMA buffer is
+`BRCMF_TX_IOCTL_MAX_MSG_SIZE = 1518` bytes. Code allocates
+8192 bytes (`BRCMF_MSGBUF_MAX_CTL_PKT_SIZE`) for the shared
+`ioctlbuf`. The same 8192 constant is correctly used for
+response and event buffers. Wastes ~6.5 KB of DMA-coherent
+memory per device. Functionally harmless.
+
+**Severity:** P3
+
+### SR-11: RX data_offset fallback to rx_dataoffset missing
+
+Spec 03-protocol-msgbuf.md says: "Strip `data_offset` bytes
+(or the global `rx_dataoffset` if `data_offset` is zero)."
+Code uses the per-packet `data_offset` directly without
+falling back to `sc->shared.rx_dataoffset` when zero. Works
+in practice because BCM4350 firmware always sets a non-zero
+`data_offset` in RX completions.
+
+**Severity:** P3
+
+### SR-12: Event data not stripped by rx_dataoffset
+
+Spec says event processing should strip `rx_dataoffset` bytes
+before parsing. Code reads the event struct directly from the
+DMA buffer at offset 0, relying on the event frame starting
+at the buffer base. Works because the firmware places the
+event frame at the start of the buffer for BCM4350.
+
+**Severity:** P3
+
+### SR-13: BAR0 window write not verified
+
+Spec 01-bus-pcie.md says: "Read it back to confirm; retry once
+on mismatch." Code does a dummy read after writing the BAR0
+window register but doesn't compare the value or retry on
+mismatch. A window programming failure would silently access
+the wrong core's registers.
+
+**Severity:** P2
+
+### SR-14: Core disable skips REJECT step
+
+Spec 10-chip-specifics.md says core disable should write
+`REJECT | RESET`, wait for `REJECT` ack, then write `RESET`
+alone. Code writes `RESET` directly without the `REJECT` step.
+Works for BCM4350 CR4 cores in practice. A proper REJECT
+handshake would be needed for cores with outstanding
+transactions.
+
+**Severity:** P3
+
+### SR-15: No feature detection
+
+Spec 07-cfg80211-operations.md and 08-initialization.md
+describe querying `cap` iovar and probing IOVARs (`sup_wpa`,
+`mfp`, `scan_ver`, etc.) to detect firmware capabilities.
+Driver hardcodes all capability assumptions (no firmware
+supplicant, D11AC chanspec, no MFP, scan v1). Correct for
+BCM4350 v7.35.180.133, but brittle if firmware is updated.
+
+**Severity:** P3
+
+### SR-16: No band preference in dongle init
+
+Spec 08-initialization.md lists "Set band preference" between
+`SET_INFRA` and `SET_COUNTRY` during dongle init. Code skips
+this. Firmware uses its default band preference, which may
+not match the intended behavior if multiple bands have
+different priority requirements.
+
+**Severity:** P3
+
+### SR-17: C_UP / C_DOWN send unnecessary payload
+
+Spec says these commands take `none` as payload. Code sends
+a 4-byte zero value. Firmware accepts it, but it's technically
+extra data on the wire.
+
+**Severity:** P3
+
+### SR-18: wsec_key struct uses __packed (160 bytes vs spec's 164)
+
+Spec says `brcmf_wsec_key_le` is 164 bytes with natural
+alignment. Code declares it `__packed`, which eliminates
+padding after `rxiv.lo` (u16) and at the struct tail,
+yielding 160 bytes. The 4-byte difference comes from:
+- 2 bytes: padding after `rxiv` substruct (u32+u16 → 8 bytes)
+- 2 bytes: trailing struct alignment to 4 bytes
+
+Firmware accepts the 160-byte variant — key installation works.
+The firmware likely reads only the fields it needs.
+
+**Severity:** P3
+
+### SR-19: Event registration timing
+
+Spec 08-initialization.md says event handler infrastructure is
+attached in `brcmf_attach` (early), and `event_msgs` bitmask
+is pushed during cfg80211 attach. Driver registers events in
+`brcmf_cfg_attach` which runs after firmware boot, ring setup,
+and initial IOCTL exchanges. Events generated by firmware
+between boot and event registration (e.g., IF events) are
+silently dropped because no handler is registered and no
+`event_msgs` mask is set.
+
+**Severity:** P3
+
+### SR-20: DISASSOC (11) event not in spec
+
+Driver handles `BRCMF_E_DISASSOC` (event code 11) in both
+the event mask and the link-down handler. The spec's event
+code table in 06-event-handling.md does not list event 11
+(`DISASSOC`), only `DISASSOC_IND` (12). The spec's link-down
+list also omits plain `DISASSOC`. Either the spec is
+incomplete, or the driver handles an event that firmware
+never actually sends. Harmless either way — handling an
+unused event code is a no-op.
+
+**Severity:** P3 (spec gap, not code bug)

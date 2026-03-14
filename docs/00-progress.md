@@ -347,11 +347,11 @@ nc client stays in half-close, reporting zero throughput. Not a driver bug.
 
 ### Milestone 17: Spec alignment (TODO)
 
-Minor gaps found during spec review (11 Mar 2026). See
+Gaps found during spec review (14 Mar 2026). See
 `docs/04-code-review.md` section "Spec review" for details.
 
 - [ ] SR-1: Add missing init commands (scan times, FAKEFRAG, bcn_timeout, txbf, join_pref)
-- [ ] SR-1: CLM blob download
+- [ ] SR-1: CLM blob and txcap blob download
 - [ ] SR-2: Document MPC=0 as intentional deviation
 - [ ] SR-3: Switch to `"join"` bsscfg iovar for connect path
 - [ ] SR-4: Multi-flow ring support (per-TID per-peer)
@@ -359,6 +359,18 @@ Minor gaps found during spec review (11 Mar 2026). See
 - [ ] SR-6: Fix `brcmf_assoc_params_le` to use flexible array
 - [ ] SR-7: Runtime D11N/D11AC chanspec selection via `BRCMF_C_GET_VERSION`
 - [ ] SR-8: Power management (D3/D0 transitions, deep sleep)
+- [ ] SR-9: Send C_DOWN before dongle init configuration
+- [ ] SR-10: Use separate 1518-byte DMA buffer for IOCTL request payload
+- [ ] SR-11: RX data_offset fallback to global rx_dataoffset when zero
+- [ ] SR-12: Strip rx_dataoffset from event buffer data
+- [ ] SR-13: Verify BAR0 window write and retry on mismatch
+- [ ] SR-14: Add REJECT step to core disable sequence
+- [ ] SR-15: Feature detection via `cap` iovar and IOVAR probes
+- [ ] SR-16: Set band preference during dongle init
+- [ ] SR-17: C_UP/C_DOWN: send no payload (spec says "none")
+- [ ] SR-18: wsec_key struct: use natural alignment (164 bytes) instead of __packed
+- [ ] SR-19: Register event handlers before first FWIL operation
+- [ ] SR-20: Verify whether firmware sends DISASSOC (11) or only DISASSOC_IND (12)
 
 ### Milestone X: Automated testing (TODO)
 
