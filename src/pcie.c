@@ -206,6 +206,22 @@ brcmf_ram_write32(struct brcmf_softc *sc, uint32_t off, uint32_t val)
 }
 
 /*
+ * Program BAR0 window; verify readback, retry once on mismatch.
+ */
+static void
+brcmf_pcie_set_window(struct brcmf_softc *sc, uint32_t window)
+{
+	uint32_t readback;
+
+	pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, window, 4);
+	readback = pci_read_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, 4);
+	if (readback != window) {
+		pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, window, 4);
+		pci_read_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, 4);
+	}
+}
+
+/*
  * Backplane access via BAR0 window.
  */
 uint32_t
@@ -214,8 +230,7 @@ brcmf_bp_read32(struct brcmf_softc *sc, uint32_t addr)
 	uint32_t window = addr & 0xfffff000;
 	uint32_t offset = addr & 0x00000fff;
 
-	pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, window, 4);
-	brcmf_reg_read(sc, 0);
+	brcmf_pcie_set_window(sc, window);
 
 	return (brcmf_reg_read(sc, offset));
 }
@@ -226,8 +241,7 @@ brcmf_bp_write32(struct brcmf_softc *sc, uint32_t addr, uint32_t val)
 	uint32_t window = addr & 0xfffff000;
 	uint32_t offset = addr & 0x00000fff;
 
-	pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, window, 4);
-	brcmf_reg_read(sc, 0);
+	brcmf_pcie_set_window(sc, window);
 
 	brcmf_reg_write(sc, offset, val);
 	brcmf_reg_read(sc, 0);
@@ -239,8 +253,7 @@ brcmf_bp_write32(struct brcmf_softc *sc, uint32_t addr, uint32_t val)
 void
 brcmf_pcie_select_core(struct brcmf_softc *sc, struct brcmf_coreinfo *core)
 {
-	pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, core->base, 4);
-	brcmf_reg_read(sc, 0);
+	brcmf_pcie_set_window(sc, core->base);
 }
 
 /*

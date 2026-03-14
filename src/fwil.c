@@ -123,9 +123,7 @@ brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
 int
 brcmf_fil_bss_up(struct brcmf_softc *sc)
 {
-	uint32_t val = 0;
-
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_UP, &val, sizeof(val), NULL);
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_UP, NULL, 0, NULL);
 }
 
 /*
@@ -134,7 +132,5 @@ brcmf_fil_bss_up(struct brcmf_softc *sc)
 int
 brcmf_fil_bss_down(struct brcmf_softc *sc)
 {
-	uint32_t val = 0;
-
-	return brcmf_msgbuf_ioctl(sc, BRCMF_C_DOWN, &val, sizeof(val), NULL);
+	return brcmf_msgbuf_ioctl(sc, BRCMF_C_DOWN, NULL, 0, NULL);
 }

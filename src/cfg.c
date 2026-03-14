@@ -252,7 +252,7 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(sr->ssid_len);
 	memcpy(join.ssid_le.SSID, sr->ssid, sr->ssid_len);
-	memcpy(join.params_le.bssid, sr->bssid, 6);
+	memcpy(join.bssid, sr->bssid, 6);
 
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
 	if (error != 0)
@@ -275,7 +275,7 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-	memcpy(join.params_le.bssid, ni->ni_bssid, 6);
+	memcpy(join.bssid, ni->ni_bssid, 6);
 
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
 	if (error != 0)
@@ -750,6 +750,14 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	if (error != 0)
 		return (error);
 
+	/* Bring firmware down for configuration, then back up */
+	brcmf_fil_bss_down(sc);
+	{
+		uint32_t val = htole32(1);
+		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
+		    &val, sizeof(val));
+	}
+
 	/* Set regulatory domain so firmware enables 5GHz channels */
 	{
 		struct {
@@ -767,6 +775,19 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			device_printf(sc->dev,
 			    "failed to set country: %d\n", error);
 	}
+
+	brcmf_fil_bss_up(sc);
+
+	/* SR-1: init commands matching spec dongle init sequence */
+	brcmf_fil_cmd_data_set(sc, 86 /* BRCMF_C_SET_PM */,
+	    &(uint32_t){htole32(0)}, sizeof(uint32_t));
+	brcmf_fil_cmd_data_set(sc, 185 /* C_SET_SCAN_CHANNEL_TIME */,
+	    &(uint32_t){htole32(40)}, sizeof(uint32_t));
+	brcmf_fil_cmd_data_set(sc, 187 /* C_SET_SCAN_UNASSOC_TIME */,
+	    &(uint32_t){htole32(40)}, sizeof(uint32_t));
+	brcmf_fil_cmd_data_set(sc, 258 /* C_SET_SCAN_PASSIVE_TIME */,
+	    &(uint32_t){htole32(120)}, sizeof(uint32_t));
+	brcmf_fil_iovar_int_set(sc, "bcn_timeout", 4);
 
 	brcmf_setup_events(sc);
 

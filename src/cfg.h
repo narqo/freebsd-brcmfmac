@@ -76,7 +76,7 @@ struct brcmf_wsec_pmk_le {
 #define BRCMF_WSEC_MAX_PSK_LEN	64
 #define BRCMF_WSEC_PASSPHRASE	(1 << 0)
 
-/* wsec_key structure */
+/* wsec_key structure — natural alignment, 164 bytes on wire */
 struct brcmf_wsec_key {
 	uint32_t index;
 	uint32_t len;
@@ -93,7 +93,7 @@ struct brcmf_wsec_key {
 	} rxiv;
 	uint32_t pad_4[2];
 	uint8_t ea[6];
-} __packed;
+};
 
 /* Event mask */
 #define BRCMF_EVENTING_MASK_LEN	16
@@ -194,12 +194,13 @@ struct brcmf_escan_result_le {
 struct brcmf_assoc_params_le {
 	uint8_t bssid[6];
 	uint32_t chanspec_num;
-	uint16_t chanspec_list[1];
+	uint16_t chanspec_list[];
 } __packed;
 
 struct brcmf_join_params {
 	struct brcmf_ssid_le ssid_le;
-	struct brcmf_assoc_params_le params_le;
+	uint8_t bssid[6];
+	uint32_t chanspec_num;
 } __packed;
 
 /* scan.c */

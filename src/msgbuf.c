@@ -631,6 +631,8 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 		pktid = le32toh(rx->msg.request_id);
 		data_len = le16toh(rx->data_len);
 		data_offset = le16toh(rx->data_offset);
+		if (data_offset == 0)
+			data_offset = sc->shared.rx_dataoffset;
 		flags = le16toh(rx->flags);
 
 		sc->rx_complete_count++;

@@ -256,24 +256,19 @@ mismatches — driver is architecturally correct. The following are
 gaps where the driver deviates from the behavior described in the
 spec. All are non-blocking; the driver works end-to-end.
 
-### SR-1: Missing `brcmf_c_preinit_dcmds` initialization commands
+### SR-1: Missing `brcmf_c_preinit_dcmds` initialization commands — PARTIAL
 
-The spec lists several init commands sent in `brcmf_c_preinit_dcmds()`
-and `brcmf_config_dongle()` that the driver skips:
-
+Added to `brcmf_cfg_attach` dongle init:
 - `BRCMF_C_SET_SCAN_CHANNEL_TIME` (cmd 185, 40ms)
 - `BRCMF_C_SET_SCAN_UNASSOC_TIME` (cmd 187, 40ms)
 - `BRCMF_C_SET_SCAN_PASSIVE_TIME` (cmd 258, 120ms)
-- `BRCMF_C_SET_FAKEFRAG` (cmd 219, val 1) — frameburst
-- `bcn_timeout` iovar
-- `join_pref` iovar (RSSI-based join preference)
-- `txbf` iovar (TX beamforming)
-- CLM blob download
+- `bcn_timeout` iovar (4)
 
-Firmware defaults apply. `FAKEFRAG` and `txbf` could improve
-throughput. `bcn_timeout` could improve link-loss detection speed.
-CLM blob would enable proper regulatory enforcement (currently
-using `country DE` + `SKU_DEBUG`).
+Deferred (low value for current target):
+- `BRCMF_C_SET_FAKEFRAG` — frameburst, throughput optimization
+- `join_pref` iovar — RSSI-based join preference
+- `txbf` iovar — TX beamforming
+- CLM blob download — needs chunked download impl
 
 **Severity:** P3
 
@@ -316,11 +311,11 @@ would be delivered out of order.
 
 **Severity:** P3
 
-### SR-6: `brcmf_assoc_params_le` has fixed `chanspec_list[1]`
+### SR-6: `brcmf_assoc_params_le` has fixed `chanspec_list[1]` — FIXED
 
-Defined with `chanspec_list[1]` instead of a flexible array. Sends
-2 extra zero bytes in `BRCMF_C_SET_SSID` when `chanspec_num=0`.
-Firmware ignores the extra bytes. Minor struct sizing waste.
+Changed `chanspec_list[1]` to `chanspec_list[]` (flexible array).
+Inlined BSSID and chanspec_num fields directly into
+`brcmf_join_params` since it never passes chanspec data.
 
 **Severity:** P3
 
@@ -342,39 +337,27 @@ for laptop power management.
 
 **Severity:** P3
 
-### SR-9: Missing C_DOWN before dongle init configuration
+### SR-9: Missing C_DOWN before dongle init configuration — FIXED
 
-Spec 08-initialization.md says dongle init starts with `C_DOWN`
-to bring the firmware interface down for configuration, then
-`C_SET_INFRA`, country, `C_UP`. Driver never sends `C_DOWN`
-during init — goes straight to `C_UP` in `brcmf_parent`.
-`brcmf_fil_bss_down` exists in fwil.c but is never called.
-
-Works because firmware starts in a receptive state after boot,
-but spec says configuration should be done while firmware is
-down.
+Added `C_DOWN` → `SET_INFRA=1` before country setup, then `C_UP`
+after country, in `brcmf_cfg_attach`. Matches spec dongle init
+sequence.
 
 **Severity:** P3
 
-### SR-10: IOCTL request DMA buffer oversized
+### SR-10: IOCTL request DMA buffer oversized — DEFERRED
 
 Spec says the IOCTL request payload DMA buffer is
 `BRCMF_TX_IOCTL_MAX_MSG_SIZE = 1518` bytes. Code allocates
 8192 bytes (`BRCMF_MSGBUF_MAX_CTL_PKT_SIZE`) for the shared
-`ioctlbuf`. The same 8192 constant is correctly used for
-response and event buffers. Wastes ~6.5 KB of DMA-coherent
-memory per device. Functionally harmless.
+`ioctlbuf`. Wastes ~6.5 KB of DMA-coherent memory.
 
 **Severity:** P3
 
-### SR-11: RX data_offset fallback to rx_dataoffset missing
+### SR-11: RX data_offset fallback to rx_dataoffset missing — FIXED
 
-Spec 03-protocol-msgbuf.md says: "Strip `data_offset` bytes
-(or the global `rx_dataoffset` if `data_offset` is zero)."
-Code uses the per-packet `data_offset` directly without
-falling back to `sc->shared.rx_dataoffset` when zero. Works
-in practice because BCM4350 firmware always sets a non-zero
-`data_offset` in RX completions.
+Added fallback: if per-packet `data_offset` is zero, use
+`sc->shared.rx_dataoffset` from shared RAM.
 
 **Severity:** P3
 
@@ -388,13 +371,12 @@ event frame at the start of the buffer for BCM4350.
 
 **Severity:** P3
 
-### SR-13: BAR0 window write not verified
+### SR-13: BAR0 window write not verified — FIXED
 
-Spec 01-bus-pcie.md says: "Read it back to confirm; retry once
-on mismatch." Code does a dummy read after writing the BAR0
-window register but doesn't compare the value or retry on
-mismatch. A window programming failure would silently access
-the wrong core's registers.
+Added `brcmf_pcie_set_window` helper that reads back the PCI
+config register after write and retries once on mismatch.
+Used by `brcmf_bp_read32`, `brcmf_bp_write32`, and
+`brcmf_pcie_select_core`.
 
 **Severity:** P2
 
@@ -430,25 +412,17 @@ different priority requirements.
 
 **Severity:** P3
 
-### SR-17: C_UP / C_DOWN send unnecessary payload
+### SR-17: C_UP / C_DOWN send unnecessary payload — FIXED
 
-Spec says these commands take `none` as payload. Code sends
-a 4-byte zero value. Firmware accepts it, but it's technically
-extra data on the wire.
+Changed `brcmf_fil_bss_up` and `brcmf_fil_bss_down` to send
+NULL/0 payload.
 
 **Severity:** P3
 
-### SR-18: wsec_key struct uses __packed (160 bytes vs spec's 164)
+### SR-18: wsec_key struct uses __packed (160 bytes vs spec's 164) — FIXED
 
-Spec says `brcmf_wsec_key_le` is 164 bytes with natural
-alignment. Code declares it `__packed`, which eliminates
-padding after `rxiv.lo` (u16) and at the struct tail,
-yielding 160 bytes. The 4-byte difference comes from:
-- 2 bytes: padding after `rxiv` substruct (u32+u16 → 8 bytes)
-- 2 bytes: trailing struct alignment to 4 bytes
-
-Firmware accepts the 160-byte variant — key installation works.
-The firmware likely reads only the fields it needs.
+Removed `__packed` from `brcmf_wsec_key`. Natural alignment
+matches spec's 164-byte layout.
 
 **Severity:** P3
 
@@ -465,15 +439,12 @@ silently dropped because no handler is registered and no
 
 **Severity:** P3
 
-### SR-20: DISASSOC (11) event not in spec
+### SR-20: DISASSOC (11) event not in spec — VERIFIED
 
-Driver handles `BRCMF_E_DISASSOC` (event code 11) in both
-the event mask and the link-down handler. The spec's event
-code table in 06-event-handling.md does not list event 11
-(`DISASSOC`), only `DISASSOC_IND` (12). The spec's link-down
-list also omits plain `DISASSOC`. Either the spec is
-incomplete, or the driver handles an event that firmware
-never actually sends. Harmless either way — handling an
-unused event code is a no-op.
+Driver registers handler for event 11 (DISASSOC) and requests
+it via `event_msgs`. The spec only lists DISASSOC_IND (12).
+Tested: event 11 is registered in the firmware event mask.
+If firmware never sends it, the handler is a no-op. Keeping
+it is more defensive than removing it.
 
 **Severity:** P3 (spec gap, not code bug)

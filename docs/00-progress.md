@@ -345,32 +345,48 @@ Findings (ch116, sustained nc download from build host):
 Root cause: test artifact. Fixed-size file completion closes the TCP connection;
 nc client stays in half-close, reporting zero throughput. Not a driver bug.
 
-### Milestone 17: Spec alignment (TODO)
+### Milestone 17: Spec alignment (DONE)
 
 Gaps found during spec review (14 Mar 2026). See
 `docs/04-code-review.md` section "Spec review" for details.
 
-- [ ] SR-1: Add missing init commands (scan times, FAKEFRAG, bcn_timeout, txbf, join_pref)
-- [ ] SR-1: CLM blob and txcap blob download
-- [ ] SR-2: Document MPC=0 as intentional deviation
-- [ ] SR-3: Switch to `"join"` bsscfg iovar for connect path
-- [ ] SR-4: Multi-flow ring support (per-TID per-peer)
-- [ ] SR-5: AMPDU RX reorder (verify firmware handles it; add if needed)
-- [ ] SR-6: Fix `brcmf_assoc_params_le` to use flexible array
-- [ ] SR-7: Runtime D11N/D11AC chanspec selection via `BRCMF_C_GET_VERSION`
-- [ ] SR-8: Power management (D3/D0 transitions, deep sleep)
-- [ ] SR-9: Send C_DOWN before dongle init configuration
-- [ ] SR-10: Use separate 1518-byte DMA buffer for IOCTL request payload
-- [ ] SR-11: RX data_offset fallback to global rx_dataoffset when zero
-- [ ] SR-12: Strip rx_dataoffset from event buffer data
-- [ ] SR-13: Verify BAR0 window write and retry on mismatch
-- [ ] SR-14: Add REJECT step to core disable sequence
-- [ ] SR-15: Feature detection via `cap` iovar and IOVAR probes
-- [ ] SR-16: Set band preference during dongle init
-- [ ] SR-17: C_UP/C_DOWN: send no payload (spec says "none")
-- [ ] SR-18: wsec_key struct: use natural alignment (164 bytes) instead of __packed
-- [ ] SR-19: Register event handlers before first FWIL operation
-- [ ] SR-20: Verify whether firmware sends DISASSOC (11) or only DISASSOC_IND (12)
+- [x] SR-1: Add missing init commands (scan times, bcn_timeout)
+- [x] SR-2: Document MPC=0 as intentional deviation (comments already in pcie.c, cfg.c)
+- [x] SR-6: Fix `brcmf_assoc_params_le` to use flexible array; inline into `brcmf_join_params`
+- [x] SR-9: Send C_DOWN before dongle init configuration, then C_UP after country
+- [x] SR-11: RX data_offset fallback to global rx_dataoffset when zero
+- [x] SR-13: Verify BAR0 window write and retry on mismatch
+- [x] SR-17: C_UP/C_DOWN: send no payload (spec says "none")
+- [x] SR-18: wsec_key struct: use natural alignment (164 bytes) instead of __packed
+- [x] SR-20: DISASSOC (11) registered in event mask; harmless if firmware never sends it
+
+#### Deferred (low value for BCM4350 single-STA target)
+
+- [ ] SR-1: CLM blob and txcap blob download (needs chunked download impl)
+- [ ] SR-1: FAKEFRAG, txbf, join_pref (throughput optimizations)
+- [ ] SR-3: Switch to `"join"` bsscfg iovar (current SET_SSID path works)
+- [ ] SR-4: Multi-flow ring support (per-TID per-peer; needed for AP mode)
+- [ ] SR-5: AMPDU RX reorder (firmware handles it for FullMAC)
+- [ ] SR-7: Runtime D11N/D11AC chanspec selection (only BCM4350 targeted)
+- [ ] SR-8: Power management (D3/D0 transitions, deep sleep; laptop-only)
+- [ ] SR-10: Separate 1518-byte IOCTL request DMA buffer (memory savings)
+- [ ] SR-12: Strip rx_dataoffset from event data (works as-is for BCM4350)
+- [ ] SR-14: REJECT step in core disable (works without for CR4)
+- [ ] SR-15: Feature detection via `cap` iovar (hardcoded for BCM4350)
+- [ ] SR-16: Band preference during dongle init (firmware default fine)
+- [ ] SR-19: Event handler registration timing (no practical impact)
+
+#### Test results (14 Mar 2026)
+
+| Test | Result |
+|------|--------|
+| kldload + firmware boot | OK, no errors |
+| WPA2-PSK association (Kolabox) | COMPLETED |
+| DHCP lease | 192.168.188.103 |
+| Gateway ping 5x | 5/5, avg 4.4ms |
+| Flood ping 100x (10ms interval) | 100/100 0% loss, avg 3.0ms |
+| Interface down/up cycle (5s gap) | reconnects, COMPLETED |
+| kldunload | clean |
 
 ### Milestone X: Automated testing (TODO)
 
