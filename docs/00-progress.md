@@ -360,21 +360,29 @@ Gaps found during spec review (14 Mar 2026). See
 - [x] SR-18: wsec_key struct: use natural alignment (164 bytes) instead of __packed
 - [x] SR-20: DISASSOC (11) registered in event mask; harmless if firmware never sends it
 
-#### Deferred (low value for BCM4350 single-STA target)
+#### Additional items resolved
 
-- [ ] SR-1: CLM blob and txcap blob download (needs chunked download impl)
-- [ ] SR-1: FAKEFRAG, txbf, join_pref (throughput optimizations)
-- [ ] SR-3: Switch to `"join"` bsscfg iovar (current SET_SSID path works)
+- [x] SR-1: FAKEFRAG, join_pref added to dongle init
+- [x] SR-3: "join" bsscfg iovar tested — firmware v7.35.180.133 does not
+  support it (silently succeeds but no association). Keeping SET_SSID.
+- [x] SR-7: Runtime D11N/D11AC chanspec via C_GET_VERSION; both encode/decode
+  paths implemented
+- [x] SR-12: Event buffer data offset by rx_dataoffset before parsing
+- [ ] SR-14: Core disable REJECT handshake (requires slave wrapper port registers)
+- [x] SR-15: Feature detection via `cap` iovar; probes `sup_wpa` and `mfp`
+- [x] SR-16: Roam trigger (-75 dBm) and roam delta (20 dB) set during init
+- [x] SR-19: event_msgs pushed to firmware before init commands (after C_UP)
+
+- [x] SR-10: Split IOCTL buffer: 1518-byte DMA for request, 8192-byte malloc
+  for response staging
+
+#### Remaining deferred
+
+- [ ] SR-1: CLM blob and txcap blob download (chunked download impl)
+- [ ] SR-1: txbf iovar (TX beamforming; firmware may not support)
 - [ ] SR-4: Multi-flow ring support (per-TID per-peer; needed for AP mode)
 - [ ] SR-5: AMPDU RX reorder (firmware handles it for FullMAC)
-- [ ] SR-7: Runtime D11N/D11AC chanspec selection (only BCM4350 targeted)
 - [ ] SR-8: Power management (D3/D0 transitions, deep sleep; laptop-only)
-- [ ] SR-10: Separate 1518-byte IOCTL request DMA buffer (memory savings)
-- [ ] SR-12: Strip rx_dataoffset from event data (works as-is for BCM4350)
-- [ ] SR-14: REJECT step in core disable (works without for CR4)
-- [ ] SR-15: Feature detection via `cap` iovar (hardcoded for BCM4350)
-- [ ] SR-16: Band preference during dongle init (firmware default fine)
-- [ ] SR-19: Event handler registration timing (no practical impact)
 
 #### Test results (14 Mar 2026)
 
@@ -383,8 +391,8 @@ Gaps found during spec review (14 Mar 2026). See
 | kldload + firmware boot | OK, no errors |
 | WPA2-PSK association (Kolabox) | COMPLETED |
 | DHCP lease | 192.168.188.103 |
-| Gateway ping 5x | 5/5, avg 4.4ms |
-| Flood ping 100x (10ms interval) | 100/100 0% loss, avg 3.0ms |
+| Gateway ping 5x | 5/5, avg 4.6ms |
+| Flood ping 100x (10ms interval) | 100/100 0% loss, avg 2.7ms |
 | Interface down/up cycle (5s gap) | reconnects, COMPLETED |
 | kldunload | clean |
 

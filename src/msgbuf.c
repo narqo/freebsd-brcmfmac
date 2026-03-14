@@ -32,6 +32,7 @@
 
 /* Buffer sizes */
 #define BRCMF_MSGBUF_MAX_CTL_PKT_SIZE	   8192
+#define BRCMF_TX_IOCTL_MAX_MSG_SIZE	   1518 /* ETH_FRAME_LEN + ETH_FCS_LEN */
 #define BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST 8
 #define BRCMF_MSGBUF_MAX_EVENTBUF_POST	   8
 #define BRCMF_MSGBUF_MAX_PKT_SIZE	   2048
@@ -366,7 +367,12 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	/* Sync DMA before reading */
 	bus_dmamap_sync(cb->dma_tag, cb->dma_map, BUS_DMASYNC_POSTREAD);
 
-	event = cb->buf;
+	if (sc->shared.rx_dataoffset + sizeof(*event) >
+	    BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
+		goto repost;
+
+	event = (struct brcmf_event *)((uint8_t *)cb->buf +
+	    sc->shared.rx_dataoffset);
 
 	if (memcmp(event->oui, BRCM_OUI, 3) != 0) {
 		device_printf(sc->dev, "event with invalid OUI %02x:%02x:%02x\n",
@@ -389,7 +395,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 		break;
 	case BRCMF_E_ESCAN_RESULT:
 		if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))
-			brcmf_escan_result(sc, (uint8_t *)cb->buf + sizeof(*event), datalen);
+			brcmf_escan_result(sc, (uint8_t *)event + sizeof(*event), datalen);
 		break;
 	case BRCMF_E_IF:
 		break;
@@ -443,7 +449,7 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 				int idx = pktid - 0x10000;
 				if (resp_len > 0 &&
 				    resp_len <= BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
-					memcpy(sc->ioctlbuf,
+					memcpy(sc->ioctl_respbuf,
 					    sc->ioctlresp_buf[idx].buf, resp_len);
 				/* Re-post the IOCTL response buffer */
 				brcmf_msgbuf_post_ctrlbuf(sc,
@@ -919,8 +925,8 @@ brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	struct msgbuf_ioctl_req_hdr *req;
 	uint32_t buflen;
 
-	if (len > BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
-		len = BRCMF_MSGBUF_MAX_CTL_PKT_SIZE;
+	if (len > BRCMF_TX_IOCTL_MAX_MSG_SIZE)
+		len = BRCMF_TX_IOCTL_MAX_MSG_SIZE;
 
 	ring = sc->commonrings[BRCMF_H2D_MSGRING_CONTROL_SUBMIT];
 	req = brcmf_msgbuf_ring_reserve(sc, ring);
@@ -929,7 +935,7 @@ brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 	buflen = len;
 	if (buf != NULL && len > 0)
-		memcpy(sc->ioctlbuf, buf, len);
+		memcpy(sc->ioctl_reqbuf, buf, len);
 	else
 		buflen = 0;
 
@@ -941,8 +947,8 @@ brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	req->trans_id = htole16(sc->ioctl_trans_id++);
 	req->input_buf_len = htole16(buflen);
 	req->output_buf_len = htole16(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE);
-	req->req_buf_addr.low_addr = htole32((uint32_t)sc->ioctlbuf_dma);
-	req->req_buf_addr.high_addr = htole32((uint32_t)(sc->ioctlbuf_dma >> 32));
+	req->req_buf_addr.low_addr = htole32((uint32_t)sc->ioctl_reqbuf_dma);
+	req->req_buf_addr.high_addr = htole32((uint32_t)(sc->ioctl_reqbuf_dma >> 32));
 
 	sc->ioctl_completed = 0;
 	brcmf_msgbuf_ring_submit(sc, ring);
@@ -1047,7 +1053,7 @@ brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	else if (buf != NULL && sc->ioctl_resp_len > 0) {
 		if (sc->ioctl_resp_len > len)
 			sc->ioctl_resp_len = len;
-		memcpy(buf, sc->ioctlbuf, sc->ioctl_resp_len);
+		memcpy(buf, sc->ioctl_respbuf, sc->ioctl_resp_len);
 	}
 
 	mtx_unlock(&sc->ioctl_mtx);
@@ -1085,26 +1091,47 @@ brcmf_msgbuf_free_ctrlbufs(struct brcmf_softc *sc)
 }
 
 /*
- * Allocate IOCTL buffer.
+ * Allocate IOCTL request DMA buffer and response staging buffer.
  */
 static int
 brcmf_pcie_alloc_ioctlbuf(struct brcmf_softc *sc)
 {
-	return brcmf_alloc_dma_buf(sc->dev, BRCMF_MSGBUF_MAX_CTL_PKT_SIZE,
-	    &sc->ioctlbuf_dma_tag, &sc->ioctlbuf_dma_map,
-	    &sc->ioctlbuf, &sc->ioctlbuf_dma);
+	int error;
+
+	error = brcmf_alloc_dma_buf(sc->dev, BRCMF_TX_IOCTL_MAX_MSG_SIZE,
+	    &sc->ioctl_reqbuf_tag, &sc->ioctl_reqbuf_map,
+	    &sc->ioctl_reqbuf, &sc->ioctl_reqbuf_dma);
+	if (error != 0)
+		return (error);
+
+	sc->ioctl_respbuf = malloc(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE,
+	    M_BRCMFMAC, M_NOWAIT | M_ZERO);
+	if (sc->ioctl_respbuf == NULL) {
+		brcmf_free_dma_buf(sc->ioctl_reqbuf_tag, sc->ioctl_reqbuf_map,
+		    sc->ioctl_reqbuf);
+		sc->ioctl_reqbuf_tag = NULL;
+		sc->ioctl_reqbuf = NULL;
+		return (ENOMEM);
+	}
+
+	return (0);
 }
 
 /*
- * Free IOCTL buffer.
+ * Free IOCTL buffers.
  */
 static void
 brcmf_pcie_free_ioctlbuf(struct brcmf_softc *sc)
 {
-	brcmf_free_dma_buf(sc->ioctlbuf_dma_tag, sc->ioctlbuf_dma_map,
-	    sc->ioctlbuf);
-	sc->ioctlbuf_dma_tag = NULL;
-	sc->ioctlbuf = NULL;
+	brcmf_free_dma_buf(sc->ioctl_reqbuf_tag, sc->ioctl_reqbuf_map,
+	    sc->ioctl_reqbuf);
+	sc->ioctl_reqbuf_tag = NULL;
+	sc->ioctl_reqbuf = NULL;
+
+	if (sc->ioctl_respbuf != NULL) {
+		free(sc->ioctl_respbuf, M_BRCMFMAC);
+		sc->ioctl_respbuf = NULL;
+	}
 }
 
 /* Ring descriptor offsets in TCM */

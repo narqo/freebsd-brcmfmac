@@ -171,11 +171,14 @@ struct brcmf_softc {
 	struct task isr_task;
 	struct taskqueue *isr_tq;
 
-	/* IOCTL buffer */
-	void *ioctlbuf;
-	bus_addr_t ioctlbuf_dma;
-	bus_dma_tag_t ioctlbuf_dma_tag;
-	bus_dmamap_t ioctlbuf_dma_map;
+	/* IOCTL request DMA buffer (firmware reads from this) */
+	void *ioctl_reqbuf;
+	bus_addr_t ioctl_reqbuf_dma;
+	bus_dma_tag_t ioctl_reqbuf_tag;
+	bus_dmamap_t ioctl_reqbuf_map;
+
+	/* IOCTL response staging (regular memory) */
+	void *ioctl_respbuf;
 
 	/* Control response/event buffers */
 	struct brcmf_ctrlbuf *ioctlresp_buf;
@@ -227,6 +230,14 @@ struct brcmf_softc {
 	struct ieee80211com ic;
 	uint8_t macaddr[ETHER_ADDR_LEN];
 	int running;
+	int io_type; /* 1=D11N, 2=D11AC */
+
+	/* Feature flags (detected from firmware) */
+	int feat_sup_wpa;  /* firmware supplicant supported */
+	int feat_mfp;      /* management frame protection */
+	int feat_mbss;     /* multi-BSS */
+	int feat_p2p;      /* P2P */
+	int feat_sae;      /* WPA3-SAE */
 
 	/* Scan state */
 	uint16_t escan_sync_id;

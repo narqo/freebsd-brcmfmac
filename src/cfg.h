@@ -106,21 +106,35 @@ struct brcmf_wsec_key {
 #define DOT11_BSSTYPE_ANY	2
 #define BRCMF_E_STATUS_PARTIAL	8
 
-/* BCM4350 note: spec defines D11N and D11AC chanspec formats,
- * selected at runtime via BRCMF_C_GET_VERSION. BCM4350 always
- * uses D11AC, so only that format is implemented. */
+/* Chanspec io_type values (from C_GET_VERSION) */
+#define BRCMF_IO_TYPE_D11N		1
+#define BRCMF_IO_TYPE_D11AC		2
+
+/* Common */
+#define BRCMF_CHSPEC_CHAN_MASK		0x00ff
+
+/* D11AC chanspec encoding (BCM4350, modern chips) */
 #define BRCMF_CHSPEC_D11AC_SB_MASK	0x0700
 #define BRCMF_CHSPEC_D11AC_SB_SHIFT	8
 #define BRCMF_CHSPEC_D11AC_BW_MASK	0x3800
 #define BRCMF_CHSPEC_D11AC_BW_SHIFT	11
-#define BRCMF_CHSPEC_CHAN_MASK		0x00ff
+#define BRCMF_CHSPEC_D11AC_BW_20	0x1000
+#define BRCMF_CHSPEC_D11AC_BAND_2G	0x0000
+#define BRCMF_CHSPEC_D11AC_BAND_5G	0xc000
 
-/* Legacy chanspec encoding */
-#define BRCMF_CHANSPEC_CHAN_MASK	0x00ff
-#define BRCMF_CHANSPEC_BAND_2G		0x0000
-#define BRCMF_CHANSPEC_BAND_5G		0xc000
-#define BRCMF_CHANSPEC_BW_20		0x1000
-#define BRCMF_CHANSPEC_CTL_SB_NONE	0x0000
+/* D11N chanspec encoding (BCM43455, older chips) */
+#define BRCMF_CHSPEC_D11N_SB_MASK	0x0300
+#define BRCMF_CHSPEC_D11N_SB_SHIFT	8
+#define BRCMF_CHSPEC_D11N_SB_NONE	0x0300
+#define BRCMF_CHSPEC_D11N_SB_LOWER	0x0100
+#define BRCMF_CHSPEC_D11N_SB_UPPER	0x0200
+#define BRCMF_CHSPEC_D11N_BW_MASK	0x0c00
+#define BRCMF_CHSPEC_D11N_BW_SHIFT	10
+#define BRCMF_CHSPEC_D11N_BW_20	0x0800
+#define BRCMF_CHSPEC_D11N_BW_40	0x0c00
+#define BRCMF_CHSPEC_D11N_BAND_MASK	0x3000
+#define BRCMF_CHSPEC_D11N_BAND_5G	0x1000
+#define BRCMF_CHSPEC_D11N_BAND_2G	0x2000
 
 /* Scan structures */
 struct brcmf_ssid_le {
@@ -204,8 +218,10 @@ struct brcmf_join_params {
 } __packed;
 
 /* scan.c */
-int brcmf_chanspec_to_channel(uint16_t chanspec);
-uint16_t brcmf_channel_to_chanspec(int channel);
+int brcmf_chanspec_to_channel(struct brcmf_softc *sc, uint16_t chanspec);
+void brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
+    int *bw, int *sb);
+uint16_t brcmf_channel_to_chanspec(struct brcmf_softc *sc, int channel);
 int brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len);
 void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
 void brcmf_scan_complete_task(void *arg, int pending);

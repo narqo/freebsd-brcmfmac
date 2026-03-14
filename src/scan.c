@@ -25,8 +25,8 @@
 
 #include "cfg.h"
 
-int
-brcmf_chanspec_to_channel(uint16_t chanspec)
+static int
+brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 {
 	int ch = chanspec & BRCMF_CHSPEC_CHAN_MASK;
 	int bw = (chanspec & BRCMF_CHSPEC_D11AC_BW_MASK) >> BRCMF_CHSPEC_D11AC_BW_SHIFT;
@@ -51,19 +51,75 @@ brcmf_chanspec_to_channel(uint16_t chanspec)
 	return ch;
 }
 
+static int
+brcmf_chanspec_to_channel_d11n(uint16_t chanspec)
+{
+	int ch = chanspec & BRCMF_CHSPEC_CHAN_MASK;
+	int bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >> BRCMF_CHSPEC_D11N_BW_SHIFT;
+	int sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >> BRCMF_CHSPEC_D11N_SB_SHIFT;
+
+	if (bw == 3) { /* 40 MHz */
+		if (sb == 1) /* lower */
+			return ch - 2;
+		if (sb == 2) /* upper */
+			return ch + 2;
+	}
+	return ch;
+}
+
+int
+brcmf_chanspec_to_channel(struct brcmf_softc *sc, uint16_t chanspec)
+{
+	if (sc->io_type == BRCMF_IO_TYPE_D11N)
+		return brcmf_chanspec_to_channel_d11n(chanspec);
+	return brcmf_chanspec_to_channel_d11ac(chanspec);
+}
+
+/*
+ * Extract bandwidth and sideband from chanspec (D11AC encoding).
+ * For D11N, returns approximate D11AC-equivalent values.
+ */
+void
+brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
+    int *bw, int *sb)
+{
+	if (sc->io_type == BRCMF_IO_TYPE_D11N) {
+		int n_bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >>
+		    BRCMF_CHSPEC_D11N_BW_SHIFT;
+		int n_sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >>
+		    BRCMF_CHSPEC_D11N_SB_SHIFT;
+		/* Map D11N bw values to D11AC equivalents */
+		*bw = (n_bw == 3) ? 3 : 2; /* 40MHz → 3, else 20MHz → 2 */
+		*sb = (n_sb == 2) ? 1 : 0; /* upper → 1, lower/none → 0 */
+	} else {
+		*bw = (chanspec & BRCMF_CHSPEC_D11AC_BW_MASK) >>
+		    BRCMF_CHSPEC_D11AC_BW_SHIFT;
+		*sb = (chanspec & BRCMF_CHSPEC_D11AC_SB_MASK) >>
+		    BRCMF_CHSPEC_D11AC_SB_SHIFT;
+	}
+}
+
 uint16_t
-brcmf_channel_to_chanspec(int channel)
+brcmf_channel_to_chanspec(struct brcmf_softc *sc, int channel)
 {
 	uint16_t chanspec;
 
-	chanspec = channel & BRCMF_CHANSPEC_CHAN_MASK;
-	chanspec |= BRCMF_CHANSPEC_BW_20;
-	chanspec |= BRCMF_CHANSPEC_CTL_SB_NONE;
+	chanspec = channel & BRCMF_CHSPEC_CHAN_MASK;
 
-	if (channel <= 14)
-		chanspec |= BRCMF_CHANSPEC_BAND_2G;
-	else
-		chanspec |= BRCMF_CHANSPEC_BAND_5G;
+	if (sc->io_type == BRCMF_IO_TYPE_D11N) {
+		chanspec |= BRCMF_CHSPEC_D11N_BW_20;
+		chanspec |= BRCMF_CHSPEC_D11N_SB_NONE;
+		if (channel <= 14)
+			chanspec |= BRCMF_CHSPEC_D11N_BAND_2G;
+		else
+			chanspec |= BRCMF_CHSPEC_D11N_BAND_5G;
+	} else {
+		chanspec |= BRCMF_CHSPEC_D11AC_BW_20;
+		if (channel <= 14)
+			chanspec |= BRCMF_CHSPEC_D11AC_BAND_2G;
+		else
+			chanspec |= BRCMF_CHSPEC_D11AC_BAND_5G;
+	}
 
 	return htole16(chanspec);
 }
@@ -185,7 +241,7 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 			ie_len = bi_len - ie_off;
 		}
 
-		chan = brcmf_chanspec_to_channel(chanspec);
+		chan = brcmf_chanspec_to_channel(sc, chanspec);
 
 		if (sc->scan_nresults < BRCMF_SCAN_RESULTS_MAX) {
 			int k, dup = -1;

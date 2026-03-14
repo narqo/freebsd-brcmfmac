@@ -137,6 +137,12 @@ brcmf_core_in_reset(struct brcmf_softc *sc, struct brcmf_coreinfo *core)
 
 /*
  * Disable a core (put into reset).
+ *
+ * A full reject handshake (spec 10-chip-specifics) would require
+ * writing REJECT to the slave wrapper port and polling its status
+ * register — registers not mapped in this driver. The simple
+ * reset-without-reject works for CR4 cores during firmware download
+ * because the ARM is halted and no transactions are in flight.
  */
 static void
 brcmf_core_disable(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
@@ -148,17 +154,14 @@ brcmf_core_disable(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 	if (brcmf_core_in_reset(sc, core))
 		goto in_reset_configure;
 
-	/* Configure with prereset flags */
 	brcmf_bp_write32(sc, core->wrapbase + BCMA_IOCTL,
 	    prereset | BCMA_IOCTL_FGC | BCMA_IOCTL_CLK);
 	brcmf_bp_read32(sc, core->wrapbase + BCMA_IOCTL);
 
-	/* Put into reset */
 	brcmf_bp_write32(sc, core->wrapbase + BCMA_RESET_CTL,
 	    BCMA_RESET_CTL_RESET);
 	DELAY(20);
 
-	/* Wait for reset to take */
 	for (i = 0; i < 300; i++) {
 		val = brcmf_bp_read32(sc, core->wrapbase + BCMA_RESET_CTL);
 		if (val == BCMA_RESET_CTL_RESET)
@@ -167,7 +170,6 @@ brcmf_core_disable(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 	}
 
 in_reset_configure:
-	/* In-reset configure with reset flags */
 	brcmf_bp_write32(sc, core->wrapbase + BCMA_IOCTL,
 	    reset | BCMA_IOCTL_FGC | BCMA_IOCTL_CLK);
 	brcmf_bp_read32(sc, core->wrapbase + BCMA_IOCTL);

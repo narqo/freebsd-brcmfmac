@@ -71,11 +71,8 @@ brcmf_link_task(void *arg, int pending)
 			bw = 2; /* 20 MHz */
 			sb = 0;
 		} else {
-			channum = brcmf_chanspec_to_channel(chanspec_raw);
-			bw = (chanspec_raw & BRCMF_CHSPEC_D11AC_BW_MASK) >>
-			    BRCMF_CHSPEC_D11AC_BW_SHIFT;
-			sb = (chanspec_raw & BRCMF_CHSPEC_D11AC_SB_MASK) >>
-			    BRCMF_CHSPEC_D11AC_SB_SHIFT;
+			channum = brcmf_chanspec_to_channel(sc, chanspec_raw);
+			brcmf_chanspec_get_bw_sb(sc, chanspec_raw, &bw, &sb);
 		}
 
 		{
@@ -750,6 +747,47 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	if (error != 0)
 		return (error);
 
+	/* Determine chanspec encoding: D11N (io_type=1) or D11AC (io_type=2) */
+	{
+		uint32_t revinfo = 0;
+		if (brcmf_fil_cmd_data_get(sc, 1 /* C_GET_VERSION */,
+		    &revinfo, sizeof(revinfo)) == 0)
+			sc->io_type = le32toh(revinfo);
+		if (sc->io_type != BRCMF_IO_TYPE_D11N)
+			sc->io_type = BRCMF_IO_TYPE_D11AC;
+		BRCMF_DBG(sc, "io_type=%d (%s)\n", sc->io_type,
+		    sc->io_type == BRCMF_IO_TYPE_D11N ? "D11N" : "D11AC");
+	}
+
+	/* Detect firmware capabilities */
+	{
+		char caps[512];
+		uint32_t val;
+
+		memset(caps, 0, sizeof(caps));
+		if (brcmf_fil_iovar_data_get(sc, "cap", caps,
+		    sizeof(caps) - 1) == 0) {
+			BRCMF_DBG(sc, "cap: %s\n", caps);
+			if (strstr(caps, "mbss") != NULL)
+				sc->feat_mbss = 1;
+			if (strstr(caps, "p2p") != NULL)
+				sc->feat_p2p = 1;
+			/* "sae " with trailing space to avoid false matches */
+			if (strstr(caps, "sae ") != NULL ||
+			    (strlen(caps) >= 3 &&
+			     strcmp(caps + strlen(caps) - 3, "sae") == 0))
+				sc->feat_sae = 1;
+		}
+
+		val = 0;
+		if (brcmf_fil_iovar_int_get(sc, "sup_wpa", &val) == 0)
+			sc->feat_sup_wpa = 1;
+
+		val = 0;
+		if (brcmf_fil_iovar_int_get(sc, "mfp", &val) == 0)
+			sc->feat_mfp = 1;
+	}
+
 	/* Bring firmware down for configuration, then back up */
 	brcmf_fil_bss_down(sc);
 	{
@@ -757,6 +795,12 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
 		    &val, sizeof(val));
 	}
+
+	/* Roam parameters */
+	brcmf_fil_cmd_data_set(sc, 55 /* C_SET_ROAM_TRIGGER */,
+	    &(int32_t){htole32(-75)}, sizeof(int32_t));
+	brcmf_fil_cmd_data_set(sc, 57 /* C_SET_ROAM_DELTA */,
+	    &(uint32_t){htole32(20)}, sizeof(uint32_t));
 
 	/* Set regulatory domain so firmware enables 5GHz channels */
 	{
@@ -778,8 +822,11 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	brcmf_fil_bss_up(sc);
 
-	/* SR-1: init commands matching spec dongle init sequence */
-	brcmf_fil_cmd_data_set(sc, 86 /* BRCMF_C_SET_PM */,
+	/* Enable firmware events early so none are missed */
+	brcmf_setup_events(sc);
+
+	/* Init commands matching spec dongle init sequence */
+	brcmf_fil_cmd_data_set(sc, 86 /* C_SET_PM */,
 	    &(uint32_t){htole32(0)}, sizeof(uint32_t));
 	brcmf_fil_cmd_data_set(sc, 185 /* C_SET_SCAN_CHANNEL_TIME */,
 	    &(uint32_t){htole32(40)}, sizeof(uint32_t));
@@ -788,8 +835,20 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	brcmf_fil_cmd_data_set(sc, 258 /* C_SET_SCAN_PASSIVE_TIME */,
 	    &(uint32_t){htole32(120)}, sizeof(uint32_t));
 	brcmf_fil_iovar_int_set(sc, "bcn_timeout", 4);
-
-	brcmf_setup_events(sc);
+	/* Frameburst for throughput; firmware ignores if unsupported */
+	brcmf_fil_cmd_data_set(sc, 219 /* C_SET_FAKEFRAG */,
+	    &(uint32_t){htole32(1)}, sizeof(uint32_t));
+	/* RSSI-based join preference */
+	{
+		struct {
+			uint8_t type;
+			uint8_t len;
+			uint8_t rssi_gain;
+			uint8_t band;
+		} __packed join_pref = { 1 /* RSSI */, 2, 0, 0 };
+		brcmf_fil_iovar_data_set(sc, "join_pref",
+		    &join_pref, sizeof(join_pref));
+	}
 
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
 	TASK_INIT(&sc->link_task, 0, brcmf_link_task, sc);

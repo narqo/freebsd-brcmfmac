@@ -281,14 +281,13 @@ wake penalty. Document as deliberate deviation.
 
 **Severity:** P3 (document only)
 
-### SR-3: Uses `BRCMF_C_SET_SSID` instead of `"join"` bsscfg iovar
+### SR-3: Uses `BRCMF_C_SET_SSID` instead of `"join"` bsscfg iovar — TESTED, KEPT
 
-The spec's primary connect path uses the `"join"` bsscfg iovar
-(`brcmf_ext_join_params_le`) with embedded scan parameters,
-falling back to `BRCMF_C_SET_SSID`. The driver always uses
-`BRCMF_C_SET_SSID` directly. Both achieve the same firmware
-result. The `"join"` iovar would let the firmware do a targeted
-scan-then-connect in one step.
+Tested "join" iovar on firmware v7.35.180.133: the iovar returns
+success but the firmware does not perform the association (stays
+in SCANNING). Same pattern as "wpaie" and "sup_wpa" — this
+firmware silently ignores certain IOVARs. Keeping SET_SSID as
+the sole connect path.
 
 **Severity:** P3
 
@@ -319,11 +318,12 @@ Inlined BSSID and chanspec_num fields directly into
 
 **Severity:** P3
 
-### SR-7: D11AC chanspec format hardcoded
+### SR-7: D11AC chanspec format hardcoded — FIXED
 
-Spec selects D11N vs D11AC format at runtime via `BRCMF_C_GET_VERSION`.
-Driver hardcodes D11AC. Correct for BCM4350 but would break on
-older chips using D11N.
+Added `io_type` field to softc, queried via `C_GET_VERSION` during
+init. Both D11N and D11AC encode/decode paths implemented. Callers
+(`brcmf_chanspec_to_channel`, `brcmf_channel_to_chanspec`,
+`brcmf_chanspec_get_bw_sb`) dispatch based on `sc->io_type`.
 
 **Severity:** P3
 
@@ -345,12 +345,17 @@ sequence.
 
 **Severity:** P3
 
-### SR-10: IOCTL request DMA buffer oversized — DEFERRED
+### SR-10: IOCTL request DMA buffer oversized — FIXED
 
-Spec says the IOCTL request payload DMA buffer is
-`BRCMF_TX_IOCTL_MAX_MSG_SIZE = 1518` bytes. Code allocates
-8192 bytes (`BRCMF_MSGBUF_MAX_CTL_PKT_SIZE`) for the shared
-`ioctlbuf`. Wastes ~6.5 KB of DMA-coherent memory.
+Split into two buffers:
+- `ioctl_reqbuf`: 1518-byte DMA-coherent buffer for request
+  payload (firmware reads from this via DMA address)
+- `ioctl_respbuf`: 8192-byte `malloc` buffer for response
+  staging (copied from pre-posted DMA response buffer)
+
+Saves ~6.5 KB of DMA-coherent memory. Response staging doesn't
+need DMA since it's a host-side copy from the real DMA response
+buffers (`ioctlresp_buf[]`).
 
 **Severity:** P3
 
@@ -361,13 +366,11 @@ Added fallback: if per-packet `data_offset` is zero, use
 
 **Severity:** P3
 
-### SR-12: Event data not stripped by rx_dataoffset
+### SR-12: Event data not stripped by rx_dataoffset — FIXED
 
-Spec says event processing should strip `rx_dataoffset` bytes
-before parsing. Code reads the event struct directly from the
-DMA buffer at offset 0, relying on the event frame starting
-at the buffer base. Works because the firmware places the
-event frame at the start of the buffer for BCM4350.
+Event processing now applies `sc->shared.rx_dataoffset` to the
+event buffer pointer before parsing. Escan data pointer also
+made relative to the event struct rather than buffer base.
 
 **Severity:** P3
 
@@ -380,35 +383,33 @@ Used by `brcmf_bp_read32`, `brcmf_bp_write32`, and
 
 **Severity:** P2
 
-### SR-14: Core disable skips REJECT step
+### SR-14: Core disable skips REJECT step — DEFERRED
 
-Spec 10-chip-specifics.md says core disable should write
-`REJECT | RESET`, wait for `REJECT` ack, then write `RESET`
-alone. Code writes `RESET` directly without the `REJECT` step.
-Works for BCM4350 CR4 cores in practice. A proper REJECT
-handshake would be needed for cores with outstanding
-transactions.
-
-**Severity:** P3
-
-### SR-15: No feature detection
-
-Spec 07-cfg80211-operations.md and 08-initialization.md
-describe querying `cap` iovar and probing IOVARs (`sup_wpa`,
-`mfp`, `scan_ver`, etc.) to detect firmware capabilities.
-Driver hardcodes all capability assumptions (no firmware
-supplicant, D11AC chanspec, no MFP, scan v1). Correct for
-BCM4350 v7.35.180.133, but brittle if firmware is updated.
+The full reject handshake requires writing REJECT to the slave
+wrapper port (`0x0c00` series registers) and polling its status
+— registers not currently mapped. An attempt to use `BCMA_RESET_ST`
+(0x0804) was incorrect (wrong register). Reverted to simple
+reset-without-reject, which works for CR4 cores during firmware
+download because the ARM is halted and no transactions are in
+flight. Proper reject handshake deferred to multi-chip support.
 
 **Severity:** P3
 
-### SR-16: No band preference in dongle init
+### SR-15: No feature detection — FIXED
 
-Spec 08-initialization.md lists "Set band preference" between
-`SET_INFRA` and `SET_COUNTRY` during dongle init. Code skips
-this. Firmware uses its default band preference, which may
-not match the intended behavior if multiple bands have
-different priority requirements.
+Added `cap` iovar query during init. Detects `mbss`, `p2p`,
+`sae` capabilities from capability string. Probes `sup_wpa`
+and `mfp` IOVARs. Results stored in `feat_*` fields in softc.
+Not yet used to gate behavior (hardcoded paths remain correct
+for BCM4350) but available for multi-device support.
+
+**Severity:** P3
+
+### SR-16: No band preference in dongle init — FIXED
+
+Added roam trigger (-75 dBm) and roam delta (20 dB) to dongle
+init sequence. Band preference is implicitly handled by the
+RSSI-based join_pref (SR-1).
 
 **Severity:** P3
 
@@ -426,16 +427,11 @@ matches spec's 164-byte layout.
 
 **Severity:** P3
 
-### SR-19: Event registration timing
+### SR-19: Event registration timing — FIXED
 
-Spec 08-initialization.md says event handler infrastructure is
-attached in `brcmf_attach` (early), and `event_msgs` bitmask
-is pushed during cfg80211 attach. Driver registers events in
-`brcmf_cfg_attach` which runs after firmware boot, ring setup,
-and initial IOCTL exchanges. Events generated by firmware
-between boot and event registration (e.g., IF events) are
-silently dropped because no handler is registered and no
-`event_msgs` mask is set.
+Moved `brcmf_setup_events` (event_msgs push) to right after
+`C_UP` in dongle init, before any init commands that might
+trigger events.
 
 **Severity:** P3
 
