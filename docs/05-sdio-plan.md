@@ -3,12 +3,8 @@
 ## Hardware
 
 - Chip: BCM4345 (CYW43455), chip ID `0x4345`, SDIO interface
-- SDIO vendor: `0x02D0` (Broadcom), device: `0x4345`
+- SDIO vendor: `0x02D0` (Broadcom), device: `0xA9A6`
 - Host: BCM2835 Arasan SDHCI controller at `0x7e300000`
-- Power: GPIO 42 (WL_REG_ON), active high
-- Pins: GPIO 34-39 (SDIO CLK/CMD/DAT0-3), alt3 function
-- DT node: `mmcnr@7e300000` (non-removable, bus-width 4)
-- F2 block size: 512 (default for BCM43455)
 - Firmware: `/boot/firmware/brcmfmac43455-sdio.bin` (609 KB)
 - NVRAM: `/boot/firmware/brcmfmac43455-sdio.txt` (2 KB)
 
@@ -16,16 +12,13 @@
 
 Resolved during investigation (14 Mar 2026):
 
+BCM43455 WiFi chip (SDIO) is enumerated on RPi4 under FreeBSD, unblocking developing a brcmfmac WiFi driver.
+
 1. **config.txt**: Remove `dtoverlay=mmc` to enable `mmcnr@7e300000`
    instead of `mmc@7e300000` (wrong pinctrl).
-2. **WL_REG_ON**: DT overlay `wlan-gpio.dtbo` adds a `regulator-fixed`
-   on GPIO 42 with `regulator-always-on`. Powers the chip before
-   the SDHCI driver probes.
-3. **SDIO module**: `sdio_load="YES"` in `/boot/loader.conf`.
-4. **SDHCI bug (BLOCKED)**: FreeBSD `bcm2835_sdhci.c` `WR4()` skips
-   the post-write delay when `clock=0`. The software reset write gets
-   lost, `CMD_INHIBIT` stays set, all commands fail. Patch applied in
-   `/usr/src`, kernel rebuild pending.
+2. **SDIO module**: `sdio_load="YES"` in `/boot/loader.conf`.
+3. **mmc-pwrseq**: Kernel rebuilt with `mmc-pwrseq-simple` driver.
+   DT overlay `wlan-pwrseq.dtbo` handles WL_REG_ON via firmware GPIO.
 
 ## Architecture: bus abstraction
 
@@ -327,7 +320,7 @@ parent buses (`pci` and `sdiob`).
 - [ ] `main.c`: add `brcmf_sdio_probe`, `brcmf_sdio_attach`,
   `brcmf_sdio_detach`
 - [ ] `main.c`: `DRIVER_MODULE(if_brcmfmac, sdiob, ...)`
-- [ ] Probe: vendor `0x02D0`, device `0x4345`
+- [ ] Probe: vendor `0x02D0`, device `0xA9A6`
 - [ ] Attach: enable F1/F2, set block sizes, call `brcmf_sdio_attach`
   then `brcmf_cfg_attach`
 - [ ] Detach: teardown
@@ -351,17 +344,21 @@ Adjust capabilities, scan, associate.
 
 ## Blockers
 
-- **Kernel rebuild** for SDHCI `WR4()` fix (patch applied in
-  `/usr/src/sys/arm/broadcom/bcm2835/bcm2835_sdhci.c`, build
-  pending). Required for M-S2+ testing.
-- **SDIO card enumeration** must succeed after the fix before any
-  driver code can be tested on hardware.
+None. SDHCI fix applied, kernel rebuilt, SDIO enumeration confirmed.
+
+## Verified (15 Mar 2026)
+
+SDIO probe test module confirmed:
+- `sdiob0` attaches on `sdhci_bcm0`
+- 4 SDIO functions enumerated (F0-F3)
+- Vendor `0x02D0`, device `0xA9A6` on all functions
+- Child driver probe works via `DRIVER_MODULE(..., sdiob, ...)`
+- Firmware files present: `brcmfmac43455-sdio.bin` (609 KB),
+  `brcmfmac43455-sdio.txt` (2 KB)
+- Build toolchain works on RPi4 (`/usr/src` available)
 
 ## Risks
 
 - FreeBSD `sdio.ko` is young code (2019, Björn Zeeb). May have
-  bugs in CMD53 block transfer, interrupt delivery, or F2 enable.
-  No known FreeBSD SDIO WiFi driver exists as a reference.
-- The SDHCI `WR4()` fix is a theory. If CMD_INHIBIT persists after
-  the kernel rebuild, deeper investigation of the BCM2835 Arasan
-  controller is needed.
+  bugs in CMD53 block transfer or interrupt delivery. No known
+  FreeBSD SDIO WiFi driver exists as a reference.
