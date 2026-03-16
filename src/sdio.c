@@ -44,7 +44,6 @@
 #define SBSDIO_SB_OFT_ADDR_MASK		0x00007FFF
 #define SBSDIO_SB_ACCESS_2_4B_FLAG	0x08000
 
-/* F1 block size */
 #define SDIO_F1_BLOCKSIZE	64
 
 /* F2 block size (BCM43455 default) */
@@ -222,7 +221,7 @@ brcmf_sdio_bp_write_block(struct brcmf_softc *sc, uint32_t addr,
 	const uint8_t *src = data;
 	uint32_t offset;
 	size_t winsz, xfer;
-	int error;
+	int error, count = 0;
 
 	while (len > 0) {
 		brcmf_sdio_set_window(sc, addr);
@@ -235,7 +234,6 @@ brcmf_sdio_bp_write_block(struct brcmf_softc *sc, uint32_t addr,
 		if (winsz > len)
 			winsz = len;
 
-		/* Write up to 64 bytes at a time (F1 block size) */
 		while (winsz > 0) {
 			xfer = (winsz > SDIO_F1_BLOCKSIZE) ?
 			    SDIO_F1_BLOCKSIZE : winsz;
@@ -250,6 +248,9 @@ brcmf_sdio_bp_write_block(struct brcmf_softc *sc, uint32_t addr,
 			addr += xfer;
 			len -= xfer;
 			winsz -= xfer;
+			/* let watchdog run during large transfers */
+			if (++count % 128 == 0)
+				pause_sbt("brcmfw", SBT_1MS, 0, 0);
 		}
 	}
 
@@ -654,28 +655,26 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 
 	sc->sdio_window = ~0U;
 
+	device_printf(sc->dev, "sdio_attach: entry, f1=%p fn=%d\n",
+	    f1, f1->fn);
+
 	/* Set F1 block size */
 	error = sdio_set_block_size(f1, SDIO_F1_BLOCKSIZE);
-	if (error != 0) {
-		device_printf(sc->dev, "failed to set F1 block size: %d\n",
-		    error);
+	device_printf(sc->dev, "sdio_attach: F1 blksz err=%d\n", error);
+	if (error != 0)
 		return (error);
-	}
 
 	/* Enable F1 */
 	error = sdio_enable_func(f1);
-	if (error != 0) {
-		device_printf(sc->dev, "failed to enable F1: %d\n", error);
+	device_printf(sc->dev, "sdio_attach: F1 enable err=%d\n", error);
+	if (error != 0)
 		return (error);
-	}
 
 	/* Request ALP clock for initial setup */
 	error = brcmf_sdio_clk_enable(sc, 1);
-	if (error != 0) {
-		device_printf(sc->dev, "failed to enable ALP clock: %d\n",
-		    error);
+	device_printf(sc->dev, "sdio_attach: ALP clk err=%d\n", error);
+	if (error != 0)
 		return (error);
-	}
 
 	/* Identify chip and enumerate cores */
 	error = brcmf_sdio_chip_identify(sc);
@@ -686,8 +685,6 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 	error = brcmf_sdio_get_raminfo(sc);
 	if (error != 0)
 		return (error);
-
-	/* ALP clock suffices for firmware download */
 
 	/* Load firmware */
 	fw = firmware_get(BRCMF_SDIO_FW_NAME);

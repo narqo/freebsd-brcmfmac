@@ -9,9 +9,11 @@ SRCS = \
 	src/msgbuf.c \
 	src/pcie.c \
 	src/scan.c \
+	src/sdio.c \
+	src/sdpcm.c \
 	src/security.c
 
-SRCS+= device_if.h bus_if.h pci_if.h
+SRCS+= device_if.h bus_if.h pci_if.h sdio_if.h
 
 CFLAGS+= -I${.CURDIR}
 CFLAGS+= -I${.CURDIR}/src
