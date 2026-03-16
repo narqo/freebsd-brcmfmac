@@ -26,6 +26,8 @@
 
 #include "debug.h"
 
+struct sdio_func;
+
 /* PCI IDs */
 #define PCI_VENDOR_BROADCOM 0x14e4
 #define PCI_DEVICE_BCM4350  0x43a3
@@ -142,11 +144,17 @@ struct brcmf_softc {
 	struct brcmf_coreinfo ramcore;
 	struct brcmf_coreinfo d11core;
 	struct brcmf_coreinfo pciecore;
+	struct brcmf_coreinfo sdiocore;
 	struct brcmf_pcie_shared_info shared;
 	void *nvram;
 	uint32_t nvram_len;
 
-	/* Ring info from firmware */
+	/* SDIO-specific */
+	struct sdio_func *sdio_func1;	/* F1: backplane access */
+	struct sdio_func *sdio_func2;	/* F2: data transfer */
+	uint32_t sdio_window;		/* current backplane window */
+
+	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
 	uint32_t h2d_w_idx_addr;  /* TCM address of H2D write indices */
 	uint32_t h2d_r_idx_addr;  /* TCM address of H2D read indices */
@@ -337,6 +345,13 @@ int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
 void brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc);
 int brcmf_msgbuf_init_flowring(struct brcmf_softc *sc, const uint8_t *da);
 
+
+/* pcie.c / sdio.c - NVRAM parser (shared) */
+void *brcmf_nvram_parse(const void *data, size_t size, uint32_t *lenp);
+
+/* sdio.c - SDIO bus layer */
+int brcmf_sdio_attach(struct brcmf_softc *sc);
+void brcmf_sdio_detach(struct brcmf_softc *sc);
 
 /* fwil.c - Firmware interface layer */
 int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,

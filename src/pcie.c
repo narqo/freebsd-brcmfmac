@@ -849,7 +849,7 @@ brcmf_pcie_free_irq(struct brcmf_softc *sc)
 /*
  * Parse NVRAM text into binary format.
  */
-static void *
+void *
 brcmf_nvram_parse(const void *data, size_t size, uint32_t *lenp)
 {
 	const char *src, *end, *line_end;
@@ -895,11 +895,16 @@ brcmf_nvram_parse(const void *data, size_t size, uint32_t *lenp)
 	while (pad--)
 		*dst++ = '\0';
 
+	/* Token encodes padded data word count, NOT including the token */
+	{
+		uint32_t words = len / 4;
+		uint32_t token = (~words << 16) | (words & 0xFFFF);
+		*dst++ = token & 0xff;
+		*dst++ = (token >> 8) & 0xff;
+		*dst++ = (token >> 16) & 0xff;
+		*dst++ = (token >> 24) & 0xff;
+	}
 	len += 4;
-	*dst++ = len & 0xff;
-	*dst++ = (len >> 8) & 0xff;
-	*dst++ = ~len & 0xff;
-	*dst++ = ~(len >> 8) & 0xff;
 
 	*lenp = len;
 	return (buf);

@@ -284,18 +284,26 @@ Decouple upper layers from PCIe-specific protocol calls.
 - [x] Verify: PCIe driver builds, loads, associates on BCM4350
   (WPA2, DHCP, 5/5 ping 192.168.188.1, avg 4.2ms, 0% loss)
 
-### M-S2: SDIO bus layer (`sdio.c`)
+### M-S2: SDIO bus layer (`sdio.c`) — IN PROGRESS
 
 Backplane access, core enumeration, firmware download, F2 ready.
-Requires kernel SDHCI fix for testing.
 
-- [ ] Backplane window management (CMD52 to `0x1000A/B/C`)
-- [ ] `brcmf_sdio_bp_read32` / `brcmf_sdio_bp_write32`
-- [ ] Clock enable (`CHIPCLKCSR` at F1 `0x1000E`)
-- [ ] EROM enumeration via `brcmf_find_core()` with SDIO read callback
-- [ ] Firmware download: halt ARM, CMD53 block writes, NVRAM, release
-- [ ] F2 ready poll
-- [ ] Done: `kldload` prints chip ID, firmware version, MAC address
+- [x] Backplane window management (CMD52 to `0x1000A/B/C`)
+- [x] `brcmf_sdio_bp_read32` / `brcmf_sdio_bp_write32`
+- [x] Clock enable (`CHIPCLKCSR` at F1 `0x1000E`) — ALP for init
+- [x] EROM enumeration via `brcmf_find_core()` with SDIO read callback
+- [x] Chip identification: BCM4345 rev 6, RAM 0x198000 / 976KB
+- [x] Firmware download: halt ARM, CMD53 block writes, verified in RAM
+- [x] NVRAM write: 1748 bytes at end of RAM
+- [x] ARM core released: IOCTL=1, RESET=0 (running)
+- [x] F2 ready — firmware boots. Root causes found and fixed:
+  (a) ARM CR4 bank size: missing `ARMCR4_BLK_1K_MASK` (bit 9) check;
+  some banks use 1024-byte blocks, not 8192. Reported 976KB, actual
+  ~832KB. (b) NVRAM token format: fixed to match Linux encoding
+  (`(~words << 16) | words`). (c) CCCR IORdy F2 bit unreliable via
+  FreeBSD `sdio_f0_read_1`; poll shared RAM marker instead.
+- [x] Firmware boots: `sharedram=0x00201CC0`
+- [ ] Query firmware version and MAC (needs M-S3 SDPCM/BCDC ioctl)
 
 ### M-S3: SDPCM + BCDC protocol (`sdpcm.c`)
 
