@@ -22,7 +22,9 @@
 #include <dev/pci/pcivar.h>
 
 #include <dev/sdio/sdiob.h>
+#include <dev/sdio/sdio_subr.h>
 
+#include "sdio_if.h"
 #include "brcmfmac.h"
 
 /* ----------------------------------------------------------------
@@ -177,11 +179,29 @@ brcmf_sdio_bus_attach(device_t dev)
 		}
 	}
 
+	sc->bus_ops = &brcmf_sdio_bus_ops;
+	mtx_init(&sc->ioctl_mtx, "brcmfmac_ioctl", NULL, MTX_DEF);
+
 	error = brcmf_sdio_attach(sc);
 	if (error != 0)
 		goto fail;
 
-	/* TODO: brcmf_sdpcm_init + brcmf_cfg_attach come in M-S3 */
+	/* Test F2 data path with firmware version ioctl */
+	{
+		char ver[128];
+		memset(ver, 0, sizeof(ver));
+		error = brcmf_fil_iovar_data_get(sc, "ver", ver,
+		    sizeof(ver) - 1);
+		if (error == 0) {
+			char *nl = strchr(ver, '\n');
+			if (nl)
+				*nl = '\0';
+			device_printf(sc->dev, "firmware: %s\n", ver);
+		} else {
+			device_printf(sc->dev,
+			    "firmware ver ioctl failed: %d\n", error);
+		}
+	}
 
 	return (0);
 
@@ -196,6 +216,11 @@ brcmf_sdio_bus_detach(device_t dev)
 	struct brcmf_softc *sc;
 
 	sc = device_get_softc(dev);
+	sc->detaching = 1;
+	sc->fw_dead = 1;
+	brcmf_cfg_detach(sc);
+	sc->bus_ops->cleanup(sc);
 	brcmf_sdio_detach(sc);
+	mtx_destroy(&sc->ioctl_mtx);
 	return (0);
 }

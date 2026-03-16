@@ -305,18 +305,71 @@ Backplane access, core enumeration, firmware download, F2 ready.
 - [x] Firmware boots: `sharedram=0x00201CC0`
 - [ ] Query firmware version and MAC (needs M-S3 SDPCM/BCDC ioctl)
 
-### M-S3: SDPCM + BCDC protocol (`sdpcm.c`)
+### M-S3: SDPCM + BCDC protocol (`sdpcm.c`) — IN PROGRESS
 
 Control and data protocol over SDIO F2.
 
-- [ ] SDPCM frame encode/decode (12-byte header, channel, seq, flow)
-- [ ] BCDC command header (16 bytes): ioctl request/response
-- [ ] `brcmf_sdpcm_ioctl()` → `bus_ops->ioctl`
-- [ ] BCDC data header (4 bytes): TX/RX Ethernet frames
-- [ ] `brcmf_sdpcm_tx()` → `bus_ops->tx`
-- [ ] DPC thread: interrupt status, RX dispatch, TX drain
-- [ ] Event channel → `brcmf_link_event` / `brcmf_escan_result`
-- [ ] Flow control (max sequence tracking)
+- [x] SDPCM frame encode (12-byte header, channel, seq)
+- [x] BCDC command header (16 bytes): ioctl request
+- [x] `brcmf_sdpcm_ioctl()` → `bus_ops->ioctl`
+- [x] `brcmf_sdpcm_tx()` → `bus_ops->tx`
+- [x] `brcmf_sdio_bus_ops` struct wired into main.c
+- [x] `brcmf_cfg_attach` called after firmware boot
+- [x] SDIO core hostintmask configured (0x200000F0)
+- [x] F2 data path: Linux reads/writes F2 through the
+  backplane-windowed SDIO core address (`sdiocore.base &
+  0x7FFF | 0x8000`), NOT FIFO at address 0. Fixed send and recv.
+- [x] F2 watermark setup: BCM43455 needs `SBSDIO_WATERMARK=0x60`,
+  `SBSDIO_DEVICE_CTL |= F2WM_ENAB`, `MESBUSYCTRL=0xD0`.
+- [x] SDIO core `hostintmask` configured.
+- [x] F2 reads work (both windowed and FIFO, return zeros = no data)
+- [ ] **BLOCKED**: F2 CMD53 writes fail with `error=5 (EIO)` from
+  the BCM2835 Arasan SDHCI. F1 writes work. F2 reads work.
+  The error is at the SDHCI hardware level ("CCB request completed
+  with an error"). F2 enabled (CCCR IOEx=0x06), block size set
+  via FBR (512). Firmware healthy (sharedram written, SDIO core
+  interrupts present).
+
+  **Next steps to resolve:**
+
+  1. **Reduce SDIO clock speed.** The Arasan controller may not
+     handle F2 writes at 50MHz. Add `DTS` or loader hint to cap
+     the SDIO clock at 25MHz or lower. FreeBSD `sdhci_bcm` reads
+     the clock from `bcm2835_mbox_get_clock_rate(BCM2835_MBOX_CLOCK_ID_EMMC)`.
+     Try `hw.bcm2835.sdhci.hs=0` (disables high-speed mode) in
+     `/boot/loader.conf` and reboot; this may halve the bus clock.
+
+  2. **Instrument the CAM error.** The "CCB request completed with
+     an error" from the SDHCI doesn't say whether it's a command
+     timeout, data CRC, or SDHCI error. Add `bootverbose` or
+     `hw.sdhci.debug=1` and check the full SDHCI register dump
+     at the time of the F2 write failure to identify the exact
+     error bit.
+
+  3. **Try `sdio_memcpy_toio` approach.** The Linux driver uses
+     `sdio_memcpy_toio(func2, addr, data, size)`. FreeBSD's sdiob
+     translates this to CMD53 via `SDIO_WRITE_EXTENDED`. Verify
+     whether the issue is in the `sdiob_rw_extended_cam` path by
+     writing a minimal test module that issues CMD53 directly
+     through the MMC/SDHCI layer, bypassing sdiob.
+
+  4. **Check sdiob F2 ownership.** The sdiob driver created child
+     devices for all functions including F2. Our driver only probes
+     and attaches to F1 (`funcnum == 1`). We use F2 by grabbing its
+     `sdio_func` pointer from a sibling device. The sdiob driver
+     may not consider F2 "owned" and may enforce access controls.
+     Try also attaching to F2 (dual-probe: match funcnum==1 OR
+     funcnum==2) so the driver formally owns both functions.
+
+  5. **Check FreeBSD sdiob CMD53 write vs read path.** Read
+     `sys/dev/sdio/sdiob.c:sdiob_rw_extended_cam` — compare the
+     CAM CCB construction for reads and writes. The `MMC_DATA_READ`
+     vs `MMC_DATA_WRITE` flag may be set incorrectly, or the
+     `SD_IOE_RW_WR` bit in the CMD53 argument may be missing.
+- [ ] IOCTL response matching
+- [ ] Event channel dispatch
+- [ ] Data RX path
+- [ ] Flow control
 - [ ] Done: firmware ioctls work (`ver`, `cur_etheraddr`)
 
 ### M-S4: SDIO probe/attach in `main.c`
@@ -353,6 +406,37 @@ Adjust capabilities, scan, associate.
 ## Blockers
 
 None. SDHCI fix applied, kernel rebuilt, SDIO enumeration confirmed.
+
+## RPi4 test host
+
+- Address: `freebsd@192.168.20.106`
+- OS: FreeBSD 15.0-STABLE (custom SDIO kernel)
+- Build: `/tmp/brcmfmac_build/` (Makefile + src/)
+- Source sync: `rsync src/ freebsd@192.168.20.106:/tmp/brcmfmac_build/src/`
+- Build command: `cd /tmp/brcmfmac_build && sudo make clean && sudo make`
+- wlan.ko: must be loaded from `/usr/obj/.../sys/modules/wlan/wlan.ko`
+  (the `/boot/kernel/wlan.ko` is from GENERIC and version-mismatches)
+
+### Hardware watchdog
+
+The `bcmwd0` driver (built into the SDIO kernel) provides a hardware
+watchdog via `/dev/fido`. Max timeout is 15 seconds (BCM2711 HW
+limit). Configured in `/etc/rc.conf`:
+
+```
+watchdogd_enable="YES"
+watchdogd_flags="-s 4 -t 8"
+```
+
+Pats every 4s, reboots after 8s of kernel hang. Essential for driver
+development — a bad kldload can deadlock the kernel (e.g., blocking
+ioctl in attach path). Without the watchdog, the board requires
+physical power cycle.
+
+Note: `watchdogd -t` uses power-of-2 nanosecond encoding internally.
+Values that don't map to 1-15 seconds are rejected by bcmwd with
+"Can't arm, timeout must be between 1-15 seconds". Safe values:
+`-t 1`, `-t 2`, `-t 4`, `-t 8`.
 
 ## Verified (15 Mar 2026)
 

@@ -78,6 +78,7 @@
 
 /* SDIO device core (core ID 0x829) register offsets */
 #define SD_REG_INTSTATUS	0x020
+#define SD_REG_HOSTINTMASK	0x024
 #define SD_REG_TOSBMAILBOXDATA	0x048
 
 /* Protocol version for tosbmailboxdata */
@@ -87,10 +88,27 @@
 /* BCMA core IDs */
 #define BCMA_CORE_SDIO_DEV	0x829
 
+/* F2 watermark and device control registers */
+#define SBSDIO_WATERMARK		0x10008
+#define SBSDIO_DEVICE_CTL		0x10009
+#define SBSDIO_FUNC1_MESBUSYCTRL	0x1001D
+#define SBSDIO_DEVCTL_F2WM_ENAB		0x10
+#define SBSDIO_MESBUSYCTRL_ENAB		0x80
+
+/* BCM43455-specific watermark values */
+#define CY_43455_F2_WATERMARK		0x60
+#define CY_43455_MES_WATERMARK		0x50
+
+/* Host interrupt mask bits */
+#define I_HMB_SW_MASK	0x000000F0
+#define I_HMB_FC_CHANGE	0x00000020
+#define I_HMB_FRAME_IND	0x00000040
+#define I_HMB_HOST_INT	0x00000080
+
 /*
  * Set backplane address window.
  */
-static void
+void
 brcmf_sdio_set_window(struct brcmf_softc *sc, uint32_t addr)
 {
 	uint32_t window = addr & ~SBSDIO_SB_OFT_ADDR_MASK;
@@ -113,7 +131,7 @@ brcmf_sdio_set_window(struct brcmf_softc *sc, uint32_t addr)
 /*
  * Read 32-bit value from backplane address via F1.
  */
-static uint32_t
+uint32_t
 brcmf_sdio_bp_read32(struct brcmf_softc *sc, uint32_t addr)
 {
 	uint32_t offset;
@@ -127,7 +145,7 @@ brcmf_sdio_bp_read32(struct brcmf_softc *sc, uint32_t addr)
 /*
  * Write 32-bit value to backplane address via F1.
  */
-static void
+void
 brcmf_sdio_bp_write32(struct brcmf_softc *sc, uint32_t addr, uint32_t val)
 {
 	uint32_t offset;
@@ -440,25 +458,6 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	if (sc->d11core.id != 0 && sc->d11core.wrapbase != 0)
 		brcmf_sdio_core_disable(sc, &sc->d11core, 0x08 | 0x04, 0x04);
 
-	/* Probe actual RAM extent */
-	{
-		static const uint32_t offsets[] = {
-		    0, 0x10000, 0x20000, 0x40000, 0x60000,
-		    0x80000, 0xA0000, 0xC0000, 0xE0000, 0xF0000,
-		    0xF3FF8
-		};
-		int ti;
-		for (ti = 0; ti < 11; ti++) {
-			uint32_t ta = sc->ram_base + offsets[ti];
-			brcmf_sdio_bp_write32(sc, ta, 0xDEAD0000 | ti);
-			uint32_t rv = brcmf_sdio_bp_read32(sc, ta);
-			device_printf(sc->dev,
-			    "RAM @0x%x (+0x%x): 0x%08x %s\n",
-			    ta, offsets[ti], rv,
-			    rv == (0xDEAD0000 | ti) ? "OK" : "FAIL");
-		}
-	}
-
 	/* Clear shared RAM marker at end of RAM */
 	brcmf_sdio_bp_write32(sc, sc->ram_base + sc->ram_size - 4, 0);
 
@@ -555,21 +554,21 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    sc->sdiocore.base + SD_REG_TOSBMAILBOXDATA,
 		    SDPCM_PROT_VERSION << SMB_DATA_VERSION_SHIFT);
 
-	/* Enable F2 — firmware can then signal readiness.
-	 * Use raw CCCR write as backup since sdio_enable_func may
-	 * not work for a function we didn't probe on. */
-	if (sc->sdio_func2 != NULL) {
-		error = sdio_enable_func(sc->sdio_func2);
-		device_printf(sc->dev, "F2 enable via func: err=%d\n", error);
-	}
+	/* Enable F2 via CCCR IOEx */
 	{
 		uint8_t ioex;
 		ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &error);
-		if (!(ioex & 0x04)) {
-			ioex |= 0x04;
-			sdio_f0_write_1(sc->sdio_func1, 0x02, ioex, &error);
-			device_printf(sc->dev, "F2 enable via CCCR\n");
-		}
+		ioex |= 0x04;
+		sdio_f0_write_1(sc->sdio_func1, 0x02, ioex, &error);
+
+		/* Verify */
+		ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &error);
+		device_printf(sc->dev, "F2 enable: IOEx=0x%02x err=%d\n",
+		    ioex, error);
+
+		/* Also enable F2 through the sdiob API if we have the ptr */
+		if (sc->sdio_func2 != NULL)
+			sdio_enable_func(sc->sdio_func2);
 	}
 
 	/* Diag: read SDIO core intstatus */
@@ -605,8 +604,34 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    "firmware booted, sharedram=0x%08x\n", shared);
 	}
 
+	/* Configure SDIO core host interrupt mask */
+	if (sc->sdiocore.base != 0) {
+		brcmf_sdio_bp_write32(sc,
+		    sc->sdiocore.base + SD_REG_HOSTINTMASK,
+		    I_HMB_SW_MASK | I_HMB_FRAME_IND |
+		    I_HMB_HOST_INT | I_HMB_FC_CHANGE);
+	}
+
+	/* F2 watermark and device control — required for F2 data flow */
+	{
+		uint8_t devctl;
+		int err;
+
+		sdio_write_1(sc->sdio_func1, SBSDIO_WATERMARK,
+		    CY_43455_F2_WATERMARK, &err);
+
+		devctl = sdio_read_1(sc->sdio_func1, SBSDIO_DEVICE_CTL, &err);
+		devctl |= SBSDIO_DEVCTL_F2WM_ENAB;
+		sdio_write_1(sc->sdio_func1, SBSDIO_DEVICE_CTL, devctl, &err);
+
+		sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_MESBUSYCTRL,
+		    CY_43455_MES_WATERMARK | SBSDIO_MESBUSYCTRL_ENAB, &err);
+	}
+
 	return (0);
 }
+
+static int brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS);
 
 /*
  * Main SDIO bus attach — called from main.c after probe.
@@ -692,15 +717,74 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 	if (error != 0)
 		return (error);
 
-	/* Set F2 block size */
-	if (sc->sdio_func2 != NULL) {
-		error = sdio_set_block_size(sc->sdio_func2, SDIO_F2_BLOCKSIZE);
-		if (error != 0)
-			device_printf(sc->dev,
-			    "failed to set F2 block size: %d\n", error);
+	/* Set F2 block size via CCCR FBR (Function Basic Registers).
+	 * FBR for F2 starts at 0x200. Block size is at FBR+0x10 (2 bytes). */
+	{
+		int bserr;
+		sdio_f0_write_1(sc->sdio_func1, 0x210,
+		    SDIO_F2_BLOCKSIZE & 0xFF, &bserr);
+		sdio_f0_write_1(sc->sdio_func1, 0x211,
+		    (SDIO_F2_BLOCKSIZE >> 8) & 0xFF, &bserr);
+		device_printf(sc->dev, "F2 block size set to %d\n",
+		    SDIO_F2_BLOCKSIZE);
+
+		/* Also try via API if available */
+		if (sc->sdio_func2 != NULL)
+			sdio_set_block_size(sc->sdio_func2, SDIO_F2_BLOCKSIZE);
+	}
+
+	/* Diagnostic sysctl */
+	{
+		struct sysctl_ctx_list *ctx;
+		struct sysctl_oid *tree;
+
+		ctx = device_get_sysctl_ctx(sc->dev);
+		tree = device_get_sysctl_tree(sc->dev);
+		SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
+		    "sdio_diag", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+		    sc, 0, brcmf_sdio_diag_sysctl, "A",
+		    "SDIO diagnostic: read core state and F2");
 	}
 
 	return (0);
+}
+
+/*
+ * Diagnostic sysctl: read SDIO core state and attempt F2 read.
+ */
+static int
+brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct brcmf_softc *sc = arg1;
+	char buf[512];
+	uint32_t intst;
+	int error, len;
+
+	if (sc->sdiocore.base == 0) {
+		len = snprintf(buf, sizeof(buf), "no sdio core\n");
+		return SYSCTL_OUT(req, buf, len);
+	}
+
+	intst = brcmf_sdio_bp_read32(sc,
+	    sc->sdiocore.base + SD_REG_INTSTATUS);
+
+	/* Read additional SDIO core registers */
+	{
+		uint32_t hostmask = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + 0x024);
+		uint32_t tohost = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + 0x044);
+		uint8_t clkval = sdio_read_1(sc->sdio_func1,
+		    SBSDIO_FUNC1_CHIPCLKCSR, &error);
+		uint8_t devctl = sdio_read_1(sc->sdio_func1,
+		    0x10009 /* SBSDIO_DEVICE_CTL */, &error);
+		len = snprintf(buf, sizeof(buf),
+		    "intst=0x%08x hostmask=0x%08x tohost=0x%08x "
+		    "clk=0x%02x devctl=0x%02x\n",
+		    intst, hostmask, tohost, clkval, devctl);
+	}
+
+	return SYSCTL_OUT(req, buf, len);
 }
 
 void

@@ -153,6 +153,10 @@ struct brcmf_softc {
 	struct sdio_func *sdio_func1;	/* F1: backplane access */
 	struct sdio_func *sdio_func2;	/* F2: data transfer */
 	uint32_t sdio_window;		/* current backplane window */
+	uint8_t sdpcm_tx_seq;		/* SDPCM TX sequence number */
+	uint8_t sdpcm_rx_seq;		/* SDPCM last received seq */
+	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
+	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
@@ -352,6 +356,24 @@ void *brcmf_nvram_parse(const void *data, size_t size, uint32_t *lenp);
 /* sdio.c - SDIO bus layer */
 int brcmf_sdio_attach(struct brcmf_softc *sc);
 void brcmf_sdio_detach(struct brcmf_softc *sc);
+void brcmf_sdio_set_window(struct brcmf_softc *sc, uint32_t addr);
+uint32_t brcmf_sdio_bp_read32(struct brcmf_softc *sc, uint32_t addr);
+void brcmf_sdio_bp_write32(struct brcmf_softc *sc, uint32_t addr,
+    uint32_t val);
+uint32_t brcmf_sdio_bp_read32(struct brcmf_softc *sc, uint32_t addr);
+void brcmf_sdio_bp_write32(struct brcmf_softc *sc, uint32_t addr,
+    uint32_t val);
+
+/* sdpcm.c - SDPCM/BCDC protocol */
+extern const struct brcmf_bus_ops brcmf_sdio_bus_ops;
+int brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+    void *buf, uint32_t len, uint32_t *resp_len);
+int brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m);
+void brcmf_sdpcm_process_event(struct brcmf_softc *sc,
+    uint8_t *data, uint16_t len);
+void brcmf_sdpcm_process_rx(struct brcmf_softc *sc,
+    uint8_t *data, uint16_t len);
+void brcmf_sdpcm_cleanup(struct brcmf_softc *sc);
 
 /* fwil.c - Firmware interface layer */
 int brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
