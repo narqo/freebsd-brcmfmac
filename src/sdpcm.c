@@ -81,7 +81,8 @@
 
 /* F2 transfer sizes */
 #define SDPCM_MAX_FRAME_SIZE	2048
-#define SDPCM_F2_BLKSZ		512
+/* No block-size rounding; keep transfers in sdiob byte mode */
+#define SDPCM_F2_BLKSZ		4
 
 /* Event structures (same as msgbuf.c) */
 struct brcmf_event_msg_be {
