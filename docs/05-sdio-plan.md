@@ -56,8 +56,12 @@ is required to clear it.
 2. **SDIO module**: `sdio_load="YES"` in `/boot/loader.conf`.
 3. **mmc-pwrseq**: Kernel rebuilt with `mmc-pwrseq-simple` driver.
    DT overlay `wlan-pwrseq.dtbo` handles WL_REG_ON via firmware GPIO.
-4. **SDHCI fix**: `bcm2835_sdhci.c` patched for correct register
-   write ordering (WR4 flush). Kernel #16 rebuilt 18 Mar 2026.
+4. **Kernel patches** (kernel #19, 18 Mar 2026):
+   - `bcm2835_sdhci.c`: pass correct OFW node for mmc-pwrseq
+   - `bcm2835_sdhci.c`, `sdhci.c`, `sdhci_if.m`: platform_update_ios
+     for pwrseq/regulator
+   - `mmc_xpt.c`: SDIO bus clock to 25 MHz
+   - `mmc_xpt.c`: 4-bit SDIO bus width via CCCR 0x07
 
 ## Architecture: bus abstraction (DONE)
 
@@ -105,8 +109,8 @@ Build on RPi4: `cd ~/brcmfmac_build && sudo make -j2`
 - [x] SDIO core hostintmask and watermark configured
 - [x] `pause_sbt` yield in write loop (avoids watchdog starvation)
 
-Firmware download takes ~2-3 minutes at 64 bytes/write through
-the FreeBSD sdiob CAM stack (~100 CMD53/sec). Functional but slow.
+Firmware download was ~2-3 minutes on kernel #16 (1-bit bus).
+On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 
 ### M-S3: SDPCM + BCDC protocol (IN PROGRESS)
 
@@ -142,35 +146,46 @@ Blocked on M-S3 (F2 writes).
 - [ ] Channel/mode setup (1SS HT, no VHT)
 - [ ] Scan, association, WPA2
 
-### M-S6: Upstream SDHCI fix
-
-- [ ] Submit `bcm2835_sdhci.c` patch to FreeBSD
-
 ## Current blocker: F2 CMD53 writes
 
-**Status (18 Mar 2026):** The kernel SDHCI fix (WR4 register write
-ordering) resolved F1 CMD53 writes. Firmware download completes.
-F2 CMD53 writes still cause a hard SDHCI controller hang.
+**Status (18 Mar 2026, kernel #19 — 4 patches applied):**
 
-**Evidence:**
-- F1 CMD53 writes at 64 bytes: work (firmware download completes)
-- F2 CMD53 writes at any block size: hang (controller stops responding)
-- F2 reads work (SDIO core intstatus readable, frame indication present)
-- Hang is not a timeout — the SDHCI controller freezes completely
+Kernel patches fixed F1 CMD53 writes and the hard-hang behavior.
+F2 CMD53 writes now return error=5 (EIO) instead of freezing the
+controller, but they still do not succeed.
 
-**Diagnosis from earlier testing (pre-kernel-fix):**
-- F2 byte-mode writes (4, 8, 16, 32 bytes) succeeded
-- F2 block-mode writes (64+ bytes) failed with controller timeout
-- All four CMD53 addressing modes tested (windowed/FIFO × inc/fixed)
+**Test matrix (kernel #19, 4-bit bus, 25 MHz):**
 
-**Hypothesis:** The SDHCI fix corrected a register write ordering
-issue that affected F1 block writes. F2 block writes may require
-an additional fix — possibly related to how the Arasan controller
-handles data transfers on SDIO function 2 specifically, or to
-the CMD53 argument construction for F2 in the sdiob CAM path.
+| What | Mode | Size | Result |
+|------|------|------|--------|
+| F1 CMD53 write | block | 64 B | works (fw download) |
+| F2 CMD53 write | block | 512 B (`b_count=1`) | error=5, no hang |
+| F2 CMD53 write | block | 64 B (`b_count=N`) | hard hang, watchdog reboot |
+| F2 CMD53 write | byte | 160 B (`b_count=0`) | error=5, no hang |
+| F2 CMD53 read | any | any | works |
+
+**Key observations:**
+- F2 writes fail regardless of byte vs block mode for sizes >32 bytes
+- F2 reads work at all sizes
+- F1 writes work at all tested sizes
+- The error is specific to F2 (function number 2) write direction
+- sdiob constructs CMD53 with `SD_IOE_RW_WR` flag and `fn=2`
+
+**Hypothesis:** The sdiob/SDHCI stack has a remaining issue specific
+to CMD53 writes on function 2. Possible causes:
+- The F2 function is not fully enabled at the SDIO protocol level
+  (CCCR IOEx shows 0x06 = F1+F2 enabled, but the card may require
+  additional setup before accepting F2 data writes)
+- The Arasan SDHCI controller may need function-specific configuration
+  for write transfers that the current patches don't cover
+- The CMD53 argument encoding for F2 writes may differ from F1 in a
+  way the sdiob CAM path doesn't handle
 
 **Next steps:**
-1. Test F2 writes with block size reduced to match F1 (64 bytes)
-2. Instrument sdiob CMD53 argument for F2 vs F1 writes
-3. Check if the SDHCI fix needs to apply to the F2 data path too
-4. Consider bypassing sdiob block-mode for F2 writes (byte-mode only)
+1. Verify F2 is truly ready: check CCCR IORdy (reg 0x03) bit for F2
+2. Check if F2 requires explicit interrupt enable (CCCR 0x04) before
+   accepting writes
+3. Compare CMD53 argument word between working F1 writes and failing
+   F2 writes — the function number field and RW bit
+4. Try small F2 writes (4/8/16/32 bytes) on kernel #19 to confirm
+   the size threshold still holds

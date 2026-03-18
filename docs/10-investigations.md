@@ -1,32 +1,45 @@
 # Investigations
 
-## 18 Mar 2026: SDIO F2 write on fixed kernel #16
+## 18 Mar 2026: SDIO F2 writes, kernel #16 and #19
 
-### What works
-- F1 byte access (sdio_read_1/write_1): works
-- F1 block access at 64 bytes via CMD53: works (firmware download completes)
-- ALP/HT clock enable: works
-- EROM/chip enumeration: chip=4345 rev=6
-- RAM discovery: 0x198000, 800KB
-- Firmware download: ~609KB via 64-byte F1 CMD53 writes (takes ~2-3 minutes)
-- Firmware boot: sharedram=0x00201cc0
-- F2 enable: IOEx=0x06
-- SDIO core intstatus: 0x008000c0 (frame indication present)
+### Kernel #16 (patches 01-02: WR4 flush, pwrseq)
 
-### What still fails
-- F2 writes (SDPCM TX via `SDIO_WRITE_EXTENDED` on F2): causes hard SDHCI hang
-- `brcmf_sdpcm_send` → F2 CMD53 write at 512-byte block size → controller hangs
-- Host becomes unreachable; only hardware watchdog or power cycle recovers
+F1 works. Firmware boots. F2 CMD53 writes hang the SDHCI controller
+completely (no timeout, no error return). Firmware download takes
+~2-3 minutes at 64 bytes/write (1-bit bus, low clock).
 
-### Root cause hypothesis
-The kernel SDHCI fix addressed F1 CMD53 writes but F2 CMD53 writes
-still hang. F2 uses a different SDIO function number (fn=2) and the
-sdiob CAM path may construct the CMD53 differently for F2 vs F1.
+### Kernel #19 (patches 01-04: + 25 MHz clock, 4-bit bus)
 
-Or: the F2 block size (512) exceeds what the Arasan controller can handle
-in the fixed mode. F1 uses 64-byte blocks which work.
+F1 works. Firmware download completes in seconds (4-bit, 25 MHz).
+F2 CMD53 writes no longer hang — they return error=5 (EIO) for
+most sizes. Exception: F2 block-mode writes at 64 bytes with
+multi-block (`b_count > 1`) still cause a hard hang.
 
-### Next step
-- Try F2 writes with smaller block size (64 instead of 512)
-- If that works, the issue is block-size-specific in the SDHCI path
-- If not, the issue is F2-specific regardless of size
+Test results on kernel #19:
+
+| What | Mode | Size | b_count | blksz | Result |
+|------|------|------|---------|-------|--------|
+| F1 block write | block | 64 | 1 | 64 | works |
+| F2 block write | block | 512 | 1 | 512 | err=5 |
+| F2 block write | block | 192 | 3 | 64 | hang |
+| F2 byte write | byte | 160 | 0 | 160 | err=5 |
+| F2 byte write | byte | 4 | 0 | 4 | worked (pre-fix kernel) |
+| F2 read | any | any | any | any | works |
+
+The error=5 comes from `cam_periph_runccb` in `sdiob_rw_extended_cam`.
+The sdiob layer retries and exhausts retries, then returns EIO.
+
+### Chip state after failed F2 write
+
+After a failed kldload + kldunload cycle, chip backplane reads
+return 0xFFFF (chip=ffff rev=15). A reboot is required to reset
+the SDIO card via power sequencing.
+
+### Open question
+
+Why do F2 writes fail while F1 writes and F2 reads work? The CMD53
+argument differs only in the function number field (`SD_IOE_RW_FUNC`)
+and the write flag (`SD_IOE_RW_WR`). Both are set correctly by sdiob.
+The BCM43455 firmware reports F2 as enabled (IOEx=0x06). The SDIO
+core intstatus shows frame indication (0x80000000 or 0x008000c0),
+suggesting the firmware is ready to communicate.
