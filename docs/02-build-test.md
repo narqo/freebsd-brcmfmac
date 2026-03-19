@@ -265,6 +265,22 @@ fsck after unclean shutdown. Common causes of prolonged outage — hung
 kldload consuming all CPU, SDHCI controller locked up, reboot loop.
 Automated retries beyond 3 attempts waste time and cannot fix these.
 
+### Recovering logs after a hang
+
+The dmesg ring buffer is lost on reboot. Use `/var/log/messages` instead —
+`syslogd` writes kernel messages to this file, and it persists across reboots
+(as long as the write flushed before the hang). After a watchdog reboot:
+
+```sh
+# Recent messages (may be in a rotated/compressed file)
+grep brcmfmac /var/log/messages
+# Or check rotated files
+bzcat /var/log/messages.0.bz2 | grep brcmfmac
+```
+
+This shows exactly which `device_printf` line the driver reached before the
+hang, and any SDHCI error traces from the kernel's instrumented error paths.
+
 ### Verifying traffic goes over WiFi
 
 The VM has two interfaces: `vtnet0` (ethernet, default route) and `wlan0` (WiFi).

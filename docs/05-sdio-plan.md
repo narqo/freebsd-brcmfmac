@@ -122,7 +122,7 @@ On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 - [x] `brcmf_sdpcm_process_event()` dispatches firmware events
 - [x] `brcmf_sdpcm_process_rx()` delivers data frames
 - [x] `brcmf_sdio_bus_ops` wired into `main.c`
-- [ ] **BLOCKED**: F2 CMD53 writes hang the Arasan SDHCI controller.
+- [ ] **BLOCKED**: F2 writes return EIO. CCCR IORdy shows F2 not ready.
   See "Current blocker" below.
 
 ### M-S4: SDIO probe/attach (DONE)
@@ -146,46 +146,50 @@ Blocked on M-S3 (F2 writes).
 - [ ] Channel/mode setup (1SS HT, no VHT)
 - [ ] Scan, association, WPA2
 
-## Current blocker: F2 CMD53 writes
+## Current blocker: F2 not ready (IORdy)
 
-**Status (18 Mar 2026, kernel #19 — 4 patches applied):**
+**Status (19 Mar 2026, kernel #21 — 4 patches, no instrumentation):**
 
-Kernel patches fixed F1 CMD53 writes and the hard-hang behavior.
-F2 CMD53 writes now return error=5 (EIO) instead of freezing the
-controller, but they still do not succeed.
+F1 works. Firmware boots. F2 CMD53 writes return EIO (byte mode,
+non-fatal). The root cause is confirmed: CCCR IORdy (reg 0x03)
+does not have the F2 ready bit set.
 
-**Test matrix (kernel #19, 4-bit bus, 25 MHz):**
+```
+IOEx=0x06  IORdy=0x02  → F2 enabled but not ready
+```
 
-| What | Mode | Size | Result |
-|------|------|------|--------|
-| F1 CMD53 write | block | 64 B | works (fw download) |
-| F2 CMD53 write | block | 512 B (`b_count=1`) | error=5, no hang |
-| F2 CMD53 write | block | 64 B (`b_count=N`) | hard hang, watchdog reboot |
-| F2 CMD53 write | byte | 160 B (`b_count=0`) | error=5, no hang |
-| F2 CMD53 read | any | any | works |
+The SDHCI/sdiob stack is not at fault — the card itself reports
+F2 as not ready. The firmware is running (sharedram marker valid,
+SDIO core shows frame indication), but it hasn't signaled F2
+readiness.
 
-**Key observations:**
-- F2 writes fail regardless of byte vs block mode for sizes >32 bytes
-- F2 reads work at all sizes
-- F1 writes work at all tested sizes
-- The error is specific to F2 (function number 2) write direction
-- sdiob constructs CMD53 with `SD_IOE_RW_WR` flag and `fn=2`
+**Confirmed behavior (kernel #21, 4-bit bus, 25 MHz):**
 
-**Hypothesis:** The sdiob/SDHCI stack has a remaining issue specific
-to CMD53 writes on function 2. Possible causes:
-- The F2 function is not fully enabled at the SDIO protocol level
-  (CCCR IOEx shows 0x06 = F1+F2 enabled, but the card may require
-  additional setup before accepting F2 data writes)
-- The Arasan SDHCI controller may need function-specific configuration
-  for write transfers that the current patches don't cover
-- The CMD53 argument encoding for F2 writes may differ from F1 in a
-  way the sdiob CAM path doesn't handle
+| What | Result |
+|------|--------|
+| F1 CMD53 write (fw download) | works |
+| F2 CMD53 read | works |
+| F2 CMD53 write (byte, 160B, addr 0) | EIO (non-fatal) |
+| Repeated F0 CMD52 reads (~500x, 5s) | SDHCI controller hang |
+| Single IORdy check + F2 write | EIO, system stable |
+
+**Key finding:** Polling CCCR 0x03 in a tight loop (~500 reads
+over 5 seconds) hangs the Arasan SDHCI controller. Single reads
+are fine.
+
+**Hypothesis:** The firmware needs additional host-side setup
+before it marks F2 as ready. Possible causes:
+1. CCCR interrupt enable (reg 0x04) may need F2 bit set
+2. Firmware may require the host to ack pending intstatus or
+   read the tohost mailbox before asserting F2 ready
+3. Watermark and devctl configuration may need to happen before
+   the F2 ready check (currently done after)
+4. The Linux brcmfmac driver may have additional init steps
+   between F2 enable and the first F2 data write
 
 **Next steps:**
-1. Verify F2 is truly ready: check CCCR IORdy (reg 0x03) bit for F2
-2. Check if F2 requires explicit interrupt enable (CCCR 0x04) before
-   accepting writes
-3. Compare CMD53 argument word between working F1 writes and failing
-   F2 writes — the function number field and RW bit
-4. Try small F2 writes (4/8/16/32 bytes) on kernel #19 to confirm
-   the size threshold still holds
+1. Study Linux `brcmf_sdio_bus_init()` / `brcmf_sdio_download_firmware()`
+   for the exact sequence between F2 enable and first data write
+2. Try setting CCCR interrupt enable (0x04) bit 2 for F2
+3. Try moving watermark/devctl config before the F2 ready check
+4. Try acking intstatus before checking IORdy
