@@ -256,6 +256,15 @@ When testing code that may crash:
 4. After a potential crash, wait ~15 seconds for VM to reboot and savecore to complete
 5. Check VM state from build host: `sudo vm list vm0`
 
+### Unresponsive test host
+
+If a test host (VM or RPi4) does not respond to SSH after **3 consecutive
+attempts with ≥2min waits between them**, stop retrying and ask the user to
+intervene. The RPi4 boots slowly (~90s) and may need additional time for
+fsck after unclean shutdown. Common causes of prolonged outage — hung
+kldload consuming all CPU, SDHCI controller locked up, reboot loop.
+Automated retries beyond 3 attempts waste time and cannot fix these.
+
 ### Verifying traffic goes over WiFi
 
 The VM has two interfaces: `vtnet0` (ethernet, default route) and `wlan0` (WiFi).

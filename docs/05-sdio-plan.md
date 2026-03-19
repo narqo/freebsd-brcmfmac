@@ -40,7 +40,7 @@ the project.
 Important RPi4 test host specifics:
 
 - Address: `freebsd@192.168.20.106`
-- OS: FreeBSD 15.0-STABLE kernel #16 (SDIO + SDHCI fix)
+- OS: FreeBSD 15.0-STABLE kernel #21 (SDIO + SDHCI patches, no hot-path instrumentation)
 - Build dir: `~/src/`; `/tmp` is cleared on reboot.
 
 The driver requires the net80211 wlan module (`MODULE_DEPEND` on
