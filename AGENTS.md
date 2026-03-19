@@ -16,9 +16,12 @@ Read the docs/ directory first:
 - **docs/00-progress.md** - Current status, milestones, what's done and what's next
 - **docs/01-decisions.md** - Design decisions and rationale
 - **docs/02-build-test.md** - Build/deploy workflow, crash analysis
-- **docs/03-known-issues.md** - Open and resolved bugs
 
 These documents are the source of truth for project state and architecture choices.
+
+Good to know:
+
+docs/03-known-issues.md keeps the archive of open and resolved bugs.
 
 Use the docs/10-investigations.md document to persist mid-session investigation scratch notes.
 
@@ -46,131 +49,25 @@ The source code is in the src/ directory.
 
 ## Build environment
 
-The code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE, with Zig 0.16-dev.
+The code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE.
 The local machine **cannot** build the project -- FreeBSD kernel headers are required.
+
+When starting a new milestone, ensure the current worktree is synced to the build host.
 
 ## Constraints
 
 - Use native FreeBSD APIs (no LinuxKPI)
-- Cannot use Zig's `@cImport` with kernel headers (see decisions doc)
-- C for kernel API calls; Zig for pure logic only
 - Build/test requires remote FreeBSD 15 host
+
+Read docs/01-decisions.md for the rest.
 
 ## Linker limitations
 
 The FreeBSD kernel linker (link_elf_obj) has limited support for relocation types.
 
 When a new pitfall, limitation, or workaround is discovered during development,
-**document it in this file** under the appropriate section. This ensures future
+document it under the appropriate section in docs/03-known-issues.md. This ensures future
 work doesn't repeat the same mistakes.
-
-### TLS (Thread Local Storage)
-
-The linker does not support TLS relocations. Many parts of Zig's standard library
-use TLS internally and will cause `kldload` to fail with:
-
-```
-kldload: unexpected relocation type 23, symbol index N
-```
-
-#### Avoid
-
-- `std.debug.*` - uses TLS for error traces
-- `std.log.*` - built on std.debug
-- `std.heap.*` - userspace allocators
-- `std.Thread` - TLS, pthreads
-- `std.os.*`, `std.fs.*`, `std.net.*`, `std.process.*` - userspace syscalls
-- `std.io.getStdOut/getStdErr/getStdIn` - file descriptors
-- `std.time.*` - userspace clock syscalls
-- `std.crypto.random` - getrandom syscall
-- `std.Progress` - uses TLS
-
-#### Safe to use
-
-- `std.mem` - memory utilities
-- `std.math` - math operations
-- `std.meta` - comptime metaprogramming
-- `std.fmt.bufPrint` - formatting to a buffer
-- `std.unicode`, `std.ascii` - pure functions
-- `std.hash.*` - hash functions
-- `std.sort` - sorting
-- `std.BoundedArray` - stack-based container
-
-### GOT (Global Offset Table)
-
-The linker does not support GOT-relative relocations like `R_X86_64_REX_GOTPCRELX` (type 42) or `R_X86_64_GOTPCREL` (type 9).
-Zig may generate these when declaring `extern` variables, from C headers (e.g., `M_TEMP` from `sys/malloc.h`).
-
-```
-kldload: unexpected relocation type 42, symbol index N
-link_elf_obj: symbol M_TEMP undefined
-```
-
-Use `@extern` to import a pointer to a variable with visibility `hidden`. This should force LLVM to eliminate the need for GOTPCREL:
-
-```zig
-const M_TEMP = @extern(*c.struct_malloc_type, .{ .name = "M_TEMP", .visibility = .hidden });
-```
-
-## Zig translate-c limitations
-
-Zig's `@cImport` does not work reliably with FreeBSD kernel headers. See **docs/01-decisions.md**
-for full rationale.
-
-**Current approach:** Avoid `@cImport`. Use `@extern` for function declarations.
-Keep kernel interactions in C code.
-
-### Bitfield structs
-
-Zig's C translator demotes structs with bitfields to opaque types (ref "[Translation failures][1]"). FreeBSD headers
-use bitfields in `struct user_segment_descriptor` and `struct gate_descriptor`, which are embedded in `struct pcpu`.
-
-The `src/hack.h` header provides bitfield-free replacements. It must be included before other system headers if `@cImport` is used in the future.
-
-[1]: https://ziglang.org/documentation/master/#Translation-failures
-
-### LLVM printf optimization
-
-Do not declare printf as `pub extern "c" fn printf(...)`. LLVM recognizes this as
-libc printf and optimizes calls like `printf("foo\n")` to `puts("foo")`. The kernel
-does not export `puts`, causing link failures.
-
-Use `@extern` to import as a function pointer, which defeats the optimization:
-
-```zig
-const printf = @extern(*const fn ([*:0]const u8) callconv(.c) c_int, .{ .name = "printf" });
-```
-
-## net80211 swscan private struct layout
-
-The swscan module uses a private `struct scan_state` that extends
-`ieee80211_scan_state`. The struct is not exported, but the driver needs
-access to drain scan tasks during VAP teardown. Layout (FreeBSD 15):
-
-```c
-struct scan_state {
-    struct ieee80211_scan_state base;
-    u_int ss_iflags;           // ISCAN_* flags
-    unsigned long ss_chanmindwell;
-    unsigned long ss_scanend;
-    u_int ss_duration;
-    struct task ss_scan_start;
-    struct timeout_task ss_scan_curchan;
-};
-```
-
-ISCAN flags: MINDWELL=0x01, DISCARD=0x02, INTERRUPT=0x04, CANCEL=0x08,
-ABORT=0x10, RUNNING=0x20.
-
-`scan_curchan_task` accesses `ss->ss_vap` via `IEEE80211_DPRINTF` BEFORE
-checking abort flags. If `ss_vap` is NULL, the kernel faults at address 0x6a
-(`vap->iv_debug` offset). Pre-set `ic->ic_scan->ss_vap` in vap_create.
-
-## Group key EA field
-
-The `wsec_key` iovar for group keys requires `ea` field set to all zeros.
-Setting `ea=ff:ff:ff:ff:ff:ff` (broadcast) returns BCME_UNSUPPORTED (5).
-The Linux driver leaves `ea` zeroed for group keys in STA mode.
 
 ## Firmware WPA2 limitations (v7.35.180.133)
 
@@ -195,15 +92,3 @@ flag).
 (0x1ff) before `ieee80211_ifattach`. This bypasses the regdomain
 filter and preserves all channels from `ic_getradiocaps`. The
 firmware handles regulatory enforcement.
-
-## Chip stuck after kernel panic
-
-After a kernel panic, the BCM4350 PCI device may stop responding to
-BAR0 MMIO reads (returns 0xffffffff). The ARM core is in an undefined
-state and the backplane ignores reads.
-
-- `devctl reset` does not help
-- D3→D0 PCI power management transition does not help
-- VM reboot does not help (QEMU PCI passthrough doesn't reset the
-  physical device)
-- **Physical host power cycle required** to restore the chip
