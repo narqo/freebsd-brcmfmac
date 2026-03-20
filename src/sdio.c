@@ -639,18 +639,17 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    "firmware booted, sharedram=0x%08x\n", shared);
 	}
 
-	/* Wait for F2 ready (CCCR IORdy bit 2). */
+	/* Check F2 ready (CCCR IORdy bit 2).
+	 * Single read — poll loops with pause_sbt hang the Arasan SDHCI
+	 * when F2 is not immediately ready (see docs/10-investigations.md).
+	 * On first load after fresh boot, F2 is typically not ready;
+	 * a second kldload finds it ready immediately. */
 	{
-		uint8_t iordy = 0;
-		for (i = 0; i < 50; i++) {
-			iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
-			if (error == 0 && (iordy & 0x04))
-				break;
-			pause_sbt("brcmf2", mstosbt(50), 0, 0);
-		}
+		uint8_t iordy;
+		iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
 		device_printf(sc->dev,
-		    "CCCR IORdy=0x%02x (F2_ready=%d) iter=%d\n",
-		    iordy, (iordy & 0x04) != 0, i);
+		    "CCCR IORdy=0x%02x (F2_ready=%d)\n",
+		    iordy, (iordy & 0x04) != 0);
 		if (!(iordy & 0x04)) {
 			device_printf(sc->dev, "F2 not ready, aborting\n");
 			return (ENXIO);

@@ -50,6 +50,27 @@ After a hung `kldload`, the module name stays registered in the kernel.
 `kldunload` fails because the module is in an inconsistent state. A reboot
 is required to clear it.
 
+### Build artifact verification
+
+After `make`, always verify the .ko is valid before loading:
+
+```sh
+file if_brcmfmac.ko   # must say "ELF 64-bit"
+wc -c if_brcmfmac.ko  # must be >10KB
+```
+
+Unclean reboots corrupt UFS inodes. `make` reports success and
+correct sizes, but the on-disk file is 0 bytes. If the .ko is
+corrupt, `rm -f` it and rebuild, or build in `/tmp`.
+
+### Hang recovery
+
+After a detected hang, if the host is not reachable via SSH
+within 5 minutes, stop and wait for the user to confirm
+readiness. Unclean reboots trigger fsck on the UFS root, which
+can take minutes to over an hour. Repeated hangs compound the
+corruption.
+
 ## Boot prerequisites (DONE)
 
 1. **config.txt**: Remove `dtoverlay=mmc` to enable `mmcnr@7e300000`.

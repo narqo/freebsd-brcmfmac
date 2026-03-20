@@ -30,10 +30,16 @@ cd src/brcmfmac2/
 make clean; make
 ```
 
-Verify the artifact exists:
+Verify the artifact is a valid ELF (not a 0-byte corrupt file):
 ```sh
-ls -1 if_brcmfmac.ko
+file if_brcmfmac.ko   # must say "ELF 64-bit"
+wc -c if_brcmfmac.ko  # must be >10KB
 ```
+
+Unclean reboots (watchdog, power loss) can corrupt the UFS
+filesystem, leaving build output as 0-byte files. The `make`
+succeeds and reports correct sizes, but the on-disk file is
+empty. Always verify with `file` + `wc -c` before loading.
 
 ### 3. Ensure test VM is running
 
@@ -258,12 +264,21 @@ When testing code that may crash:
 
 ### Unresponsive test host
 
-If a test host (VM or RPi4) does not respond to SSH after **3 consecutive
-attempts with ≥2min waits between them**, stop retrying and ask the user to
-intervene. The RPi4 boots slowly (~90s) and may need additional time for
-fsck after unclean shutdown. Common causes of prolonged outage — hung
-kldload consuming all CPU, SDHCI controller locked up, reboot loop.
-Automated retries beyond 3 attempts waste time and cannot fix these.
+If a test host (VM or RPi4) does not respond to SSH within **5 minutes**
+after a detected hang, **stop retrying and ask the user to confirm the
+host is ready**. Do not keep polling.
+
+After an unclean reboot (watchdog, power loss), the RPi4's UFS root
+filesystem requires fsck. This can take minutes to over an hour
+depending on corruption severity. The system will not accept SSH
+connections until fsck completes and the network stack starts.
+Repeated hard hangs compound the corruption.
+
+Common causes of prolonged outage:
+- Long fsck after filesystem corruption from unclean reboot
+- Boot loop from severely corrupted fs
+- SDHCI controller locked up (pre-SDIOF2FIX1 kernels)
+- Hung kldload consuming all CPU (spinlock deadlock)
 
 ### Recovering logs after a hang
 
