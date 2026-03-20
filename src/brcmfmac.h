@@ -157,6 +157,7 @@ struct brcmf_softc {
 	uint8_t sdpcm_rx_seq;		/* SDPCM last received seq */
 	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
 	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
+	uint8_t sdpcm_txbuf[2048];	/* SDPCM TX frame buffer */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */

@@ -463,8 +463,11 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	brcmf_sdio_bp_write32(sc, sc->ram_base + sc->ram_size - 4, 0);
 
 	/* Write firmware to RAM */
+	device_printf(sc->dev, "writing firmware (%zu bytes) to 0x%x...\n",
+	    fw->datasize, sc->ram_base);
 	error = brcmf_sdio_bp_write_block(sc, sc->ram_base,
 	    fw->data, fw->datasize);
+	device_printf(sc->dev, "firmware write done, error=%d\n", error);
 	if (error != 0) {
 		device_printf(sc->dev, "firmware write failed: %d\n", error);
 		return (error);
@@ -492,6 +495,8 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			}
 		}
 	}
+
+	device_printf(sc->dev, "firmware verify passed\n");
 
 	/* Write NVRAM to end of RAM */
 	if (nvram != NULL && nvram_len > 0) {
@@ -545,9 +550,24 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 	device_printf(sc->dev, "ARM released, waiting for F2...\n");
 
-	/* Force HT clock — firmware needs it to run and signal F2 */
+	/* Request and wait for HT clock. The SDIO core needs the backplane
+	 * HT clock to complete F2 initialization. */
 	sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_CHIPCLKCSR,
-	    SBSDIO_FORCE_HT, &error);
+	    SBSDIO_HT_AVAIL_REQ | SBSDIO_FORCE_HT, &error);
+	{
+		uint8_t clkval;
+		for (i = 0; i < 100; i++) {
+			pause_sbt("brcmht", mstosbt(10), 0, 0);
+			clkval = sdio_read_1(sc->sdio_func1,
+			    SBSDIO_FUNC1_CHIPCLKCSR, &error);
+			if (error != 0)
+				break;
+			if (clkval & SBSDIO_HT_AVAIL)
+				break;
+		}
+		device_printf(sc->dev, "HT clock: clkval=0x%02x iter=%d\n",
+		    clkval, i);
+	}
 
 	/* Tell firmware our protocol version via tosbmailboxdata */
 	if (sc->sdiocore.base != 0)
@@ -572,6 +592,22 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			sdio_enable_func(sc->sdio_func2);
 	}
 
+	/* Set F2 block size on the card via CCCR FBR before F2 becomes
+	 * ready. Also update sdiob's cur_blksize so it uses byte mode
+	 * for frames < 512 bytes (multi-block hangs the Arasan SDHCI). */
+	{
+		int bserr;
+		sdio_f0_write_1(sc->sdio_func1, 0x210,
+		    SDIO_F2_BLOCKSIZE & 0xFF, &bserr);
+		sdio_f0_write_1(sc->sdio_func1, 0x211,
+		    (SDIO_F2_BLOCKSIZE >> 8) & 0xFF, &bserr);
+		/* Update sdiob's internal cur_blksize directly. The
+		 * sdio_set_block_size API hangs when called before F2
+		 * is ready — it goes through CAM which blocks. */
+		if (sc->sdio_func2 != NULL)
+			sc->sdio_func2->cur_blksize = SDIO_F2_BLOCKSIZE;
+	}
+
 	/* Diag: read SDIO core intstatus */
 	if (sc->sdiocore.base != 0) {
 		uint32_t intst = brcmf_sdio_bp_read32(sc,
@@ -579,9 +615,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		device_printf(sc->dev, "sdio core intstatus=0x%08x\n", intst);
 	}
 
-	/* Wait for firmware to write shared RAM address (last 4 bytes of RAM).
-	 * The CCCR IORdy F2 bit is unreliable on FreeBSD's SDIO stack;
-	 * poll the shared RAM marker instead. */
+	/* Wait for firmware boot via sharedram marker (F1 backplane reads). */
 	{
 		uint32_t shared = 0;
 		for (i = 0; i < BRCMF_SDIO_F2_READY_TIMEOUT_MS /
@@ -603,6 +637,24 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 		device_printf(sc->dev,
 		    "firmware booted, sharedram=0x%08x\n", shared);
+	}
+
+	/* Wait for F2 ready (CCCR IORdy bit 2). */
+	{
+		uint8_t iordy = 0;
+		for (i = 0; i < 50; i++) {
+			iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
+			if (error == 0 && (iordy & 0x04))
+				break;
+			pause_sbt("brcmf2", mstosbt(50), 0, 0);
+		}
+		device_printf(sc->dev,
+		    "CCCR IORdy=0x%02x (F2_ready=%d) iter=%d\n",
+		    iordy, (iordy & 0x04) != 0, i);
+		if (!(iordy & 0x04)) {
+			device_printf(sc->dev, "F2 not ready, aborting\n");
+			return (ENXIO);
+		}
 	}
 
 	/* Configure SDIO core host interrupt mask */
@@ -725,9 +777,9 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 		device_printf(sc->dev, "F2 block size set to %d\n",
 		    SDIO_F2_BLOCKSIZE);
 
-		/* Also try via API if available */
-		if (sc->sdio_func2 != NULL)
-			sdio_set_block_size(sc->sdio_func2, SDIO_F2_BLOCKSIZE);
+		/* Skip sdio_set_block_size(func2) — it goes through CAM
+		 * and hangs. The CCCR FBR writes above + direct
+		 * cur_blksize update in download_fw are sufficient. */
 	}
 
 	/* Diagnostic sysctl */
@@ -775,10 +827,12 @@ brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
 		    SBSDIO_FUNC1_CHIPCLKCSR, &error);
 		uint8_t devctl = sdio_read_1(sc->sdio_func1,
 		    0x10009 /* SBSDIO_DEVICE_CTL */, &error);
+		uint8_t ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &error);
+		uint8_t iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
 		len = snprintf(buf, sizeof(buf),
 		    "intst=0x%08x hostmask=0x%08x tohost=0x%08x "
-		    "clk=0x%02x devctl=0x%02x\n",
-		    intst, hostmask, tohost, clkval, devctl);
+		    "clk=0x%02x devctl=0x%02x IOEx=0x%02x IORdy=0x%02x\n",
+		    intst, hostmask, tohost, clkval, devctl, ioex, iordy);
 	}
 
 	return SYSCTL_OUT(req, buf, len);

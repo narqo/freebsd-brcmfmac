@@ -128,18 +128,23 @@ static int
 brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
     const void *data, uint16_t len)
 {
-	uint8_t frame[SDPCM_MAX_FRAME_SIZE];
+	uint8_t *frame;
 	uint16_t flen;
 	int error;
 
 	flen = SDPCM_HDRLEN + len;
-	if (flen > sizeof(frame))
+	if (flen > SDPCM_MAX_FRAME_SIZE)
 		return (EMSGSIZE);
 
-	/* Round up to F2 block size for SDIO block-mode transfer */
+	/* Round up to 4-byte alignment */
 	flen = (flen + SDPCM_F2_BLKSZ - 1) & ~(SDPCM_F2_BLKSZ - 1);
 
-	memset(frame, 0, SDPCM_HDRLEN);
+	/* Use the softc TX buffer. The SDHCI PIO path may reference
+	 * the data pointer from an interrupt after a CAM timeout;
+	 * a stack-local buffer would be stale by then. The ioctl_mtx
+	 * serializes callers so only one frame is in flight. */
+	frame = sc->sdpcm_txbuf;
+	memset(frame, 0, flen);
 
 	/* HW header: length and complement */
 	frame[0] = flen & 0xFF;
@@ -156,25 +161,14 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	if (data != NULL && len > 0)
 		memcpy(frame + SDPCM_HDRLEN, data, len);
 
-	/* Write to F2. Use backplane-windowed address with incrementing.
-	 * If that fails, try FIFO (non-incrementing at address 0). */
-	{
-		uint32_t addr = sc->sdiocore.base;
-		uint32_t offset;
-
-		brcmf_sdio_set_window(sc, addr);
-		offset = (addr & 0x7FFF) | 0x8000;
-
-		error = SDIO_WRITE_EXTENDED(
-		    device_get_parent(sc->sdio_func2->dev),
-		    sc->sdio_func2->fn, offset, flen, frame, true);
-		if (error != 0) {
-			/* Fallback: try address 0 non-incrementing */
-			error = SDIO_WRITE_EXTENDED(
-			    device_get_parent(sc->sdio_func2->dev),
-			    sc->sdio_func2->fn, 0, flen, frame, false);
-		}
-	}
+	/* F2 data writes go to the chip's FIFO at address 0, incrementing. */
+	error = SDIO_WRITE_EXTENDED(
+	    device_get_parent(sc->sdio_func2->dev),
+	    sc->sdio_func2->fn, 0, flen, frame, true);
+	if (error != 0)
+		device_printf(sc->dev,
+		    "F2 write failed: err=%d ch=%d flen=%u blksz=%u\n",
+		    error, channel, flen, sc->sdio_func2->cur_blksize);
 
 	return (error);
 }
