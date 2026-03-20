@@ -40,8 +40,8 @@ the project.
 Important RPi4 test host specifics:
 
 - Address: `freebsd@192.168.20.106`
-- OS: FreeBSD 15.0-STABLE kernel #21 (SDIO + SDHCI patches, no hot-path instrumentation)
-- Build dir: `~/src/`; `/tmp` is cleared on reboot.
+- OS: FreeBSD 15.0-STABLE kernel #25 (SDIO + SDHCI patches)
+- Build dir: `~/src/brcmfmac2`; `/tmp` is cleared on reboot.
 
 The driver requires the net80211 wlan module (`MODULE_DEPEND` on
 `wlan`). The RPi4 kernel includes `device wlan`.
@@ -85,7 +85,7 @@ through `sc->bus_ops->ioctl()` / `sc->bus_ops->tx()`.
 
 ## Build system (DONE)
 
-Build on RPi4: `cd ~/brcmfmac_build && sudo make -j2`
+Build on RPi4: `cd ~/src/brcmfmac2`
 
 ## Milestones
 
@@ -146,50 +146,30 @@ Blocked on M-S3 (F2 writes).
 - [ ] Channel/mode setup (1SS HT, no VHT)
 - [ ] Scan, association, WPA2
 
-## Current blocker: F2 not ready (IORdy)
+## Current blocker: Arasan SDHCI hangs on F2 operations
 
-**Status (19 Mar 2026, kernel #21 — 4 patches, no instrumentation):**
+**Status (20 Mar 2026, kernel #25):**
 
-F1 works. Firmware boots. F2 CMD53 writes return EIO (byte mode,
-non-fatal). The root cause is confirmed: CCCR IORdy (reg 0x03)
-does not have the F2 ready bit set.
+F1 works. Firmware boots. F2 becomes ready (IORdy=0x06 confirmed
+on kernel #23 run). Two Arasan SDHCI controller bugs prevent F2
+data transfer:
 
-```
-IOEx=0x06  IORdy=0x02  → F2 enabled but not ready
-```
+**Bug 1 (CMD52 poll hang):** Repeated CMD52 reads to CCCR 0x03
+(IORdy) hang the controller. Single reads work. This prevents
+polling for F2 readiness.
 
-The SDHCI/sdiob stack is not at fault — the card itself reports
-F2 as not ready. The firmware is running (sharedram marker valid,
-SDIO core shows frame indication), but it hasn't signaled F2
-readiness.
+**Bug 2 (CMD53 PIO write hang):** F2 CMD53 byte-mode writes hang
+the controller when F2 is ready. When F2 is NOT ready, the card
+NAKs immediately (EIO) and the controller recovers. On kernel #23,
+F2 was ready on the first check (iter=1), block size was set, then
+the first F2 CMD53 write (ver ioctl) hung the system.
 
-**Confirmed behavior (kernel #21, 4-bit bus, 25 MHz):**
+Both bugs confirmed present through kernel #25. See
+`docs/10-investigations.md` for full timeline.
 
-| What | Result |
-|------|--------|
-| F1 CMD53 write (fw download) | works |
-| F2 CMD53 read | works |
-| F2 CMD53 write (byte, 160B, addr 0) | EIO (non-fatal) |
-| Repeated F0 CMD52 reads (~500x, 5s) | SDHCI controller hang |
-| Single IORdy check + F2 write | EIO, system stable |
+**Driver workaround:** Single IORdy check only (no poll loop).
+If F2 is not ready, abort with ENXIO. This keeps kldload
+non-destructive — the system remains stable and a reboot clears
+the module.
 
-**Key finding:** Polling CCCR 0x03 in a tight loop (~500 reads
-over 5 seconds) hangs the Arasan SDHCI controller. Single reads
-are fine.
-
-**Hypothesis:** The firmware needs additional host-side setup
-before it marks F2 as ready. Possible causes:
-1. CCCR interrupt enable (reg 0x04) may need F2 bit set
-2. Firmware may require the host to ack pending intstatus or
-   read the tohost mailbox before asserting F2 ready
-3. Watermark and devctl configuration may need to happen before
-   the F2 ready check (currently done after)
-4. The Linux brcmfmac driver may have additional init steps
-   between F2 enable and the first F2 data write
-
-**Next steps:**
-1. Study Linux `brcmf_sdio_bus_init()` / `brcmf_sdio_download_firmware()`
-   for the exact sequence between F2 enable and first data write
-2. Try setting CCCR interrupt enable (0x04) bit 2 for F2
-3. Try moving watermark/devctl config before the F2 ready check
-4. Try acking intstatus before checking IORdy
+**Blocked on:** SDHCI controller fixes for F2 CMD53 PIO writes.
