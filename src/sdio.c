@@ -79,6 +79,7 @@
 #define SD_REG_INTSTATUS	0x020
 #define SD_REG_HOSTINTMASK	0x024
 #define SD_REG_TOSBMAILBOXDATA	0x048
+#define SD_REG_TOHOSTMAILBOXDATA 0x044
 
 /* Protocol version for tosbmailboxdata */
 #define SDPCM_PROT_VERSION	4
@@ -449,6 +450,21 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	if (sc->ramcore.id != 0 && sc->ramcore.wrapbase != 0)
 		brcmf_sdio_core_reset(sc, &sc->ramcore, 0, 0, 0);
 
+	/* Disable F2 before firmware download to clear stale frame state.
+	 * Linux does this during probe. Without it, a second kldload
+	 * leaves F2 enabled from the previous load, and the new firmware
+	 * may not re-initialize F2 properly. */
+	{
+		uint8_t ioex;
+		ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &error);
+		if (ioex & 0x04) {
+			ioex &= ~0x04;
+			sdio_f0_write_1(sc->sdio_func1, 0x02, ioex, &error);
+		}
+		if (sc->sdio_func2 != NULL)
+			sdio_disable_func(sc->sdio_func2);
+	}
+
 	/* Halt ARM */
 	brcmf_sdio_core_disable(sc, &sc->armcore,
 	    BCMA_IOCTL_CPUHALT, BCMA_IOCTL_CPUHALT);
@@ -639,21 +655,43 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    "firmware booted, sharedram=0x%08x\n", shared);
 	}
 
-	/* Check F2 ready (CCCR IORdy bit 2).
-	 * Single read — poll loops with pause_sbt hang the Arasan SDHCI
-	 * when F2 is not immediately ready (see docs/10-investigations.md).
-	 * On first load after fresh boot, F2 is typically not ready;
-	 * a second kldload finds it ready immediately. */
+	/* Poll F2 ready (CCCR IORdy bit 2), up to 3s.
+	 * The F0 timeout=0 bug in sdiob (fixed in SDIOF2PACE2) caused
+	 * these polls to hang — CAM waited forever on fn=0 CMD52. */
 	{
-		uint8_t iordy;
-		iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
+		uint8_t iordy = 0;
+		for (i = 0; i < 300; i++) {
+			iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &error);
+			if (error == 0 && (iordy & 0x04))
+				break;
+			pause_sbt("brcmf2", mstosbt(10), 0, 0);
+		}
 		device_printf(sc->dev,
-		    "CCCR IORdy=0x%02x (F2_ready=%d)\n",
-		    iordy, (iordy & 0x04) != 0);
+		    "CCCR IORdy=0x%02x (F2_ready=%d) iter=%d\n",
+		    iordy, (iordy & 0x04) != 0, i);
 		if (!(iordy & 0x04)) {
 			device_printf(sc->dev, "F2 not ready, aborting\n");
 			return (ENXIO);
 		}
+	}
+
+	/* Ack any pending SDIO core interrupts before enabling the mask.
+	 * Stale intstatus bits from firmware boot could interfere. */
+	if (sc->sdiocore.base != 0) {
+		uint32_t intst = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_INTSTATUS);
+		if (intst != 0)
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_INTSTATUS, intst);
+		device_printf(sc->dev,
+		    "pre-mask intstatus=0x%08x (acked)\n", intst);
+	}
+
+	/* Read and ack tohost mailbox — firmware may have posted data. */
+	if (sc->sdiocore.base != 0) {
+		uint32_t tohost = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
+		device_printf(sc->dev, "tohost mailbox=0x%08x\n", tohost);
 	}
 
 	/* Configure SDIO core host interrupt mask */
@@ -678,6 +716,24 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 		sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_MESBUSYCTRL,
 		    CY_43455_MES_WATERMARK | SBSDIO_MESBUSYCTRL_ENAB, &err);
+	}
+
+	/* Dump full state after init for diagnostics */
+	if (sc->sdiocore.base != 0) {
+		uint32_t intst = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_INTSTATUS);
+		uint32_t hmask = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_HOSTINTMASK);
+		uint8_t clk = sdio_read_1(sc->sdio_func1,
+		    SBSDIO_FUNC1_CHIPCLKCSR, &error);
+		uint8_t devctl = sdio_read_1(sc->sdio_func1,
+		    SBSDIO_DEVICE_CTL, &error);
+		uint8_t wm = sdio_read_1(sc->sdio_func1,
+		    SBSDIO_WATERMARK, &error);
+		device_printf(sc->dev,
+		    "post-init: intst=0x%08x hmask=0x%08x "
+		    "clk=0x%02x devctl=0x%02x wm=0x%02x\n",
+		    intst, hmask, clk, devctl, wm);
 	}
 
 	return (0);

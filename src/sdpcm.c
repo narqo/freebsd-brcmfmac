@@ -57,8 +57,7 @@
 #define BCDC_PROTO_VER		2
 #define BCDC_FLAG_VER_SHIFT	4
 
-/* Max control buffer */
-#define BRCMF_SDPCM_CTL_BUFSZ	(SDPCM_HDRLEN + BCDC_DCMD_HDRLEN + 8192)
+/* Max control buffer — defined in brcmfmac.h, allocated in softc */
 
 /* IOCTL timeout */
 #define BRCMF_SDPCM_IOCTL_TIMEOUT_MS	3000
@@ -161,14 +160,40 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	if (data != NULL && len > 0)
 		memcpy(frame + SDPCM_HDRLEN, data, len);
 
-	/* F2 data writes go to the chip's FIFO at address 0, incrementing. */
-	error = SDIO_WRITE_EXTENDED(
-	    device_get_parent(sc->sdio_func2->dev),
-	    sc->sdio_func2->fn, 0, flen, frame, true);
-	if (error != 0)
+	/* F2 frame port at ChipCommon base window.
+	 * Linux: addr = (cc_core->base & 0x7fff) | 0x8000 = 0x8000 */
+	{
+		uint32_t addr = SI_ENUM_BASE;
+		uint32_t offset;
+
+		brcmf_sdio_set_window(sc, addr);
+		offset = (addr & 0x7FFF) | 0x8000;
+
+		error = SDIO_WRITE_EXTENDED(
+		    device_get_parent(sc->sdio_func2->dev),
+		    sc->sdio_func2->fn, offset, flen, frame, true);
+	}
+	if (error != 0) {
 		device_printf(sc->dev,
 		    "F2 write failed: err=%d ch=%d flen=%u blksz=%u\n",
 		    error, channel, flen, sc->sdio_func2->cur_blksize);
+		/* Dump chip state after failed write */
+		if (sc->sdiocore.base != 0) {
+			uint32_t intst = brcmf_sdio_bp_read32(sc,
+			    sc->sdiocore.base + 0x020);
+			uint32_t tohost = brcmf_sdio_bp_read32(sc,
+			    sc->sdiocore.base + 0x044);
+			int derr;
+			uint8_t iordy = sdio_f0_read_1(sc->sdio_func1,
+			    0x03, &derr);
+			uint8_t devctl = sdio_read_1(sc->sdio_func1,
+			    0x10009, &derr);
+			device_printf(sc->dev,
+			    "post-fail: intst=0x%08x tohost=0x%08x "
+			    "IORdy=0x%02x devctl=0x%02x\n",
+			    intst, tohost, iordy, devctl);
+		}
+	}
 
 	return (error);
 }
@@ -198,11 +223,9 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 		    intst & I_HMB_FRAME_IND);
 	}
 
-	/* Read from F2 via backplane-windowed SDIO core address.
-	 * Linux uses sdiodev->cc_core->base (the SDIO device core)
-	 * as the F2 read address, windowed through the backplane. */
+	/* F2 frame port at ChipCommon base window (same as send path). */
 	{
-		uint32_t addr = sc->sdiocore.base;
+		uint32_t addr = SI_ENUM_BASE;
 		uint32_t offset;
 
 		brcmf_sdio_set_window(sc, addr);
@@ -255,8 +278,8 @@ int
 brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len)
 {
-	uint8_t txbuf[BRCMF_SDPCM_CTL_BUFSZ];
-	uint8_t rxbuf[BRCMF_SDPCM_CTL_BUFSZ];
+	uint8_t *txbuf = sc->sdpcm_ioctl_tx;
+	uint8_t *rxbuf = sc->sdpcm_ioctl_rx;
 	struct bcdc_dcmd *dcmd;
 	uint16_t reqid;
 	uint32_t flags;
@@ -289,8 +312,8 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	dcmd->status = 0;
 
 	if (buf != NULL && len > 0) {
-		if (len > sizeof(txbuf) - BCDC_DCMD_HDRLEN)
-			len = sizeof(txbuf) - BCDC_DCMD_HDRLEN;
+		if (len > BRCMF_SDPCM_CTL_BUFSZ - BCDC_DCMD_HDRLEN)
+			len = BRCMF_SDPCM_CTL_BUFSZ - BCDC_DCMD_HDRLEN;
 		memcpy(txbuf + BCDC_DCMD_HDRLEN, buf, len);
 	}
 
@@ -309,7 +332,7 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 		pause_sbt("brcmio", mstosbt(10), 0, 0);
 
-		error = brcmf_sdpcm_recv(sc, rxbuf, sizeof(rxbuf),
+		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
 		    &chan, &dlen, &payload);
 		if (error != 0)
 			continue;
@@ -457,7 +480,7 @@ brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 int
 brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 {
-	uint8_t frame[SDPCM_MAX_FRAME_SIZE];
+	uint8_t *frame = sc->sdpcm_data_tx;
 	uint16_t pktlen;
 	int error;
 
@@ -467,7 +490,7 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 	}
 
 	pktlen = m->m_pkthdr.len;
-	if (BCDC_HEADER_LEN + pktlen > sizeof(frame) - SDPCM_HDRLEN) {
+	if (BCDC_HEADER_LEN + pktlen > SDPCM_MAX_FRAME_SIZE - SDPCM_HDRLEN) {
 		m_freem(m);
 		return (EMSGSIZE);
 	}

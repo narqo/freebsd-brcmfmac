@@ -28,6 +28,9 @@
 
 struct sdio_func;
 
+/* Chip enumeration base address — used for F2 frame port window */
+#define SI_ENUM_BASE		0x18000000
+
 /* PCI IDs */
 #define PCI_VENDOR_BROADCOM 0x14e4
 #define PCI_DEVICE_BCM4350  0x43a3
@@ -158,6 +161,11 @@ struct brcmf_softc {
 	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
 	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
 	uint8_t sdpcm_txbuf[2048];	/* SDPCM TX frame buffer */
+	/* SDPCM ioctl buffers — too large for 16KB kernel stack */
+#define BRCMF_SDPCM_CTL_BUFSZ	(12 + 16 + 8192)
+	uint8_t sdpcm_ioctl_tx[BRCMF_SDPCM_CTL_BUFSZ];
+	uint8_t sdpcm_ioctl_rx[BRCMF_SDPCM_CTL_BUFSZ];
+	uint8_t sdpcm_data_tx[2048];	/* BCDC+payload for brcmf_sdpcm_tx */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
