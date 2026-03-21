@@ -2,137 +2,88 @@
 
 Read docs/02-build-test.md for general guidance.
 Read docs/05-sdio-plan.md for hardware details.
-Read docs/10-investigations.md for previous investigations.
+Read docs/10-investigations.md for investigation history.
 
-## Current state (20 Mar 2026)
+## Current state (21 Mar 2026)
 
-M-S1, M-S2, M-S4 done. Firmware boots, F2 becomes ready
-(IORdy=0x06). SDPCM/BCDC protocol code exists in `sdpcm.c`.
-SDHCI bugs fixed (kernel SDIOF2FIX1).
+M-S1, M-S2, M-S4 done. Kernel: SDIOF2PACE2.
 
-**Blocker:** F2 CMD53 writes fail with EIO. The CAM/sdiob layer
-returns `CAM_REQ_CMP_ERR` (error 5, retries exhausted). F2 reads
-work. The "ver" ioctl fails because `brcmf_sdpcm_send` cannot
-write the SDPCM frame to F2.
+F2 data path works. IORdy poll succeeds (iter=4, ~40ms). F2
+CMD53 write succeeds (no CRC error). The "ver" ioctl times
+out — firmware doesn't respond within 3s. Module loads (exit=0)
+but firmware version not retrieved yet.
 
-**IORdy poll hazard:** The 50×50ms IORdy poll loop hangs the
-system on first load after fresh boot (F2 not ready, loop runs
-all iterations). Replaced with a single check + abort. On second
-load, F2 is ready immediately. See docs/10-investigations.md.
+### Key lessons (avoid repeating)
 
-## Step 1: Make kldload safe — single IORdy check
+- arm64 kernel stack is 16KB — never put >1KB arrays on stack
+- sdiob F0 CMD52 timeout was 0; any F0 poll hung without kernel fix
+- F2 frame port address is SI_ENUM_BASE windowed (0x8000), not
+  sdiocore.base (0xC000)
+- Unclean reboots corrupt UFS; always verify .ko with `file` + `wc -c`
+- After hang, wait ≤5min for SSH then stop and wait for user
+- Check /var/crash and /var/log/messages after every failed load
+- `sdio_set_block_size(func2)` via CAM hangs; use CCCR FBR writes
+- R5 response bits in SDHCI resp[0] use mmcreg.h positions, not
+  raw 48-bit SDIO spec positions
 
-Replace the IORdy poll loop with a single CCCR 0x03 read. If F2
-is not ready, abort with ENXIO. The module can be loaded again.
+## Current experiment: skip IORdy, attempt F2 write anyway
 
-On first load after fresh boot: F2 not ready, clean abort.
-On second load: F2 ready (iter=0), proceeds to ver ioctl.
+### Rationale
 
-This avoids the `pause_sbt` hang without losing functionality —
-the F2 write fails with EIO regardless of F2 readiness.
+IORdy=0x02 does not necessarily mean the card rejects CMD53.
+On SDIOF2FIX1, F2 CMD53 writes return clean EIO (no hang) even
+when attempted. The firmware IS running (sharedram valid). The
+card may accept F2 data even without IORdy bit 2.
 
-**Status:** DONE
+If the write fails, the sdiob instrumentation will show the
+raw CMD53 arg, MMC error code, and R5 response — which is
+exactly what we need to diagnose the F2 write problem regardless
+of IORdy state.
 
-## Step 2: Debug F2 write EIO
+### What to change
 
-The real blocker. Every F2 CMD53 write returns EIO, even when
-F2 is ready (IORdy=0x06). Both 4-byte and 160-byte writes fail.
-F2 reads succeed.
+Remove the IORdy abort. After firmware boot, proceed directly
+to hostintmask/watermark config and the ver ioctl. Log IORdy
+value for diagnostics but don't gate on it.
 
-### 2a. Identify the SDHCI-level error
+### Expected outcomes
 
-Add diagnostic after the failed F2 write:
-- Read SDIO core intstatus
-- Check if sdhci reports timeout, CRC, or data error
-- Log the R5 response if available
+1. **F2 write succeeds** — firmware version string returned.
+   Proceed to step 2 (wire up brcmf_cfg_attach).
+2. **F2 write fails with EIO, sdiob logs details** — we learn
+   the exact MMC error and R5 response. Diagnose from there.
+3. **F2 write hangs** — SDHCI bug, need kernel fix. Watchdog
+   will fire in ~15s. (Unlikely: SDIOF2FIX1 returned clean EIO
+   for F2 CMD53 writes in prior tests.)
 
-### 2b. Check F2 write address
+### Alternative if this fails
 
-Our `brcmf_sdpcm_send` writes to F2 address 0 (FIFO, incr).
-Our `brcmf_sdpcm_recv` reads from the SDIO core backplane
-address. Linux may use a different write address. Compare
-against `brcmf_sdiod_send_buf` / `brcmf_sdiod_send_pkt` in
-the Linux driver.
+**Path A:** Ask kernel developer to investigate why F0 CMD52
+polls to CCCR 0x03 hang while F1 CMD52 polls to 0x1000E work.
+If fixed, we can poll IORdy for 3s like Linux, get F2 ready,
+then test writes normally.
 
-### 2c. Check for missing init steps
+## Step 2: Wire up `brcmf_cfg_attach`
 
-Compare our init sequence in `brcmf_sdio_download_fw` against
-Linux `brcmf_sdio_bus_init()`. Possible missing steps:
-- Ack pending intstatus before first F2 write
-- Clear tohost mailbox
-- Configure CCCR interrupt enables (reg 0x04) for F2
-- Set SDIO core sleep/wake state
+After the ver ioctl succeeds, call `brcmf_cfg_attach(sc)` from
+`brcmf_sdio_bus_attach` in `main.c`. `cfg.c` is bus-agnostic.
+BCM43455: 1SS HT, no VHT, MCS 0-7, 20/40 MHz.
 
-### 2d. Escalation path
+## Step 3: RX data path — polling callout
 
-If the EIO persists after 2a-2c, ask the kernel developer for
-sdhci-level tracing of the failed CMD53. The CAM layer hides
-the actual SDHCI error code. A printf in `sdhci_cmd_irq` or
-`sdhci_data_irq` showing `intmask` for the failing CMD53 would
-identify the root cause.
+Add a 10-20ms callout in `sdpcm.c` for RX frame processing.
+Race with ioctl poll: protect with `ioctl_mtx`.
 
-## Step 3: First successful ioctl
+## Step 4: Scan and association
 
-Once F2 writes work:
+Test with AP reachable from RPi4.
 
-Goal: `brcmf_fil_iovar_data_get(sc, "ver", ...)` returns the
-firmware version string.
+## Step 5: TX data path
 
-The ioctl sends an SDPCM control frame (F2 write), then polls
-for a response (F2 reads in `brcmf_sdpcm_recv`). The recv path
-reads 512 bytes from F2. If writes work but reads don't return
-data, check:
-
-- SDIO core intstatus for I_HMB_FRAME_IND (bit 6)
-- The recv address: currently uses backplane-windowed SDIO core
-  address. Linux reads from address 0. May need to unify.
-
-## Step 4: Wire up `brcmf_cfg_attach`
-
-After the "ver" ioctl succeeds, call `brcmf_cfg_attach(sc)` from
-`brcmf_sdio_bus_attach` in `main.c`. The existing `cfg.c` is
-bus-agnostic. BCM43455: 1SS HT, no VHT, MCS 0-7, 20/40 MHz.
-`cfg.c` auto-adapts from firmware responses.
-
-## Step 5: RX data path — polling callout
-
-Add a 10-20ms callout in `sdpcm.c`:
-1. Check SDIO core intstatus for frame indication
-2. `brcmf_sdpcm_recv` to read the frame
-3. Dispatch: control → ioctl, event → link/scan, data → if_input
-
-Race with ioctl poll: protect with `ioctl_mtx` or suppress
-callout during ioctl.
-
-## Step 6: Test scan and association
-
-1. `ifconfig wlan0 create wlandev brcmfmac0`
-2. `ifconfig wlan0 up`
-3. `ifconfig wlan0 list scan`
-4. `wpa_supplicant` (need AP reachable from RPi4)
-
-## Step 7: TX data path
-
-`brcmf_sdpcm_tx` already implements `bus_ops->tx`. Verify
-bidirectional data flow with ping after association.
-
-## Key differences from PCIe path
-
-| Aspect | PCIe (msgbuf) | SDIO (SDPCM+BCDC) |
-|--------|---------------|-------------------|
-| Ioctl | DMA ring + completion | SDPCM control channel |
-| TX | Flow ring + DMA | SDPCM data channel |
-| RX | Pre-posted buffers + completion ring | F2 read on poll |
-| Events | Embedded in RX completions | SDPCM event channel |
-| Flow control | Flow ring create/delete | SDPCM max_seq |
-
-`cfg.c` NULL-checks `flowring_create`/`flowring_delete` (both
-NULL for SDIO bus_ops).
+`brcmf_sdpcm_tx` exists. Verify with ping.
 
 ## Testing protocol
 
-1. Always verify .ko before loading: `file` + `wc -c`
-2. First load after fresh boot: expect F2 not ready, clean abort
-3. Second load: expect F2 ready, F2 write EIO (until step 2 resolved)
-4. If hang detected, wait ≤5min for SSH, then stop and wait for user
-5. After unclean reboot, re-verify .ko (fs corruption zeros files)
+1. Verify .ko: `file` + `wc -c` (must be ELF, >10KB)
+2. If hang detected, wait ≤5min then stop and wait for user
+3. After unclean reboot, re-verify .ko

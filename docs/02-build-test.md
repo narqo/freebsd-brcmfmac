@@ -5,6 +5,16 @@
 The project cannot be built locally - it requires FreeBSD 15 kernel headers.
 Build happens on a remote FreeBSD host, testing on a separate VM with the target hardware.
 
+## Local kernel source reference
+
+A read-only copy of the FreeBSD kernel source is at `freebsdsrc/` in the
+project root. This is the exact source the RPi4 testing host runs. Use it
+for investigating sdiob, sdhci, and other kernel internals without SSH.
+Key paths:
+- `freebsdsrc/sys/dev/sdio/` — sdiob, sdio_subr
+- `freebsdsrc/sys/dev/sdhci/` — sdhci controller
+- `freebsdsrc/sys/dev/mmc/` — MMC/SD stack
+
 ## Hosts
 
 | Host | Address | Purpose |

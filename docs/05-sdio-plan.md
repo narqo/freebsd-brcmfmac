@@ -167,30 +167,24 @@ Blocked on M-S3 (F2 writes).
 - [ ] Channel/mode setup (1SS HT, no VHT)
 - [ ] Scan, association, WPA2
 
-## Current blocker: Arasan SDHCI hangs on F2 operations
+## Current status: M-S3 in progress
 
-**Status (20 Mar 2026, kernel #25):**
+**Status (21 Mar 2026, kernel SDIOF2PACE2):**
 
-F1 works. Firmware boots. F2 becomes ready (IORdy=0x06 confirmed
-on kernel #23 run). Two Arasan SDHCI controller bugs prevent F2
-data transfer:
+F2 data path is operational. Firmware boots, IORdy poll works
+(F2 ready in ~40ms), F2 CMD53 write succeeds (no CRC error,
+no hang). The "ver" ioctl times out — firmware doesn't respond
+within 3s. Next: debug the ioctl response path.
 
-**Bug 1 (CMD52 poll hang):** Repeated CMD52 reads to CCCR 0x03
-(IORdy) hang the controller. Single reads work. This prevents
-polling for F2 readiness.
+**Resolved blockers:**
+1. IORdy poll hang — sdiob F0 timeout was 0 (kernel fix)
+2. F2 CMD53 write CRC error — PIO pacing (kernel fix) +
+   stack overflow in brcmf_sdpcm_ioctl (driver fix)
+3. F2 write address — corrected from 0xC000 to 0x8000
+4. F2 readiness — was never a card issue; IORdy poll couldn't
+   wait due to the F0 timeout bug
 
-**Bug 2 (CMD53 PIO write hang):** F2 CMD53 byte-mode writes hang
-the controller when F2 is ready. When F2 is NOT ready, the card
-NAKs immediately (EIO) and the controller recovers. On kernel #23,
-F2 was ready on the first check (iter=1), block size was set, then
-the first F2 CMD53 write (ver ioctl) hung the system.
-
-Both bugs confirmed present through kernel #25. See
-`docs/10-investigations.md` for full timeline.
-
-**Driver workaround:** Single IORdy check only (no poll loop).
-If F2 is not ready, abort with ENXIO. This keeps kldload
-non-destructive — the system remains stable and a reboot clears
-the module.
-
-**Blocked on:** SDHCI controller fixes for F2 CMD53 PIO writes.
+**Required kernel changes (SDIOF2PACE2):**
+- sdiob: `cardinfo.f[0].timeout = 5000`
+- sdhci: PIO pacing for CMD53 byte-mode F2 writes
+- sdhci: SDIOF2FIX1 hang prevention for F2 PIO
