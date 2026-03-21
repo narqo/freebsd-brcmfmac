@@ -47,7 +47,7 @@
 #define SDIO_F1_BLOCKSIZE	64
 
 /* F2 block size (BCM43455 default) */
-#define SDIO_F2_BLOCKSIZE	512
+#define SDIO_F2_BLOCKSIZE	64
 
 /* CCCR registers for F2 ready */
 #define SDIO_CCCR_IORx		0x02

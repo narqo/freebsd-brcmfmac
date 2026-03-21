@@ -272,6 +272,21 @@ When testing code that may crash:
 4. After a potential crash, wait ~15 seconds for VM to reboot and savecore to complete
 5. Check VM state from build host: `sudo vm list vm0`
 
+### Orphaned kldload processes
+
+Before every `kldload` attempt, check for stuck kldload processes
+from previous sessions:
+
+```sh
+ps aux | grep kldload | grep -v grep
+```
+
+If any exist, kill them first (`kill -9`). Processes in state D
+(uninterruptible sleep) cannot be killed — the board needs a reboot.
+
+Never launch a second `kldload` while the first is still running.
+If a `kldload` SSH command times out, check `ps` before retrying.
+
 ### Unresponsive test host
 
 If a test host (VM or RPi4) does not respond to SSH within **5 minutes**

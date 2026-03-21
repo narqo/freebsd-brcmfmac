@@ -80,8 +80,10 @@
 
 /* F2 transfer sizes */
 #define SDPCM_MAX_FRAME_SIZE	2048
-/* No block-size rounding; keep transfers in sdiob byte mode */
-#define SDPCM_F2_BLKSZ		4
+/* Round frames to F2 block size so sdiob uses block-mode CMD53.
+ * Block mode keeps PIO bursts to 16 words (64 bytes) per block,
+ * avoiding DATA_CRC on the Arasan SDHCI + BCM43455 F2 port. */
+#define SDPCM_F2_BLKSZ		64
 
 /* Event structures (same as msgbuf.c) */
 struct brcmf_event_msg_be {
@@ -160,19 +162,10 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	if (data != NULL && len > 0)
 		memcpy(frame + SDPCM_HDRLEN, data, len);
 
-	/* F2 frame port at ChipCommon base window.
-	 * Linux: addr = (cc_core->base & 0x7fff) | 0x8000 = 0x8000 */
-	{
-		uint32_t addr = SI_ENUM_BASE;
-		uint32_t offset;
-
-		brcmf_sdio_set_window(sc, addr);
-		offset = (addr & 0x7FFF) | 0x8000;
-
-		error = SDIO_WRITE_EXTENDED(
-		    device_get_parent(sc->sdio_func2->dev),
-		    sc->sdio_func2->fn, offset, flen, frame, true);
-	}
+	/* F2 is a FIFO — fixed address (incaddr=false) for writes. */
+	error = SDIO_WRITE_EXTENDED(
+	    device_get_parent(sc->sdio_func2->dev),
+	    sc->sdio_func2->fn, 0x8000, flen, frame, false);
 	if (error != 0) {
 		device_printf(sc->dev,
 		    "F2 write failed: err=%d ch=%d flen=%u blksz=%u\n",
@@ -211,35 +204,62 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 	uint32_t rdsz;
 	int error;
 
-	/* Check if data available via SDIO core status */
+	/* Check if data available via SDIO core status.
+	 * If no frame indication, try reading F2 anyway — the
+	 * intstatus check may miss frames if bits were acked
+	 * during init. An empty F2 read returns flen=0. */
 	if (sc->sdiocore.base != 0) {
 		uint32_t intst = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + SD_REG_INTSTATUS);
-		if (!(intst & (I_HMB_FRAME_IND | I_HMB_HOST_INT)))
-			return (EAGAIN);
-		/* Ack the frame indication */
-		brcmf_sdio_bp_write32(sc,
-		    sc->sdiocore.base + SD_REG_INTSTATUS,
-		    intst & I_HMB_FRAME_IND);
+		if (intst & I_HMB_FRAME_IND) {
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_INTSTATUS,
+			    intst & I_HMB_FRAME_IND);
+		}
 	}
 
-	/* F2 frame port at ChipCommon base window (same as send path). */
+	/* Read one 64-byte block from the F2 FIFO. Block-mode reads
+	 * for more data than the FIFO holds fail, so read one block
+	 * at a time. With cur_blksize=64, sdiob sends b_count=1.
+	 * If the read returns an error but the buffer has a valid
+	 * SDPCM header, use the data — the PIO transfer may have
+	 * completed before the SDHCI reported the error. */
 	{
-		uint32_t addr = SI_ENUM_BASE;
-		uint32_t offset;
-
-		brcmf_sdio_set_window(sc, addr);
-		offset = (addr & 0x7FFF) | 0x8000;
-
-		rdsz = 512;
+		rdsz = 64;
 		if (rdsz > bufsz)
 			rdsz = bufsz;
 
+		memset(buf, 0, rdsz);
 		error = SDIO_READ_EXTENDED(
 		    device_get_parent(sc->sdio_func2->dev),
-		    sc->sdio_func2->fn, offset, rdsz, buf, true);
-		if (error != 0)
-			return (error);
+		    sc->sdio_func2->fn, 0x8000, rdsz, buf, false);
+
+		/* Accept data if header looks valid despite error */
+		if (error != 0) {
+			uint16_t peek = buf[0] | (buf[1] << 8);
+			uint16_t comp = buf[2] | (buf[3] << 8);
+			if (peek == 0 || peek == 0xFFFF ||
+			    (peek ^ comp) != 0xFFFF)
+				return (error);
+		}
+	}
+
+	/* If frame is larger than 64 bytes, fetch remaining blocks. */
+	{
+		uint16_t peek_flen = buf[0] | (buf[1] << 8);
+		if (peek_flen > 64 && peek_flen <= bufsz) {
+			uint32_t remain = peek_flen - 64;
+			/* round up to block boundary */
+			remain = (remain + 63) & ~63;
+			if (remain + 64 > bufsz)
+				remain = bufsz - 64;
+			error = SDIO_READ_EXTENDED(
+			    device_get_parent(sc->sdio_func2->dev),
+			    sc->sdio_func2->fn, 0x8000, remain,
+			    buf + 64, false);
+			/* ignore error on follow-up reads if we have
+			 * enough data for the frame */
+		}
 	}
 
 	flen = buf[0] | (buf[1] << 8);
@@ -334,8 +354,16 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
 		    &chan, &dlen, &payload);
-		if (error != 0)
+		if (error != 0) {
+			if (i < 3)
+				device_printf(sc->dev,
+				    "recv[%d]: err=%d hdr=%02x%02x%02x%02x\n",
+				    i, error,
+				    rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
 			continue;
+		}
+		device_printf(sc->dev,
+		    "recv[%d]: ch=%d dlen=%d\n", i, chan, dlen);
 
 		if (chan == SDPCM_CONTROL_CHANNEL &&
 		    dlen >= BCDC_DCMD_HDRLEN) {

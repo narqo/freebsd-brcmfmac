@@ -169,22 +169,25 @@ Blocked on M-S3 (F2 writes).
 
 ## Current status: M-S3 in progress
 
-**Status (21 Mar 2026, kernel SDIOF2PACE2):**
+**Status (21 Mar 2026, kernel SDIO):**
 
 F2 data path is operational. Firmware boots, IORdy poll works
-(F2 ready in ~40ms), F2 CMD53 write succeeds (no CRC error,
-no hang). The "ver" ioctl times out — firmware doesn't respond
-within 3s. Next: debug the ioctl response path.
+(F2 ready in ~40ms), F2 CMD53 write succeeds. The "ver" ioctl
+times out — firmware doesn't respond within 3s. Next: debug
+the ioctl response path.
 
 **Resolved blockers:**
 1. IORdy poll hang — sdiob F0 timeout was 0 (kernel fix)
-2. F2 CMD53 write CRC error — PIO pacing (kernel fix) +
-   stack overflow in brcmf_sdpcm_ioctl (driver fix)
-3. F2 write address — corrected from 0xC000 to 0x8000
-4. F2 readiness — was never a card issue; IORdy poll couldn't
+2. F2 CMD53 write failure — stack overflow + wrong address +
+   wrong block size + wrong address mode (all driver fixes)
+3. F2 readiness — was never a card issue; IORdy poll couldn't
    wait due to the F0 timeout bug
 
-**Required kernel changes (SDIOF2PACE2):**
+**Required kernel change:**
 - sdiob: `cardinfo.f[0].timeout = 5000`
-- sdhci: PIO pacing for CMD53 byte-mode F2 writes
-- sdhci: SDIOF2FIX1 hang prevention for F2 PIO
+
+**Driver-side F2 transfer strategy:**
+- F2 block size: 64 bytes (keeps SDHCI PIO bursts small)
+- F2 address mode: fixed (FIFO)
+- Frame padding: rounded to 64-byte boundary
+- Recv: tolerant of read errors when valid SDPCM header present

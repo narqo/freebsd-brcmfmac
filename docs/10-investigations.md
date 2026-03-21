@@ -439,7 +439,7 @@ F2. The SDHCI controller reports a CRC error during or after
 the data transfer. This is an SDHCI/bus-level issue, not a
 card-level rejection.
 
-## 21 Mar 2026: kernel panic on SDIOF2PACE2 — stack overflow
+## 21 Mar 2026: kernel panic — stack overflow in brcmf_sdpcm_ioctl
 
 ### Panic
 
@@ -475,6 +475,30 @@ threaded TX path (data buffer).
 
 Also fixed `sizeof(txbuf)` / `sizeof(rxbuf)` references that
 would compute pointer size instead of buffer size.
+
+## 22 Mar 2026: F2 transfer configuration — RESOLVED
+
+### F2 block size, address mode, and frame padding
+
+The Arasan SDHCI cannot sustain large PIO bursts to the
+BCM43455 F2 port. The driver-side fix:
+
+- **F2 block size = 64 bytes**: sdiob uses block-mode CMD53
+  with 16-word PIO bursts per block (same as working F1 path)
+- **Fixed address mode** (incaddr=false): F2 is a FIFO,
+  incrementing addresses cause the chip to die
+- **Frame padding to 64-byte boundary**: ensures all data goes
+  as block-mode transfers with no byte-mode remainder
+- **Tolerant recv**: accepts data when valid SDPCM header
+  present despite sdiob error return (partial FIFO reads)
+
+### First successful ioctl
+
+```
+brcmfmac0: firmware: wl0: Aug 29 2023 01:47:08 version 7.45.265
+```
+
+No kernel changes needed beyond the sdiob F0 timeout fix.
 
 ## 19 Mar 2026: SDIO F2 writes, kernel #21
 

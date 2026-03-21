@@ -6,12 +6,16 @@ Read docs/10-investigations.md for investigation history.
 
 ## Current state (21 Mar 2026)
 
-M-S1, M-S2, M-S4 done. Kernel: SDIOF2PACE2.
+M-S1, M-S2, M-S4 done. Kernel: SDIO.
 
-F2 data path works. IORdy poll succeeds (iter=4, ~40ms). F2
-CMD53 write succeeds (no CRC error). The "ver" ioctl times
-out — firmware doesn't respond within 3s. Module loads (exit=0)
-but firmware version not retrieved yet.
+**M-S3 complete.** First successful SDPCM ioctl over SDIO F2:
+
+```
+firmware: wl0: Aug 29 2023 01:47:08 version 7.45.265 (28bca26 CY)
+```
+
+F2 transfers work with 64-byte blocks, fixed address, tolerant
+recv. No kernel changes beyond sdiob F0 timeout fix.
 
 ### Key lessons (avoid repeating)
 

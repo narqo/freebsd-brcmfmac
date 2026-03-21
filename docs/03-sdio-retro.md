@@ -24,7 +24,7 @@ first, not the hardware.
 ### 2. Kernel panic misdiagnosed as SDHCI hang
 
 **Symptom:** kldload hung, system went down, watchdog rebooted.
-Attributed to SDHCI regression in SDIOF2PACE2 kernel.
+Attributed to a kernel regression.
 
 **Actual cause:** Stack overflow in `brcmf_sdpcm_ioctl` — two
 8220-byte arrays (16440 total) on a 16KB arm64 kernel stack.
@@ -40,17 +40,25 @@ because that was the prior pattern.
 `/var/crash/` and `grep panic /var/log/messages` on the next
 boot. Distinguish panics from hangs — they have different causes.
 
-### 3. F2 write address wrong
+### 3. F2 transfer configuration (multiple issues)
 
-**Symptom:** F2 CMD53 writes returned EIO (DATA_CRC in SDHCI).
+**Symptom:** F2 CMD53 writes returned EIO.
 
-**Actual cause (partial):** F2 frame port address was 0xC000
-(from `sdiocore.base` 0x18004000) instead of 0x8000 (from
-`SI_ENUM_BASE` 0x18000000). Linux uses `cc_core->base`.
+**Actual causes (all driver-side):**
+- Wrong F2 address: 0xC000 (from sdiocore.base) instead of
+  0x8000 (constant for the F2 frame port)
+- Wrong block size: 512 bytes caused large PIO bursts that
+  the Arasan SDHCI can't sustain for the BCM43455 F2 port
+- Wrong address mode: incrementing instead of fixed (FIFO)
+- Stack overflow: 16KB of stack arrays on 16KB kernel stack
 
-**Lesson:** The F2 frame port is at ChipCommon base, not the
-SDIO device core base. Both recv and send paths must use
-`SI_ENUM_BASE` for the backplane window.
+**Fix:** F2 block size = 64, fixed address, frame padding to
+64-byte boundary. This makes sdiob use block-mode CMD53 with
+16-word PIO bursts per block — same as the working F1 path.
+Recv tolerates read errors when valid SDPCM header is present.
+
+**Lesson:** No kernel changes needed for F2 transfers. The
+driver controls block size, address mode, and frame padding.
 
 ### 4. R5 response bit misinterpretation
 
@@ -88,20 +96,17 @@ poll iterations × 10ms). The firmware was ready all along.
 
 ## Required kernel changes
 
-All three are needed for the current working state:
+One kernel change is needed:
 
 1. **sdiob: F0 timeout init** — `cardinfo.f[0].timeout = 5000`
-2. **sdhci: PIO pacing for F2 byte-mode writes** — one word
-   per SPACE_AVAIL, DELAY(1) between words
-3. **sdhci: SDIOF2FIX1 base** — prevents hard SDHCI hangs on
-   F2 CMD53 PIO writes
-
-The sdiob diagnostic printf can be removed for production.
 
 ## Driver code changes
 
-- F2 frame port: `SI_ENUM_BASE` windowed (0x8000) for both
-  send and recv paths
+- F2 frame port address: 0x8000 (constant), fixed address mode
+- F2 block size: 64 bytes (small PIO bursts via block-mode CMD53)
+- Frame padding: rounded to 64-byte boundary
+- Recv: tolerant read — accepts data when valid SDPCM header
+  present despite sdiob error return
 - Stack overflow fix: ioctl and TX buffers moved to softc
 - IORdy poll: 300 iterations × 10ms with pause_sbt
 - F2 disable before firmware download (matches Linux)
