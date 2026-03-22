@@ -675,23 +675,13 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		}
 	}
 
-	/* Ack any pending SDIO core interrupts before enabling the mask.
-	 * Stale intstatus bits from firmware boot could interfere. */
+	/* Ack any pending SDIO core interrupts before enabling the mask. */
 	if (sc->sdiocore.base != 0) {
 		uint32_t intst = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + SD_REG_INTSTATUS);
 		if (intst != 0)
 			brcmf_sdio_bp_write32(sc,
 			    sc->sdiocore.base + SD_REG_INTSTATUS, intst);
-		device_printf(sc->dev,
-		    "pre-mask intstatus=0x%08x (acked)\n", intst);
-	}
-
-	/* Read and ack tohost mailbox — firmware may have posted data. */
-	if (sc->sdiocore.base != 0) {
-		uint32_t tohost = brcmf_sdio_bp_read32(sc,
-		    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
-		device_printf(sc->dev, "tohost mailbox=0x%08x\n", tohost);
 	}
 
 	/* Configure SDIO core host interrupt mask */
@@ -716,24 +706,6 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 		sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_MESBUSYCTRL,
 		    CY_43455_MES_WATERMARK | SBSDIO_MESBUSYCTRL_ENAB, &err);
-	}
-
-	/* Dump full state after init for diagnostics */
-	if (sc->sdiocore.base != 0) {
-		uint32_t intst = brcmf_sdio_bp_read32(sc,
-		    sc->sdiocore.base + SD_REG_INTSTATUS);
-		uint32_t hmask = brcmf_sdio_bp_read32(sc,
-		    sc->sdiocore.base + SD_REG_HOSTINTMASK);
-		uint8_t clk = sdio_read_1(sc->sdio_func1,
-		    SBSDIO_FUNC1_CHIPCLKCSR, &error);
-		uint8_t devctl = sdio_read_1(sc->sdio_func1,
-		    SBSDIO_DEVICE_CTL, &error);
-		uint8_t wm = sdio_read_1(sc->sdio_func1,
-		    SBSDIO_WATERMARK, &error);
-		device_printf(sc->dev,
-		    "post-init: intst=0x%08x hmask=0x%08x "
-		    "clk=0x%02x devctl=0x%02x wm=0x%02x\n",
-		    intst, hmask, clk, devctl, wm);
 	}
 
 	return (0);

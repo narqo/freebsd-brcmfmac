@@ -137,17 +137,13 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	if (flen > SDPCM_MAX_FRAME_SIZE)
 		return (EMSGSIZE);
 
-	/* Round up to 4-byte alignment */
-	flen = (flen + SDPCM_F2_BLKSZ - 1) & ~(SDPCM_F2_BLKSZ - 1);
+	/* Transfer size rounded to F2 block boundary for block-mode CMD53 */
+	uint16_t txlen = (flen + SDPCM_F2_BLKSZ - 1) & ~(SDPCM_F2_BLKSZ - 1);
 
-	/* Use the softc TX buffer. The SDHCI PIO path may reference
-	 * the data pointer from an interrupt after a CAM timeout;
-	 * a stack-local buffer would be stale by then. The ioctl_mtx
-	 * serializes callers so only one frame is in flight. */
 	frame = sc->sdpcm_txbuf;
-	memset(frame, 0, flen);
+	memset(frame, 0, txlen);
 
-	/* HW header: length and complement */
+	/* HW header: actual frame length (not padded transfer size) */
 	frame[0] = flen & 0xFF;
 	frame[1] = (flen >> 8) & 0xFF;
 	frame[2] = ~flen & 0xFF;
@@ -165,28 +161,11 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	/* F2 is a FIFO — fixed address (incaddr=false) for writes. */
 	error = SDIO_WRITE_EXTENDED(
 	    device_get_parent(sc->sdio_func2->dev),
-	    sc->sdio_func2->fn, 0x8000, flen, frame, false);
-	if (error != 0) {
+	    sc->sdio_func2->fn, 0x8000, txlen, frame, false);
+	if (error != 0)
 		device_printf(sc->dev,
-		    "F2 write failed: err=%d ch=%d flen=%u blksz=%u\n",
-		    error, channel, flen, sc->sdio_func2->cur_blksize);
-		/* Dump chip state after failed write */
-		if (sc->sdiocore.base != 0) {
-			uint32_t intst = brcmf_sdio_bp_read32(sc,
-			    sc->sdiocore.base + 0x020);
-			uint32_t tohost = brcmf_sdio_bp_read32(sc,
-			    sc->sdiocore.base + 0x044);
-			int derr;
-			uint8_t iordy = sdio_f0_read_1(sc->sdio_func1,
-			    0x03, &derr);
-			uint8_t devctl = sdio_read_1(sc->sdio_func1,
-			    0x10009, &derr);
-			device_printf(sc->dev,
-			    "post-fail: intst=0x%08x tohost=0x%08x "
-			    "IORdy=0x%02x devctl=0x%02x\n",
-			    intst, tohost, iordy, devctl);
-		}
-	}
+		    "F2 write failed: err=%d ch=%d flen=%u txlen=%u\n",
+		    error, channel, flen, txlen);
 
 	return (error);
 }
@@ -354,16 +333,8 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
 		    &chan, &dlen, &payload);
-		if (error != 0) {
-			if (i < 3)
-				device_printf(sc->dev,
-				    "recv[%d]: err=%d hdr=%02x%02x%02x%02x\n",
-				    i, error,
-				    rxbuf[0], rxbuf[1], rxbuf[2], rxbuf[3]);
+		if (error != 0)
 			continue;
-		}
-		device_printf(sc->dev,
-		    "recv[%d]: ch=%d dlen=%d\n", i, chan, dlen);
 
 		if (chan == SDPCM_CONTROL_CHANNEL &&
 		    dlen >= BCDC_DCMD_HDRLEN) {
@@ -472,11 +443,14 @@ brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 	if (len < BCDC_HEADER_LEN)
 		return;
 
-	data_offset = data[3];  /* in 4-byte units */
-	data += BCDC_HEADER_LEN + data_offset * 4;
-	len -= BCDC_HEADER_LEN + data_offset * 4;
+	data_offset = data[3];
+	uint16_t hdr_total = BCDC_HEADER_LEN + (uint16_t)data_offset * 4;
+	if (hdr_total > len)
+		return;
+	data += hdr_total;
+	len -= hdr_total;
 
-	if (len < 14)  /* minimum Ethernet frame */
+	if (len < ETHER_HDR_LEN)
 		return;
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);

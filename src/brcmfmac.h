@@ -160,7 +160,7 @@ struct brcmf_softc {
 	uint8_t sdpcm_rx_seq;		/* SDPCM last received seq */
 	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
 	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
-	uint8_t sdpcm_txbuf[2048] __aligned(4);
+	uint8_t sdpcm_txbuf[2048];
 	/* SDPCM ioctl buffers — too large for 16KB kernel stack */
 #define BRCMF_SDPCM_CTL_BUFSZ	(12 + 16 + 8192)
 	uint8_t sdpcm_ioctl_tx[BRCMF_SDPCM_CTL_BUFSZ];
