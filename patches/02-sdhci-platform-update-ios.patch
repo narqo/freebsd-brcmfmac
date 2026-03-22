@@ -1,0 +1,110 @@
+--- a/sys/arm/broadcom/bcm2835/bcm2835_sdhci.c
++++ b/sys/arm/broadcom/bcm2835/bcm2835_sdhci.c
+@@ -180,6 +180,7 @@ static int bcm_sdhci_detach(device_t);
+ static void bcm_sdhci_intr(void *);
+ 
+ static int bcm_sdhci_get_ro(device_t, device_t);
++static int bcm_sdhci_platform_update_ios(device_t, struct sdhci_slot *);
+ static void bcm_sdhci_dma_intr(int ch, void *arg);
+ static void bcm_sdhci_start_dma(struct sdhci_slot *slot);
+ 
+@@ -394,29 +395,31 @@ static int
+ bcm_sdhci_update_ios(device_t bus, device_t child)
+ {
+ 	struct bcm_sdhci_softc *sc;
+-	struct mmc_ios *ios;
+ 	int rv;
+ 
+ 	sc = device_get_softc(bus);
+-	ios = &sc->sc_slot.host.ios;
+ 
+-	if (ios->power_mode == power_up) {
+-		if (sc->sc_mmc_helper.vmmc_supply)
+-			regulator_enable(sc->sc_mmc_helper.vmmc_supply);
+-		if (sc->sc_mmc_helper.vqmmc_supply)
+-			regulator_enable(sc->sc_mmc_helper.vqmmc_supply);
+-	}
++	rv = bcm_sdhci_platform_update_ios(bus, &sc->sc_slot);
++	if (rv != 0)
++		return (rv);
+ 
+ 	rv = sdhci_generic_update_ios(bus, child);
+ 	if (rv != 0)
+ 		return (rv);
+ 
+-	if (ios->power_mode == power_off) {
+-		if (sc->sc_mmc_helper.vmmc_supply)
+-			regulator_disable(sc->sc_mmc_helper.vmmc_supply);
+-		if (sc->sc_mmc_helper.vqmmc_supply)
+-			regulator_disable(sc->sc_mmc_helper.vqmmc_supply);
+-	}
++	return (0);
++}
++
++static int
++bcm_sdhci_platform_update_ios(device_t bus, struct sdhci_slot *slot)
++{
++	struct bcm_sdhci_softc *sc;
++	struct mmc_ios *ios;
++
++	sc = device_get_softc(bus);
++	ios = &slot->host.ios;
++
++	mmc_fdt_set_power(&sc->sc_mmc_helper, ios->power_mode);
+ 
+ 	return (0);
+ }
+@@ -837,6 +840,7 @@ static device_method_t bcm_sdhci_methods[] = {
+ 	DEVMETHOD(sdhci_platform_will_handle,		bcm_sdhci_will_handle_transfer),
+ 	DEVMETHOD(sdhci_platform_start_transfer,	bcm_sdhci_start_transfer),
+ 	DEVMETHOD(sdhci_platform_finish_transfer,	bcm_sdhci_finish_transfer),
++	DEVMETHOD(sdhci_platform_update_ios,	bcm_sdhci_platform_update_ios),
+ 	/* SDHCI registers accessors */
+ 	DEVMETHOD(sdhci_read_1,		bcm_sdhci_read_1),
+ 	DEVMETHOD(sdhci_read_2,		bcm_sdhci_read_2),
+diff --git a/sys/dev/sdhci/sdhci.c b/sys/dev/sdhci/sdhci.c
+index b53b85bf4..245968f0e 100644
+--- a/sys/dev/sdhci/sdhci.c
++++ b/sys/dev/sdhci/sdhci.c
+@@ -2816,7 +2816,9 @@ sdhci_cam_settran_settings(struct sdhci_slot *slot, union ccb *ccb)
+ 			slot_printf(slot, "VCCQ => %d\n", ios->vccq);
+ 	}
+ 
+-	/* XXX Provide a way to call a chip-specific IOS update, required for TI */
++	if (SDHCI_PLATFORM_UPDATE_IOS(slot->bus, slot) != 0)
++		return (EINVAL);
++
+ 	return (sdhci_cam_update_ios(slot));
+ }
+ 
+diff --git a/sys/dev/sdhci/sdhci_if.m b/sys/dev/sdhci/sdhci_if.m
+index c2f852d1c..ecca17e2e 100644
+--- a/sys/dev/sdhci/sdhci_if.m
++++ b/sys/dev/sdhci/sdhci_if.m
+@@ -82,6 +82,14 @@ CODE {
+ 	{
+ 
+ 	}
++
++	static int
++	null_platform_update_ios(device_t brdev __unused,
++	    struct sdhci_slot *slot __unused)
++	{
++
++		return (0);
++	}
+ }
+ 
+ INTERFACE sdhci;
+@@ -157,6 +165,11 @@ METHOD void platform_finish_transfer {
+ 	struct sdhci_slot	*slot;
+ }
+ 
++METHOD int platform_update_ios {
++	device_t		brdev;
++	struct sdhci_slot	*slot;
++} DEFAULT null_platform_update_ios;
++
+ METHOD uint32_t min_freq {
+ 	device_t		brdev;
+ 	struct sdhci_slot	*slot;

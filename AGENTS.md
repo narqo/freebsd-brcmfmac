@@ -1,13 +1,10 @@
 # FreeBSD Kernel Module
 
-This project builds a brcmfmac WiFi driver for FreeBSD as a kernel module (KLD),
-using Zig for pure logic and C for kernel interactions.
+This project builds a brcmfmac WiFi driver for FreeBSD as a kernel module (KLD).
 
 ## Ultimate goal
 
-Build a working brcmfmac driver for BCM4350 (MacBook Pro 2016) on FreeBSD 15.
-
-Target hardware: PCI device `0x14e4:0x43a3`
+Build a working brcmfmac driver for BCM4350 (MacBook Pro 2016; PCIe) and BCM43455 (RPi4; SDIO) on FreeBSD 15.
 
 ## Before starting work
 
@@ -24,6 +21,8 @@ Good to know:
 docs/03-known-issues.md keeps the archive of open and resolved bugs.
 
 Use the docs/10-investigations.md document to persist mid-session investigation scratch notes.
+
+The rest of the docs/ has context-dependent details.
 
 ## Driver specification
 
@@ -49,7 +48,7 @@ The source code is in the src/ directory.
 
 ## Build environment
 
-The code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE.
+The driver's code is built and tested on a remote host, that runs FreeBSD 15.0-RELEASE.
 The local machine **cannot** build the project -- FreeBSD kernel headers are required.
 
 When starting a new milestone, ensure the current worktree is synced to the build host.
@@ -60,6 +59,12 @@ When starting a new milestone, ensure the current worktree is synced to the buil
 - Build/test requires remote FreeBSD 15 host
 
 Read docs/01-decisions.md for the rest.
+
+## FreeBSD kernel patches
+
+The canonical patched source tree is in freebsdsrc/. Patches are in the patches/ directory.
+
+Patches applied in order to a clean `freebsdsrc` tree, plus one DT overlay. See RPI4-HOWTO.md for description.
 
 ## Linker limitations
 

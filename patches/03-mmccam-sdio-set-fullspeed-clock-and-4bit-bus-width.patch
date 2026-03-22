@@ -1,0 +1,88 @@
+diff --git a/sys/cam/mmc/mmc_xpt.c b/sys/cam/mmc/mmc_xpt.c
+index 5c26ee30d..eabc8f5c8 100644
+--- a/sys/cam/mmc/mmc_xpt.c
++++ b/sys/cam/mmc/mmc_xpt.c
+@@ -103,6 +103,7 @@ typedef enum {
+ 	PROBE_SEND_RELATIVE_ADDR,
+ 	PROBE_MMC_SET_RELATIVE_ADDR,
+ 	PROBE_SELECT_CARD,
++	PROBE_SDIO_SET_BUS_WIDTH,
+ 	PROBE_DONE,
+ 	PROBE_INVALID
+ } probe_action;
+@@ -126,6 +127,7 @@ static char *probe_action_text[] = {
+ 	"PROBE_SEND_RELATIVE_ADDR",
+ 	"PROBE_MMC_SET_RELATIVE_ADDR",
+ 	"PROBE_SELECT_CARD",
++	"PROBE_SDIO_SET_BUS_WIDTH",
+ 	"PROBE_DONE",
+ 	"PROBE_INVALID"
+ };
+@@ -499,6 +501,7 @@ static struct periph_driver probe_driver =
+ PERIPHDRIVER_DECLARE(mmcprobe, probe_driver);
+ 
+ #define	CARD_ID_FREQUENCY 400000 /* Spec requires 400kHz max during ID phase. */
++#define	SDIO_FULLSPEED_FREQ 25000000
+ 
+ static void
+ probe_periph_init(void)
+@@ -775,11 +778,36 @@ mmcprobe_start(struct cam_periph *periph, union ccb *start_ccb)
+ 		mmcio->cmd.flags = MMC_RSP_R2 | MMC_CMD_BCR;
+ 		mmcio->stop.opcode = 0;
+ 		break;
++
++	case PROBE_SDIO_SET_BUS_WIDTH:
++	{
++		uint32_t mmc_arg = SD_IO_RW_ADR(SD_IO_CCCR_BUS_WIDTH)
++			| SD_IO_RW_DAT(CCCR_BUS_WIDTH_4)
++			| SD_IO_RW_WR | SD_IO_RW_RAW;
++		cam_fill_mmcio(&start_ccb->mmcio,
++			       /*retries*/ 0,
++			       /*cbfcnp*/ mmcprobe_done,
++			       /*flags*/ CAM_DIR_NONE,
++			       /*mmc_opcode*/ SD_IO_RW_DIRECT,
++			       /*mmc_arg*/ mmc_arg,
++			       /*mmc_flags*/ MMC_RSP_R5 | MMC_CMD_AC,
++			       /*mmc_data*/ NULL,
++			       /*timeout*/ 1000);
++		break;
++	}
+ 	case PROBE_DONE:
+ 		CAM_DEBUG(start_ccb->ccb_h.path, CAM_DEBUG_PROBE, ("Start with PROBE_DONE\n"));
+ 		init_standard_ccb(start_ccb, XPT_SET_TRAN_SETTINGS);
+ 		cts->ios.bus_mode = pushpull;
+ 		cts->ios_valid = MMC_BM;
++		if (path->device->mmc_ident_data.card_features &
++		    CARD_FEATURE_SDIO) {
++			cts->ios.clock = SDIO_FULLSPEED_FREQ;
++			cts->ios.timing = bus_timing_normal;
++			cts->ios_valid |= MMC_CLK | MMC_BT;
++			cts->ios.bus_width = bus_width_4;
++			cts->ios_valid |= MMC_BW;
++		}
+ 		xpt_action(start_ccb);
+ 		return;
+ 		/* NOTREACHED */
+@@ -1160,6 +1188,22 @@ mmcprobe_done(struct cam_periph *periph, union ccb *done_ccb)
+ 			break;
+ 		}
+ 
++		if (path->device->mmc_ident_data.card_features &
++		    CARD_FEATURE_SDIO)
++			PROBE_SET_ACTION(softc, PROBE_SDIO_SET_BUS_WIDTH);
++		else
++			PROBE_SET_ACTION(softc, PROBE_DONE);
++		break;
++	}
++	case PROBE_SDIO_SET_BUS_WIDTH: {
++		mmcio = &done_ccb->mmcio;
++		err = mmcio->cmd.error;
++		if (err != MMC_ERR_NONE) {
++			CAM_DEBUG(done_ccb->ccb_h.path, CAM_DEBUG_PROBE,
++				  ("PROBE_SDIO_SET_BUS_WIDTH: error %d\n",
++				   err));
++		}
++		/* Proceed regardless; 1-bit still works. */
+ 		PROBE_SET_ACTION(softc, PROBE_DONE);
+ 		break;
+ 	}

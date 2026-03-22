@@ -1,0 +1,121 @@
+--- a/sys/dev/sdhci/sdhci.c
++++ b/sys/dev/sdhci/sdhci.c
+@@ -1712,6 +1712,9 @@
+ 		sdhci_dumpregs(slot);
+ 		SDHCI_RESET(slot->bus, slot,
+ 		    SDHCI_RESET_CMD | SDHCI_RESET_DATA);
++		slot->intmask &= ~(SDHCI_INT_DATA_AVAIL |
++		    SDHCI_INT_SPACE_AVAIL);
++		WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
+ 		slot->curcmd->error = MMC_ERR_TIMEOUT;
+ 		sdhci_req_done(slot);
+ 	} else {
+@@ -1754,6 +1757,12 @@
+ 	uint32_t mask;
+ 
+ 	slot->curcmd = cmd;
++	/* Restore CMD interrupts masked on spurious fire with no active command. */
++	if (!(slot->intmask & SDHCI_INT_RESPONSE)) {
++		slot->intmask |= SDHCI_INT_RESPONSE |
++		    SDHCI_INT_CMD_ERROR_MASK;
++		WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
++	}
+ 	slot->cmd_done = 0;
+ 
+ 	cmd->error = MMC_ERR_NONE;
+@@ -1891,6 +1900,9 @@
+ 			slot->retune_req |= SDHCI_RETUNE_REQ_RESET;
+ 		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+ 		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
++		slot->intmask &= ~(SDHCI_INT_DATA_AVAIL |
++		    SDHCI_INT_SPACE_AVAIL);
++		WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
+ 		sdhci_start(slot);
+ 		return;
+ 	}
+@@ -1935,6 +1948,13 @@
+ 
+ 	slot->data_done = 0;
+ 
++	/* Restore PIO transfer interrupts masked at end of previous xfer. */
++	if (!(slot->intmask & SDHCI_INT_DATA_AVAIL)) {
++		slot->intmask |= SDHCI_INT_DATA_AVAIL |
++		    SDHCI_INT_SPACE_AVAIL;
++		WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
++	}
++
+ 	/* Calculate and set data timeout.*/
+ 	/* XXX: We should have this from mmc layer, now assume 1 sec. */
+ 	if (slot->quirks & SDHCI_QUIRK_BROKEN_TIMEOUT_VAL) {
+@@ -2051,6 +2070,9 @@
+ 			slot->retune_req |= SDHCI_RETUNE_REQ_RESET;
+ 		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_CMD);
+ 		SDHCI_RESET(slot->bus, slot, SDHCI_RESET_DATA);
++		slot->intmask &= ~(SDHCI_INT_DATA_AVAIL |
++		    SDHCI_INT_SPACE_AVAIL);
++		WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
+ 		sdhci_start(slot);
+ 		return;
+ 	}
+@@ -2211,9 +2233,11 @@
+ {
+ 
+ 	if (!slot->curcmd) {
+-		slot_printf(slot, "Got command interrupt 0x%08x, but "
+-		    "there is no active command.\n", intmask);
+-		sdhci_dumpregs(slot);
++		if (intmask & (SDHCI_INT_RESPONSE | SDHCI_INT_CMD_ERROR_MASK)) {
++			slot->intmask &= ~(SDHCI_INT_RESPONSE |
++			    SDHCI_INT_CMD_ERROR_MASK);
++			WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
++		}
+ 		return;
+ 	}
+ 	if (intmask & SDHCI_INT_TIMEOUT)
+@@ -2233,18 +2257,14 @@
+ 	size_t left;
+ 	uint32_t sdma_bbufsz;
+ 
+-	if (!slot->curcmd) {
+-		slot_printf(slot, "Got data interrupt 0x%08x, but "
+-		    "there is no active command.\n", intmask);
+-		sdhci_dumpregs(slot);
+-		return;
+-	}
+-	if (slot->curcmd->data == NULL &&
+-	    (slot->curcmd->flags & MMC_RSP_BUSY) == 0) {
+-		slot_printf(slot, "Got data interrupt 0x%08x, but "
+-		    "there is no active data operation.\n",
+-		    intmask);
+-		sdhci_dumpregs(slot);
++	if (!slot->curcmd || (slot->curcmd->data == NULL &&
++	    (slot->curcmd->flags & MMC_RSP_BUSY) == 0)) {
++		if (intmask & (SDHCI_INT_DATA_AVAIL |
++		    SDHCI_INT_SPACE_AVAIL)) {
++			slot->intmask &= ~(SDHCI_INT_DATA_AVAIL |
++			    SDHCI_INT_SPACE_AVAIL);
++			WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
++		}
+ 		return;
+ 	}
+ 	if (intmask & SDHCI_INT_DATA_TIMEOUT)
+@@ -2282,6 +2302,19 @@
+ 			slot->flags |= PLATFORM_DATA_STARTED;
+ 		} else
+ 			sdhci_transfer_pio(slot);
++		/*
++		 * Mask off PIO transfer interrupts once all data has been
++		 * moved.  If the controller re-asserts the buffer-ready
++		 * status before DATA_END arrives (observed on Arasan), the
++		 * ISR would re-enter in a tight loop holding SDHCI_LOCK and
++		 * starve the timeout callout.
++		 */
++		if (slot->curcmd->data != NULL &&
++		    slot->offset >= slot->curcmd->data->len) {
++			slot->intmask &= ~(SDHCI_INT_DATA_AVAIL |
++			    SDHCI_INT_SPACE_AVAIL);
++			WR4(slot, SDHCI_SIGNAL_ENABLE, slot->intmask);
++		}
+ 	}
+ 	/* Handle DMA border. */
+ 	if (intmask & SDHCI_INT_DMA_END) {

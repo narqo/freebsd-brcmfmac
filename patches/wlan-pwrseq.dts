@@ -1,0 +1,25 @@
+/dts-v1/;
+/plugin/;
+
+/ {
+	compatible = "brcm,bcm2711";
+
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			wifi_pwrseq: wifi-pwrseq {
+				compatible = "mmc-pwrseq-simple";
+				reset-gpios = <&expgpio 1 1>;
+				post-power-on-delay-ms = <200>;
+				power-off-delay-us = <1000>;
+			};
+		};
+	};
+
+	fragment@1 {
+		target = <&mmcnr>;
+		__overlay__ {
+			mmc-pwrseq = <&wifi_pwrseq>;
+		};
+	};
+};
