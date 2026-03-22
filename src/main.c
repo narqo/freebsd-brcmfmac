@@ -348,6 +348,14 @@ brcmf_sdio_bus_detach(device_t dev)
 	sc = device_get_softc(dev);
 	sc->detaching = 1;
 	sc->fw_dead = 1;
+
+	/* Stop RX poll before tearing down net80211 — the poll task
+	 * accesses VAP state that ieee80211_ifdetach destroys. */
+	brcmf_sdpcm_stop_poll(sc);
+
+	/* Wake any sleeping ioctl so it doesn't block detach */
+	wakeup(&sc->ioctl_completed);
+
 	brcmf_cfg_detach(sc);
 	sc->bus_ops->cleanup(sc);
 	brcmf_sdio_detach(sc);

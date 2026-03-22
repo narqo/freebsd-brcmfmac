@@ -168,7 +168,8 @@ struct brcmf_softc {
 	uint8_t sdpcm_data_tx[2048];	/* BCDC+payload for brcmf_sdpcm_tx */
 	uint8_t sdpcm_poll_rx[BRCMF_SDPCM_CTL_BUFSZ]; /* RX poll buffer */
 	volatile u_int sdpcm_rx_busy;	/* atomic: ioctl or rx_task owns F2 */
-	struct callout sdpcm_callout;	/* RX poll callout (20ms) */
+	int sdpcm_poll_started;		/* guard for stop_poll */
+	struct callout sdpcm_callout;	/* RX poll callout (50ms) */
 	struct task sdpcm_rx_task;	/* RX processing task */
 
 	/* Ring info from firmware (PCIe-specific) */

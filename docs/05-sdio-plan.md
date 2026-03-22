@@ -165,9 +165,10 @@ On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 - [x] Channel/mode setup (D11AC chanspec, no VHT for chip!=0x4350)
 - [x] RX poll callout (50ms) + task for async event delivery
 - [x] Scan: escan iovar, event dispatch, scan cache populated
-- [x] `ifconfig wlan0 list scan` shows APs
-- [ ] IE data mostly empty — BSS info IE offset needs fix
-- [ ] Clean kldunload (callout/task drain in detach path)
+- [x] `ifconfig wlan0 list scan` shows APs with IEs (HTCAP, RSN)
+- [x] BSS info IE offset: SSID-based search for firmware-version-agnostic IE extraction
+- [x] Immediate scan result delivery to net80211 (swscan timing fix)
+- [x] Clean kldunload (~35-45s, no infinite hang)
 - [ ] Association + WPA2
 - [ ] TX data path verification (ping)
 

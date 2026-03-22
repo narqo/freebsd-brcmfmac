@@ -45,6 +45,33 @@ after variable-length fields and before fields that require stricter alignment.
 
 IEs start at `struct_start + ie_offset`.
 
+---
+
+**Firmware note** (discovered empirically, 22 Mar 2026)
+
+The 128-byte layout above matches the public `brcmf_bss_info_le`
+header used by the Linux driver. The firmware's internal struct is
+larger and varies by firmware version. The `ie_offset` field is
+supposed to tell the host where IEs begin, but not all firmwares
+populate it correctly.
+
+| Firmware | Header size | `ie_offset` / `ie_length` | Notes |
+|----------|-------------|---------------------------|-------|
+| 7.35.180.133 (BCM4350) | 128 bytes | 0 / 0 | IEs empirically at offset 128 |
+| 7.45.265 (CYW43455) | 512 bytes | 1 / 1 (garbage) | Extended fields overwrite bytes 116-120 |
+
+On firmware 7.45.265, the bytes at offset 116 and 120 of the public
+struct no longer correspond to `ie_offset` and `ie_length`. The
+firmware's extended struct has ~384 bytes of undocumented fields
+between offset 128 and 512.
+
+Reliable IE extraction: search for the SSID IE (tag 0x00, matching
+the SSID from the fixed header at offset 18) in the raw BSS data.
+The SSID IE is the first IE in the chain. This works across
+firmware versions regardless of the actual header size.
+
+---
+
 ## Escan result (`brcmf_escan_result_le`)
 
 | Offset | Size | Field | Endianness |
@@ -243,7 +270,7 @@ Preceded in the Ethernet frame by:
 
 Broadcom chanspecs encode channel, band, bandwidth, and sideband in a 16-bit value. Two encodings exist, selected by the D11 core revision. The driver determines the encoding at init time and installs matching encode/decode functions in the `d11inf` structure.
 
-### D11N encoding (older chips, e.g. BCM43455)
+### D11N encoding
 
 Used when `io_type = 1` (D11N).
 
@@ -255,7 +282,7 @@ Used when `io_type = 1` (D11N).
 | 13:12 | Band | 5G=0x1, 2G=0x2 |
 | 15:14 | Unused | |
 
-### D11AC encoding (modern chips, e.g. BCM4350)
+### D11AC encoding
 
 Used when `io_type = 2` (D11AC).
 
@@ -267,3 +294,15 @@ Used when `io_type = 2` (D11AC).
 | 15:14 | Band | 2G=0x0, 3G=0x1, 4G=0x2, 5G=0x3 |
 
 The D11 core revision (from backplane enumeration) determines which encoding the firmware uses. The driver's `brcmu_d11_attach` selects the appropriate encoder/decoder.
+
+---
+
+**Firmware note** (discovered empirically, 22 Mar 2026)
+
+The encoding is determined at runtime via `C_GET_VERSION` (cmd 1),
+not from the chip ID. BCM43455 (CYW, firmware 7.45.265) reports
+`io_type=2` (D11AC) despite being an older chip design. The spec
+originally assumed D11N for BCM43455 based on the chip generation;
+the actual encoding depends on the firmware build, not the silicon.
+
+---

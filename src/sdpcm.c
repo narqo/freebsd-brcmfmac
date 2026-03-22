@@ -622,6 +622,7 @@ brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
 {
 	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
 	callout_init(&sc->sdpcm_callout, 1);
+	sc->sdpcm_poll_started = 1;
 	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
 
@@ -631,6 +632,9 @@ brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
 void
 brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 {
+	if (!sc->sdpcm_poll_started)
+		return;
+	sc->sdpcm_poll_started = 0;
 	callout_drain(&sc->sdpcm_callout);
 	taskqueue_drain(taskqueue_thread, &sc->sdpcm_rx_task);
 }

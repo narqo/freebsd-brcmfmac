@@ -350,3 +350,66 @@ If another context is already processing, the caller returns
 immediately — the active processor will drain all pending work.
 This is safe in callout context (no sleeping) and eliminates
 double-processing of ring entries.
+
+## CLM blob requirement (CYW/Cypress firmware)
+
+**Decision**: Download CLM blob before `brcmf_cfg_attach` on SDIO.
+
+**Rationale**:
+
+CYW firmware 7.45.265 (BCM43455) returns `BCME_UNSUPPORTED (-4)` for
+both `escan` iovar and `C_SCAN` (cmd=50) without a CLM blob loaded.
+The firmware has no built-in channel/regulatory data — CLM is mandatory
+for any scan or association.
+
+The older BCM4350 firmware (7.35.180.133) works without CLM because it
+has embedded channel data. The Linux driver logs "no clm_blob available,
+device may have limited channels" and continues, but on CYW firmwares
+"limited" means zero channels.
+
+CLM blob source: `cypress/cyfmac43455-sdio.clm_blob` from
+linux-firmware, placed at `/boot/firmware/brcmfmac43455-sdio.clm_blob`.
+Downloaded via `clmload` iovar in 1400-byte chunks.
+
+## BSS info IE extraction across firmware versions
+
+**Decision**: Find IEs by searching for the SSID IE in raw BSS data,
+not by trusting the `ie_offset` / `ie_length` fields.
+
+**Rationale**:
+
+The `brcmf_bss_info_le` struct defined in the public header is 128
+bytes. The firmware's internal struct varies by version:
+
+- 7.35.180.133 (BCM4350): 128-byte header, `ie_offset=0, ie_length=0`
+- 7.45.265 (CYW43455): 512-byte header, `ie_offset=1, ie_length=1`
+
+On CYW firmware, the `ie_offset` and `ie_length` fields at bytes
+116/120 of the public struct are overwritten by extended fields in
+the firmware's larger struct. The values read (1/1) are garbage.
+
+The driver searches for tag 0x00 (SSID IE) matching the SSID from
+the fixed header to find the actual IE boundary. Falls back to
+`ie_offset` if valid, then to offset 128 for legacy firmware.
+See `spec/A2-structures.md` for details.
+
+## SDIO RX poll design
+
+**Decision**: 50ms callout → taskqueue_thread task, 16 frames/tick max,
+atomic `sdpcm_rx_busy` flag for mutual exclusion with ioctl path.
+
+**Rationale**:
+
+The Arasan SDHCI on RPi4 cannot sustain rapid F2 reads. A 20ms poll
+caused hard hangs. 50ms is stable. The taskqueue task (not callout
+context) is required because SDIO I/O sleeps in the CAM/sdiob stack.
+
+Holding `ioctl_mtx` across SDIO reads panics with `sleeping thread
+holds brcmfmac_ioctl` (WITNESS). Using an atomic flag instead avoids
+the mutex-across-sleep issue while preventing concurrent F2 FIFO reads
+that would interleave partial frames.
+
+The ioctl poll loop handles events/data inline during its 3s timeout.
+The RX task picks up frames between ioctls. Both paths ack
+`I_HMB_FRAME_IND` in the SDIO core intstatus register — without
+ack the firmware stops sending events.

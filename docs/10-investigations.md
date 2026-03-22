@@ -114,6 +114,44 @@ info parsing might have an offset issue specific to this firmware.
    50ms works. The Arasan SDHCI controller can't handle rapid
    repeated F2 reads when the FIFO is empty.
 
+### kldunload fix (22 Mar 2026)
+
+`brcmf_sdpcm_stop_poll` now called at top of
+`brcmf_sdio_bus_detach`, before `brcmf_cfg_detach`. Added
+`sdpcm_poll_started` guard to avoid draining uninitialized
+callout. Unload takes ~35-45s (ioctl timeouts during teardown
+with fw_dead=0 at `ifconfig destroy` time) but completes
+without hanging.
+
+Reload after unload fails — chip F2 port is in bad state after
+detach. Reboot required between unload and reload.
+
+### IE offset (22 Mar 2026, RESOLVED)
+
+Firmware 7.45.265 BSS info struct is 512 bytes (not 128). Our
+`brcmf_bss_info_le` definition (128 bytes) only covers the first
+portion. The `ie_offset` and `ie_length` fields at byte 116/120
+of our struct read garbage from the firmware's extended fields.
+
+SSID IE found at offset 512 by searching for `tag=0x00, len=SSID_len`
+matching the SSID from the fixed header. IEs are at 512..bi_len.
+
+Fix: search for SSID IE in the raw BSS data to find the actual
+IE boundary. Falls back to `ie_offset` if valid, then to 128
+for older firmware.
+
+### Scan cache empty despite ieee80211_add_scan (22 Mar 2026, RESOLVED)
+
+Escan takes 40-60s on SDIO. By the time `brcmf_scan_complete_task`
+ran and called `ieee80211_add_scan`, swscan had already finished
+its channel iteration and detached the scan module (`ss_ops=NULL`).
+All entries were silently dropped.
+
+Fix: call `brcmf_add_scan_result` immediately from
+`brcmf_escan_result` as each BSS arrives, while swscan is still
+active. The deferred delivery via `scan_complete_task` is kept
+for the final `ieee80211_scan_done` call and direct-join logic.
+
 ## 20 Mar 2026: SDIO F2 writes, kernel #25
 
 Kernel #25 — claimed to have SDHCI fixes. Tested with updated

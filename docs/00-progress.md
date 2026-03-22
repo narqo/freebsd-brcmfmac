@@ -2,10 +2,13 @@
 
 ## Current status
 
-**Milestones 1-16.6 complete.** Driver connects to WPA2 APs on 2.4GHz
-and 5GHz, handles link loss recovery, interface cycling. Internet
-ping over WiFi verified (5/5 to 8.8.8.8, avg 15ms, sourced from
-wlan0 IP). Flood ping 1000/1000 at 10ms interval, 0% loss.
+**PCIe milestones 1-17 complete.** BCM4350 driver connects to WPA2 APs
+on 2.4GHz and 5GHz, handles link loss recovery, interface cycling.
+Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
+
+**SDIO milestones M-S1 through M-S4 complete, M-S5 in progress.**
+BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs.
+Next: association + WPA2.
 
 ## Milestones
 
@@ -395,6 +398,28 @@ Gaps found during spec review (14 Mar 2026). See
 | Flood ping 100x (10ms interval) | 100/100 0% loss, avg 2.7ms |
 | Interface down/up cycle (5s gap) | reconnects, COMPLETED |
 | kldunload | clean |
+
+### SDIO Milestones (BCM43455, Raspberry Pi 4)
+
+Detailed plan: `docs/05-sdio-plan.md`
+
+#### M-S1: Bus ops abstraction (DONE)
+#### M-S2: SDIO bus layer (DONE)
+#### M-S3: SDPCM + BCDC protocol (DONE)
+#### M-S4: SDIO probe/attach (DONE)
+
+#### M-S5: net80211 for BCM43455 (IN PROGRESS)
+
+- [x] CLM blob download (CYW 7.45.x requires it for scan)
+- [x] `brcmf_cfg_attach` (net80211 integration, chip-aware VHT/HT)
+- [x] RX poll callout (50ms, 16 frames/tick, atomic busy guard)
+- [x] BCDC header stripping for SDIO event frames
+- [x] Scan with IEs: SSID-based IE offset detection (512-byte firmware header)
+- [x] Immediate scan result delivery (swscan timing workaround)
+- [x] Clean kldunload (~35-45s)
+- [ ] Association + WPA2
+- [ ] TX data path (ping)
+- [ ] Throughput testing
 
 ### Milestone X: Automated testing (TODO)
 

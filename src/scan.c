@@ -241,22 +241,56 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		noise = bi->phy_noise;
 		if (noise == 0)
 			noise = -95;
-		ie_off = le16toh(bi->ie_offset);
-		ie_len = le32toh(bi->ie_length);
-
-		if (ie_off == 0 && ie_len > 0 && ie_len < bi_len)
-			ie_off = bi_len - ie_len;
-		if (ie_off < sizeof(*bi))
-			ie_off = sizeof(*bi);
 		/*
-		 * When firmware reports ie_offset=0, use the BSS info
-		 * version to determine the actual struct size. Version 109
-		 * (0x6d) has a 128-byte header before IEs.
+		 * Find IEs by searching for the SSID IE (tag 0x00)
+		 * matching the SSID from the fixed header. The firmware's
+		 * BSS info struct size varies by version — 128 bytes on
+		 * 7.35.x, 512 bytes on 7.45.x — so a fixed offset
+		 * doesn't work across firmware versions.
+		 *
+		 * Fallback: if ie_offset looks valid (>= sizeof struct
+		 * and < bi_len), trust it. This handles the BCM4350
+		 * firmware that reports ie_offset=0 with a 128-byte header.
 		 */
-		if (le16toh(bi->ie_offset) == 0 && ie_len == 0 &&
-		    bi_len > 128) {
-			ie_off = 128;
-			ie_len = bi_len - ie_off;
+		ie_off = 0;
+		ie_len = 0;
+		if (bi->SSID_len > 0 && bi->SSID_len <= 32) {
+			int j;
+			for (j = sizeof(*bi);
+			    j + 2 + bi->SSID_len <= (int)bi_len; j++) {
+				if (raw[j] == 0x00 &&
+				    raw[j+1] == bi->SSID_len &&
+				    memcmp(raw + j + 2, bi->SSID,
+				    bi->SSID_len) == 0) {
+					ie_off = j;
+					ie_len = bi_len - ie_off;
+					break;
+				}
+			}
+		}
+		if (ie_off == 0 && bi->SSID_len == 0) {
+			/* Hidden SSID: 00 00 followed by Rates IE (tag 1) */
+			int j;
+			for (j = sizeof(*bi);
+			    j + 4 <= (int)bi_len; j++) {
+				if (raw[j] == 0x00 && raw[j+1] == 0x00 &&
+				    raw[j+2] == 0x01) {
+					ie_off = j;
+					ie_len = bi_len - ie_off;
+					break;
+				}
+			}
+		}
+		/* Fallback for older firmware (ie_offset=0, 128-byte hdr) */
+		if (ie_off == 0 && bi_len > 128) {
+			uint16_t raw_off = le16toh(bi->ie_offset);
+			if (raw_off >= sizeof(*bi) && raw_off < bi_len) {
+				ie_off = raw_off;
+				ie_len = bi_len - ie_off;
+			} else {
+				ie_off = 128;
+				ie_len = bi_len - ie_off;
+			}
 		}
 
 		chan = brcmf_chanspec_to_channel(sc, chanspec);
@@ -306,7 +340,9 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 				sr->ie_len = 0;
 			}
 
-			/* empty */
+			/* Feed to net80211 immediately so entries arrive
+			 * while swscan's scan module is still active. */
+			brcmf_add_scan_result(sc, sr);
 		}
 
 		bi = (struct brcmf_bss_info_le *)((uint8_t *)bi + bi_len);
@@ -348,12 +384,18 @@ brcmf_clear_scan_discard(struct ieee80211com *ic)
 {
 	struct ieee80211_scan_state *ss = ic->ic_scan;
 	uint8_t *base;
+	u_int *flagsp;
 
 	if (ss == NULL)
 		return;
-	/* iflags is the first field after ieee80211_scan_state */
 	base = (uint8_t *)ss + sizeof(struct ieee80211_scan_state);
-	*(u_int *)base &= ~0x02; /* ISCAN_DISCARD */
+	flagsp = (u_int *)base;
+	if (*flagsp & 0x02) {
+		struct brcmf_softc *sc = ic->ic_softc;
+		BRCMF_DBG(sc, "clearing ISCAN_DISCARD (flags=0x%x)\n",
+		    *flagsp);
+	}
+	*flagsp &= ~0x02; /* ISCAN_DISCARD */
 }
 
 void
@@ -516,6 +558,8 @@ brcmf_scan_complete_task(void *arg, int pending)
 	for (i = 0; i < n; i++)
 		brcmf_add_scan_result(sc, &sc->scan_results[i]);
 
+	ieee80211_scan_done(vap);
+
 	/*
 	 * Direct join only when net80211 controls roaming (not
 	 * wpa_supplicant). When iv_roaming == MANUAL, the
@@ -561,5 +605,5 @@ brcmf_scan_complete_task(void *arg, int pending)
 		}
 	}
 
-	ieee80211_scan_done(vap);
+	BRCMF_DBG(sc, "scan_complete: added %d results\n", n);
 }
