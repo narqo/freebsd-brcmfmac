@@ -122,6 +122,12 @@ struct brcmf_wsec_key {
 #define BRCMF_CHSPEC_D11AC_BAND_2G	0x0000
 #define BRCMF_CHSPEC_D11AC_BAND_5G	0xc000
 
+/* Bandwidth in MHz (post-shift chanspec values, same for D11N and D11AC) */
+#define BRCMF_BW_20		2
+#define BRCMF_BW_40		3
+#define BRCMF_BW_80		4
+#define BRCMF_BW_160		5
+
 /* D11N chanspec encoding (BCM43455, older chips) */
 #define BRCMF_CHSPEC_D11N_SB_MASK	0x0300
 #define BRCMF_CHSPEC_D11N_SB_SHIFT	8

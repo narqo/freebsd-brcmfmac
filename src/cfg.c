@@ -68,7 +68,7 @@ brcmf_link_task(void *arg, int pending)
 		}
 		if (error != 0) {
 			channum = 1;
-			bw = 2; /* 20 MHz */
+			bw = BRCMF_BW_20;
 			sb = 0;
 		} else {
 			channum = brcmf_chanspec_to_channel(sc, chanspec_raw);
@@ -85,7 +85,7 @@ brcmf_link_task(void *arg, int pending)
 			chan = NULL;
 
 			/* Try VHT80 */
-			if (bw == 4) {
+			if (bw == BRCMF_BW_80) {
 				int htdir = (sb & 1) ?
 				    IEEE80211_CHAN_HT40D :
 				    IEEE80211_CHAN_HT40U;
@@ -95,7 +95,7 @@ brcmf_link_task(void *arg, int pending)
 			}
 
 			/* Try HT40 */
-			if (bw >= 3 && chan == NULL) {
+			if (bw >= BRCMF_BW_40 && chan == NULL) {
 				int htflag = (sb & 1) ?
 				    IEEE80211_CHAN_HT40D :
 				    IEEE80211_CHAN_HT40U;
@@ -140,7 +140,7 @@ brcmf_link_task(void *arg, int pending)
 				    ic->ic_vht_cap.vht_cap_info;
 				ni->ni_vht_mcsinfo =
 				    ic->ic_vht_cap.supp_mcs;
-				if (bw >= 4)
+				if (bw >= BRCMF_BW_80)
 					ni->ni_vht_chanwidth =
 					    IEEE80211_VHT_CHANWIDTH_80MHZ;
 				else

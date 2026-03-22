@@ -33,11 +33,11 @@ brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 	int sb = (chanspec & BRCMF_CHSPEC_D11AC_SB_MASK) >> BRCMF_CHSPEC_D11AC_SB_SHIFT;
 
 	switch (bw) {
-	case 2: /* 20 MHz */
+	case BRCMF_BW_20:
 		return ch;
-	case 3: /* 40 MHz */
+	case BRCMF_BW_40:
 		return (sb == 0) ? ch - 2 : ch + 2;
-	case 4: /* 80 MHz */
+	case BRCMF_BW_80:
 		switch (sb) {
 		case 0: return ch - 6;
 		case 1: return ch - 2;
@@ -45,7 +45,7 @@ brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 		case 3: return ch + 6;
 		}
 		break;
-	case 5: /* 160 MHz */
+	case BRCMF_BW_160:
 		return ch - 14 + sb * 4;
 	}
 	return ch;
@@ -58,7 +58,7 @@ brcmf_chanspec_to_channel_d11n(uint16_t chanspec)
 	int bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >> BRCMF_CHSPEC_D11N_BW_SHIFT;
 	int sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >> BRCMF_CHSPEC_D11N_SB_SHIFT;
 
-	if (bw == 3) { /* 40 MHz */
+	if (bw == BRCMF_BW_40) {
 		if (sb == 1) /* lower */
 			return ch - 2;
 		if (sb == 2) /* upper */
@@ -75,10 +75,6 @@ brcmf_chanspec_to_channel(struct brcmf_softc *sc, uint16_t chanspec)
 	return brcmf_chanspec_to_channel_d11ac(chanspec);
 }
 
-/*
- * Extract bandwidth and sideband from chanspec (D11AC encoding).
- * For D11N, returns approximate D11AC-equivalent values.
- */
 void
 brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
     int *bw, int *sb)
@@ -88,9 +84,8 @@ brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
 		    BRCMF_CHSPEC_D11N_BW_SHIFT;
 		int n_sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >>
 		    BRCMF_CHSPEC_D11N_SB_SHIFT;
-		/* Map D11N bw values to D11AC equivalents */
-		*bw = (n_bw == 3) ? 3 : 2; /* 40MHz → 3, else 20MHz → 2 */
-		*sb = (n_sb == 2) ? 1 : 0; /* upper → 1, lower/none → 0 */
+		*bw = (n_bw == BRCMF_BW_40) ? BRCMF_BW_40 : BRCMF_BW_20;
+		*sb = (n_sb == 2) ? 1 : 0; /* D11N: 2=upper, 1=lower */
 	} else {
 		*bw = (chanspec & BRCMF_CHSPEC_D11AC_BW_MASK) >>
 		    BRCMF_CHSPEC_D11AC_BW_SHIFT;
@@ -129,13 +124,8 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 {
 	struct brcmf_escan_params_le *params;
 	size_t params_size;
-	int nchan, error;
+	int error;
 
-	/*
-	 * Scan all 2.4 GHz and 5 GHz channels supported by the
-	 * hardware. Use channel_num=0 to let firmware scan all.
-	 */
-	nchan = 0;
 	params_size = sizeof(*params);
 	params = malloc(params_size, M_BRCMFMAC, M_NOWAIT | M_ZERO);
 	if (params == NULL)
@@ -151,47 +141,128 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 	}
 
 	memset(params->params_le.bssid, 0xff, 6);
-
 	params->params_le.bss_type = DOT11_BSSTYPE_ANY;
 	params->params_le.scan_type = 0;
 	params->params_le.nprobes = htole32(-1);
 	params->params_le.active_time = htole32(-1);
 	params->params_le.passive_time = htole32(-1);
 	params->params_le.home_time = htole32(-1);
-
-	params->params_le.channel_num = htole32(nchan);
+	params->params_le.channel_num = 0;
 
 	sc->scan_nresults = 0;
 	sc->scan_active = 1;
 
 	error = brcmf_fil_iovar_data_set(sc, "escan", params, params_size);
 	if (error != 0) {
-		device_printf(sc->dev, "escan iovar failed: %d, "
-		    "trying C_SCAN\n", error);
-		/* Fallback to C_SCAN (cmd=50) with scan_params directly */
-		error = brcmf_fil_cmd_data_set(sc, 50 /* WLC_SCAN */,
-		    &params->params_le,
-		    sizeof(params->params_le));
-		if (error != 0)
-			device_printf(sc->dev,
-			    "C_SCAN also failed: %d\n", error);
-	}
-	if (error != 0) {
+		device_printf(sc->dev, "escan failed: %d\n", error);
 		sc->scan_active = 0;
-	} else {
-		BRCMF_DBG(sc, "scan started, sync_id=%u\n",
-		    le16toh(params->sync_id));
 	}
 
 	free(params, M_BRCMFMAC);
 	return (error);
 }
 
+/*
+ * Find the byte offset where IEs begin within a raw bss_info buffer.
+ * Returns 0 if IEs cannot be located.
+ *
+ * The firmware's bss_info struct is larger than the public 128-byte
+ * header and varies by firmware version (see spec/A2-structures.md).
+ * The ie_offset/ie_length fields may contain garbage on newer
+ * firmwares, so we search for the SSID IE matching the fixed header.
+ */
+static uint32_t
+brcmf_find_ie_offset(const struct brcmf_bss_info_le *bi,
+    const uint8_t *raw, uint32_t bi_len)
+{
+	uint32_t j;
+
+	/* Search for SSID IE matching the fixed-header SSID */
+	if (bi->SSID_len > 0 && bi->SSID_len <= 32) {
+		for (j = sizeof(*bi);
+		    j + 2 + bi->SSID_len <= bi_len; j++) {
+			if (raw[j] == IEEE80211_ELEMID_SSID &&
+			    raw[j + 1] == bi->SSID_len &&
+			    memcmp(raw + j + 2, bi->SSID,
+			    bi->SSID_len) == 0)
+				return (j);
+		}
+	}
+
+	/* Hidden SSID: tag 0x00, length 0, followed by Rates (tag 0x01) */
+	if (bi->SSID_len == 0) {
+		for (j = sizeof(*bi); j + 4 <= bi_len; j++) {
+			if (raw[j] == 0x00 && raw[j + 1] == 0x00 &&
+			    raw[j + 2] == 0x01)
+				return (j);
+		}
+	}
+
+	/* Trust ie_offset if it looks plausible */
+	{
+		uint16_t raw_off = le16toh(bi->ie_offset);
+		if (raw_off >= sizeof(*bi) && raw_off < bi_len)
+			return (raw_off);
+	}
+
+	/* Last resort: assume 128-byte header (BCM4350 firmware) */
+	if (bi_len > 128)
+		return (128);
+
+	return (0);
+}
+
+/*
+ * Store one BSS entry into the scan cache. Returns the slot used,
+ * or NULL if the cache is full or a dedup rule suppressed the entry.
+ */
+static struct brcmf_scan_result *
+brcmf_store_bss(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
+    int chan, int16_t rssi, int8_t noise, uint16_t chanspec,
+    const uint8_t *ie_data, uint32_t ie_len)
+{
+	struct brcmf_scan_result *sr;
+	int k, dup = -1;
+
+	if (sc->scan_nresults >= BRCMF_SCAN_RESULTS_MAX)
+		return (NULL);
+
+	for (k = 0; k < sc->scan_nresults; k++) {
+		if (memcmp(sc->scan_results[k].bssid, bi->BSSID, 6) == 0) {
+			dup = k;
+			break;
+		}
+	}
+
+	/* Don't overwrite an entry that has IEs with one that doesn't */
+	if (dup >= 0 && sc->scan_results[dup].ie_len > 0 && ie_len == 0)
+		return (NULL);
+
+	sr = (dup >= 0) ? &sc->scan_results[dup] :
+	    &sc->scan_results[sc->scan_nresults++];
+
+	memcpy(sr->bssid, bi->BSSID, 6);
+	sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
+	memcpy(sr->ssid, bi->SSID, sr->ssid_len);
+	sr->chan = chan;
+	sr->chanspec = chanspec;
+	sr->rssi = rssi;
+	sr->noise = noise;
+	sr->capinfo = le16toh(bi->capability);
+	sr->bintval = le16toh(bi->beacon_period);
+
+	if (ie_len > BRCMF_SCAN_IE_MAX)
+		ie_len = BRCMF_SCAN_IE_MAX;
+	sr->ie_len = ie_len;
+	if (ie_len > 0)
+		memcpy(sr->ie, ie_data, ie_len);
+
+	return (sr);
+}
+
 void
 brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 {
-	struct ieee80211com *ic = &sc->ic;
-	struct ieee80211vap *vap;
 	struct brcmf_escan_result_le *result;
 	struct brcmf_bss_info_le *bi;
 	uint32_t buflen;
@@ -202,20 +273,14 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		return;
 	}
 
+	if (TAILQ_FIRST(&sc->ic.ic_vaps) == NULL)
+		return;
+
 	result = data;
 	buflen = le32toh(result->buflen);
 	bss_count = le16toh(result->bss_count);
 
-	BRCMF_DBG(sc, "escan_result: bss_count=%u buflen=%u datalen=%u\n",
-	    bss_count, buflen, datalen);
-
-	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap == NULL)
-		return;
-
 	if (bss_count == 0) {
-		BRCMF_DBG(sc, "escan complete: nresults=%d\n",
-		    sc->scan_nresults);
 		sc->scan_active = 0;
 		sc->scan_complete = 1;
 		taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
@@ -226,126 +291,31 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	while (bss_count > 0 && (uint8_t *)bi < (uint8_t *)data + buflen) {
 		uint32_t bi_len = le32toh(bi->length);
 		uint8_t *raw = (uint8_t *)bi;
+		uint32_t ie_off, ie_len;
 		struct brcmf_scan_result *sr;
-		uint16_t chanspec, ie_off;
-		uint32_t ie_len;
 		int16_t rssi;
 		int8_t noise;
-		int chan;
 
 		if (bi_len < sizeof(*bi) || bi_len > buflen)
 			break;
 
-		chanspec = le16toh(bi->chanspec);
 		rssi = (int16_t)le16toh(bi->RSSI);
 		noise = bi->phy_noise;
 		if (noise == 0)
 			noise = -95;
-		/*
-		 * Find IEs by searching for the SSID IE (tag 0x00)
-		 * matching the SSID from the fixed header. The firmware's
-		 * BSS info struct size varies by version — 128 bytes on
-		 * 7.35.x, 512 bytes on 7.45.x — so a fixed offset
-		 * doesn't work across firmware versions.
-		 *
-		 * Fallback: if ie_offset looks valid (>= sizeof struct
-		 * and < bi_len), trust it. This handles the BCM4350
-		 * firmware that reports ie_offset=0 with a 128-byte header.
-		 */
-		ie_off = 0;
-		ie_len = 0;
-		if (bi->SSID_len > 0 && bi->SSID_len <= 32) {
-			int j;
-			for (j = sizeof(*bi);
-			    j + 2 + bi->SSID_len <= (int)bi_len; j++) {
-				if (raw[j] == 0x00 &&
-				    raw[j+1] == bi->SSID_len &&
-				    memcmp(raw + j + 2, bi->SSID,
-				    bi->SSID_len) == 0) {
-					ie_off = j;
-					ie_len = bi_len - ie_off;
-					break;
-				}
-			}
-		}
-		if (ie_off == 0 && bi->SSID_len == 0) {
-			/* Hidden SSID: 00 00 followed by Rates IE (tag 1) */
-			int j;
-			for (j = sizeof(*bi);
-			    j + 4 <= (int)bi_len; j++) {
-				if (raw[j] == 0x00 && raw[j+1] == 0x00 &&
-				    raw[j+2] == 0x01) {
-					ie_off = j;
-					ie_len = bi_len - ie_off;
-					break;
-				}
-			}
-		}
-		/* Fallback for older firmware (ie_offset=0, 128-byte hdr) */
-		if (ie_off == 0 && bi_len > 128) {
-			uint16_t raw_off = le16toh(bi->ie_offset);
-			if (raw_off >= sizeof(*bi) && raw_off < bi_len) {
-				ie_off = raw_off;
-				ie_len = bi_len - ie_off;
-			} else {
-				ie_off = 128;
-				ie_len = bi_len - ie_off;
-			}
-		}
 
-		chan = brcmf_chanspec_to_channel(sc, chanspec);
+		ie_off = brcmf_find_ie_offset(bi, raw, bi_len);
+		ie_len = (ie_off > 0 && ie_off < bi_len) ?
+		    bi_len - ie_off : 0;
 
-		if (sc->scan_nresults < BRCMF_SCAN_RESULTS_MAX) {
-			int k, dup = -1;
-
-			/*
-			 * Check for duplicate BSSID. If we already have
-			 * an entry with IEs, don't overwrite it with one
-			 * that lacks IEs.
-			 */
-			for (k = 0; k < sc->scan_nresults; k++) {
-				if (memcmp(sc->scan_results[k].bssid,
-				    bi->BSSID, 6) == 0) {
-					dup = k;
-					break;
-				}
-			}
-			if (dup >= 0 && sc->scan_results[dup].ie_len > 0 &&
-			    ie_len == 0) {
-				bi = (struct brcmf_bss_info_le *)
-				    ((uint8_t *)bi + bi_len);
-				bss_count--;
-				continue;
-			}
-
-			if (dup >= 0)
-				sr = &sc->scan_results[dup];
-			else
-				sr = &sc->scan_results[sc->scan_nresults++];
-			memcpy(sr->bssid, bi->BSSID, 6);
-			sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
-			memcpy(sr->ssid, bi->SSID, sr->ssid_len);
-			sr->chan = chan;
-			sr->chanspec = chanspec;
-			sr->rssi = rssi;
-			sr->noise = noise;
-			sr->capinfo = le16toh(bi->capability);
-			sr->bintval = le16toh(bi->beacon_period);
-			if (ie_len > BRCMF_SCAN_IE_MAX)
-				ie_len = BRCMF_SCAN_IE_MAX;
-			if (ie_off + ie_len <= bi_len) {
-				sr->ie_len = ie_len;
-				memcpy(sr->ie, raw + ie_off, ie_len);
-			} else {
-				sr->ie_len = 0;
-			}
-
-			/* Feed to net80211 immediately so entries arrive
-			 * while swscan's scan module is still active. */
+		sr = brcmf_store_bss(sc, bi,
+		    brcmf_chanspec_to_channel(sc, le16toh(bi->chanspec)),
+		    rssi, noise, le16toh(bi->chanspec),
+		    (ie_off > 0) ? raw + ie_off : NULL, ie_len);
+		if (sr != NULL)
 			brcmf_add_scan_result(sc, sr);
-		}
 
-		bi = (struct brcmf_bss_info_le *)((uint8_t *)bi + bi_len);
+		bi = (struct brcmf_bss_info_le *)(raw + bi_len);
 		bss_count--;
 	}
 }
@@ -363,10 +333,10 @@ static const uint8_t default_rates_5g[] = {
 };
 
 /*
- * BCM4350 note: spec sets RSN IE via "wpaie" iovar, but any wpaie set
- * causes "SET_SSID failed, status=1" on v7.35.180.133. Instead, inject
- * a synthetic WMM IE so wpa_supplicant sets 16 PTKSA replay counters
- * (RSN capabilities 0x000c) to match what the firmware always sends.
+ * Synthetic WMM IE — injected when BSS has RSN but no WMM.
+ * Makes wpa_supplicant set 16 PTKSA replay counters (RSN
+ * capabilities 0x000c) to match the firmware's association
+ * request.
  */
 static const uint8_t default_wmm_ie[] = {
 	IEEE80211_ELEMID_VENDOR, 0x07,
@@ -375,27 +345,100 @@ static const uint8_t default_wmm_ie[] = {
 };
 
 /*
- * Clear ISCAN_DISCARD so ieee80211_add_scan doesn't drop results.
- * swscan sets DISCARD at scan start and clears it at first channel
- * dwell, but our firmware escan results may arrive outside that window.
+ * swscan sets ISCAN_DISCARD at scan start and clears it at first
+ * channel dwell. Firmware escan results may arrive outside that
+ * window, so clear the flag before each ieee80211_add_scan call.
  */
 static void
 brcmf_clear_scan_discard(struct ieee80211com *ic)
 {
 	struct ieee80211_scan_state *ss = ic->ic_scan;
-	uint8_t *base;
 	u_int *flagsp;
 
 	if (ss == NULL)
 		return;
-	base = (uint8_t *)ss + sizeof(struct ieee80211_scan_state);
-	flagsp = (u_int *)base;
-	if (*flagsp & 0x02) {
-		struct brcmf_softc *sc = ic->ic_softc;
-		BRCMF_DBG(sc, "clearing ISCAN_DISCARD (flags=0x%x)\n",
-		    *flagsp);
-	}
+	flagsp = (u_int *)((uint8_t *)ss +
+	    sizeof(struct ieee80211_scan_state));
 	*flagsp &= ~0x02; /* ISCAN_DISCARD */
+}
+
+static struct ieee80211_channel *
+brcmf_find_scan_channel(struct ieee80211com *ic, int chan)
+{
+	int freq = ieee80211_ieee2mhz(chan,
+	    chan <= 14 ? IEEE80211_CHAN_2GHZ : IEEE80211_CHAN_5GHZ);
+	int base = chan <= 14 ? IEEE80211_CHAN_G : IEEE80211_CHAN_A;
+	struct ieee80211_channel *c;
+
+	c = ieee80211_find_channel(ic, freq, base | IEEE80211_CHAN_HT20);
+	if (c == NULL)
+		c = ieee80211_find_channel(ic, freq, base);
+	if (c == NULL)
+		c = &ic->ic_channels[0];
+	return (c);
+}
+
+static void
+brcmf_parse_ies(struct ieee80211_scanparams *sp,
+    uint8_t *ie, uint16_t ie_len)
+{
+	uint8_t *p = ie;
+	uint8_t *end = ie + ie_len;
+	uint8_t *validated_end = p;
+
+	while (p + 2 <= end) {
+		uint8_t id = p[0];
+		uint8_t len = p[1];
+
+		if (p + 2 + len > end)
+			break;
+
+		switch (id) {
+		case IEEE80211_ELEMID_RATES:
+			sp->rates = p;
+			break;
+		case IEEE80211_ELEMID_XRATES:
+			sp->xrates = p;
+			break;
+		case IEEE80211_ELEMID_COUNTRY:
+			sp->country = p;
+			break;
+		case IEEE80211_ELEMID_RSN:
+			sp->rsn = p;
+			break;
+		case IEEE80211_ELEMID_HTCAP:
+			sp->htcap = p;
+			break;
+		case IEEE80211_ELEMID_HTINFO:
+			sp->htinfo = p;
+			break;
+		case IEEE80211_ELEMID_VENDOR:
+			if (len >= 4 &&
+			    p[2] == 0x00 && p[3] == 0x50 &&
+			    p[4] == 0xf2 && p[5] == 0x01)
+				sp->wpa = p;
+			if (len >= 4 &&
+			    p[2] == 0x00 && p[3] == 0x50 &&
+			    p[4] == 0xf2 && p[5] == 0x02)
+				sp->wme = p;
+			break;
+		}
+		p += 2 + len;
+		validated_end = p;
+	}
+
+	/* Inject synthetic WMM IE when BSS has RSN but no WMM */
+	if (sp->rsn != NULL && sp->wme == NULL &&
+	    validated_end - ie + (int)sizeof(default_wmm_ie)
+	    <= BRCMF_SCAN_IE_MAX) {
+		memcpy(validated_end, default_wmm_ie,
+		    sizeof(default_wmm_ie));
+		sp->wme = validated_end;
+		validated_end += sizeof(default_wmm_ie);
+	}
+
+	sp->ies = ie;
+	sp->ies_len = validated_end - ie;
 }
 
 void
@@ -405,7 +448,6 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	struct ieee80211vap *vap;
 	struct ieee80211_scanparams sp;
 	struct ieee80211_frame wh;
-	struct ieee80211_channel *chan;
 	uint8_t ssid_ie[2 + 32];
 	uint8_t tstamp[8];
 
@@ -415,29 +457,11 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 
 	brcmf_clear_scan_discard(ic);
 
-	{
-		int freq = ieee80211_ieee2mhz(sr->chan,
-		    sr->chan <= 14 ? IEEE80211_CHAN_2GHZ :
-		    IEEE80211_CHAN_5GHZ);
-
-		chan = ieee80211_find_channel(ic, freq,
-		    sr->chan <= 14 ?
-		    IEEE80211_CHAN_G | IEEE80211_CHAN_HT20 :
-		    IEEE80211_CHAN_A | IEEE80211_CHAN_HT20);
-		if (chan == NULL)
-			chan = ieee80211_find_channel(ic, freq,
-			    sr->chan <= 14 ? IEEE80211_CHAN_G :
-			    IEEE80211_CHAN_A);
-		if (chan == NULL)
-			chan = &ic->ic_channels[0];
-	}
-
 	ssid_ie[0] = IEEE80211_ELEMID_SSID;
 	ssid_ie[1] = sr->ssid_len;
 	memcpy(&ssid_ie[2], sr->ssid, sr->ssid_len);
 
 	memset(tstamp, 0, sizeof(tstamp));
-
 	memset(&sp, 0, sizeof(sp));
 	sp.tstamp = tstamp;
 	sp.ssid = ssid_ie;
@@ -448,91 +472,20 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	sp.capinfo = sr->capinfo;
 	sp.bintval = sr->bintval;
 
-	if (sr->ie_len > 0) {
-		uint8_t *p = sr->ie;
-		uint8_t *end = sr->ie + sr->ie_len;
-		uint8_t *validated_end = p;
-
-		while (p + 2 <= end) {
-			uint8_t id = p[0];
-			uint8_t len = p[1];
-
-			if (p + 2 + len > end)
-				break;
-
-			switch (id) {
-			case IEEE80211_ELEMID_RATES:
-				sp.rates = p;
-				break;
-			case IEEE80211_ELEMID_XRATES:
-				sp.xrates = p;
-				break;
-			case IEEE80211_ELEMID_COUNTRY:
-				sp.country = p;
-				break;
-			case IEEE80211_ELEMID_RSN:
-				sp.rsn = p;
-				break;
-			case IEEE80211_ELEMID_HTCAP:
-				sp.htcap = p;
-				break;
-			case IEEE80211_ELEMID_HTINFO:
-				sp.htinfo = p;
-				break;
-			case IEEE80211_ELEMID_VENDOR:
-				if (len >= 4 &&
-				    p[2] == 0x00 && p[3] == 0x50 &&
-				    p[4] == 0xf2 && p[5] == 0x01)
-					sp.wpa = p;
-				if (len >= 4 &&
-				    p[2] == 0x00 && p[3] == 0x50 &&
-				    p[4] == 0xf2 && p[5] == 0x02)
-					sp.wme = p;
-				break;
-			}
-			p += 2 + len;
-			validated_end = p;
-		}
-		/*
-		 * If the BSS has RSN but no WMM IE, append a synthetic
-		 * WMM IE. The firmware always sets 16 PTKSA replay
-		 * counters in its RSN IE; wpa_supplicant only matches
-		 * this when it sees a WMM IE in the BSS.
-		 */
-		if (sp.rsn != NULL && sp.wme == NULL &&
-		    validated_end - sr->ie + (int)sizeof(default_wmm_ie)
-		    <= BRCMF_SCAN_IE_MAX) {
-			memcpy(validated_end, default_wmm_ie,
-			    sizeof(default_wmm_ie));
-			sp.wme = validated_end;
-			validated_end += sizeof(default_wmm_ie);
-		}
-
-		sp.ies = sr->ie;
-		sp.ies_len = validated_end - sr->ie;
-	}
+	if (sr->ie_len > 0)
+		brcmf_parse_ies(&sp, sr->ie, sr->ie_len);
 
 	memset(&wh, 0, sizeof(wh));
 	wh.i_fc[0] = IEEE80211_FC0_TYPE_MGT | IEEE80211_FC0_SUBTYPE_BEACON;
 	IEEE80211_ADDR_COPY(wh.i_addr2, sr->bssid);
 	IEEE80211_ADDR_COPY(wh.i_addr3, sr->bssid);
 
-	if (sp.rates == NULL) {
-		BRCMF_DBG(sc, "skip scan entry %02x:%02x:%02x:%02x:%02x:%02x"
-		    " - no rates\n",
-		    sr->bssid[0], sr->bssid[1], sr->bssid[2],
-		    sr->bssid[3], sr->bssid[4], sr->bssid[5]);
+	if (sp.rates == NULL)
 		return;
-	}
 
-	BRCMF_DBG(sc,
-	    "add_scan: %02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d ie=%u\n",
-	    sr->bssid[0], sr->bssid[1], sr->bssid[2],
-	    sr->bssid[3], sr->bssid[4], sr->bssid[5],
-	    sr->chan, sr->rssi, sr->ie_len);
-
-	ieee80211_add_scan(vap, chan, &sp, &wh,
-	    IEEE80211_FC0_SUBTYPE_BEACON,
+	ieee80211_add_scan(vap,
+	    brcmf_find_scan_channel(ic, sr->chan),
+	    &sp, &wh, IEEE80211_FC0_SUBTYPE_BEACON,
 	    sr->rssi - sr->noise, sr->noise);
 }
 
@@ -542,7 +495,7 @@ brcmf_scan_complete_task(void *arg, int pending)
 	struct brcmf_softc *sc = arg;
 	struct ieee80211com *ic = &sc->ic;
 	struct ieee80211vap *vap;
-	int i, n;
+	int n;
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
@@ -555,23 +508,17 @@ brcmf_scan_complete_task(void *arg, int pending)
 	n = sc->scan_nresults;
 	sc->scan_nresults = 0;
 
-	for (i = 0; i < n; i++)
-		brcmf_add_scan_result(sc, &sc->scan_results[i]);
-
 	ieee80211_scan_done(vap);
 
 	/*
 	 * Direct join only when net80211 controls roaming (not
 	 * wpa_supplicant). When iv_roaming == MANUAL, the
 	 * supplicant drives association via MLME ioctls.
-	 *
-	 * Snapshot VAP fields under COM lock; ioctls may modify
-	 * them concurrently.
 	 */
 	{
 		struct ieee80211_scan_ssid des_ssid;
 		uint8_t des_bssid[6];
-		int do_join;
+		int do_join, i;
 
 		IEEE80211_LOCK(ic);
 		do_join = !sc->link_up &&
@@ -604,6 +551,4 @@ brcmf_scan_complete_task(void *arg, int pending)
 			}
 		}
 	}
-
-	BRCMF_DBG(sc, "scan_complete: added %d results\n", n);
 }
