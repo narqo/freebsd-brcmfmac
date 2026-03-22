@@ -15,7 +15,9 @@
 
 #include <sys/param.h>
 #include <sys/bus.h>
+#include <sys/firmware.h>
 #include <sys/kernel.h>
+#include <sys/malloc.h>
 #include <sys/module.h>
 
 #include <dev/pci/pcireg.h>
@@ -98,6 +100,112 @@ brcmf_pci_detach(device_t dev)
 
 #define SDIO_VENDOR_BROADCOM	0x02D0
 #define SDIO_DEVICE_BCM43455	0xA9A6
+
+#define BRCMF_CLM_FW_NAME	"brcmfmac43455-sdio.clm_blob"
+#define BRCMF_CLM_MAX_CHUNK	1400
+
+/* CLM download header (matches Linux brcmf_dload_data_le) */
+struct brcmf_dload_data_le {
+	uint16_t flag;
+	uint16_t dload_type;
+	uint32_t len;
+	uint32_t crc;
+	uint8_t data[];
+} __packed;
+
+#define DL_BEGIN	0x0002
+#define DL_END		0x0004
+#define DL_TYPE_CLM	2
+#define DLOAD_HANDLER_VER 1
+#define DLOAD_FLAG_VER_SHIFT 12
+
+static void
+brcmf_sdio_load_clm(struct brcmf_softc *sc)
+{
+	const struct firmware *fw;
+	struct brcmf_dload_data_le *chunk;
+	uint32_t datalen, cumulative, chunk_len;
+	uint16_t dl_flag;
+	uint32_t status;
+	int error;
+
+	fw = firmware_get(BRCMF_CLM_FW_NAME);
+	if (fw == NULL) {
+		device_printf(sc->dev,
+		    "no CLM blob available, channels may be limited\n");
+		return;
+	}
+
+	device_printf(sc->dev, "loading CLM blob (%zu bytes)\n",
+	    fw->datasize);
+
+	chunk = malloc(sizeof(*chunk) + BRCMF_CLM_MAX_CHUNK,
+	    M_BRCMFMAC, M_WAITOK | M_ZERO);
+
+	datalen = fw->datasize;
+	cumulative = 0;
+	dl_flag = DL_BEGIN;
+
+	do {
+		if (datalen > BRCMF_CLM_MAX_CHUNK) {
+			chunk_len = BRCMF_CLM_MAX_CHUNK;
+		} else {
+			chunk_len = datalen;
+			dl_flag |= DL_END;
+		}
+
+		chunk->flag = htole16(dl_flag |
+		    (DLOAD_HANDLER_VER << DLOAD_FLAG_VER_SHIFT));
+		chunk->dload_type = htole16(DL_TYPE_CLM);
+		chunk->len = htole32(chunk_len);
+		chunk->crc = 0;
+		memcpy(chunk->data,
+		    (const uint8_t *)fw->data + cumulative, chunk_len);
+
+		/*
+		 * Can't use brcmf_fil_iovar_data_set — its 512-byte
+		 * stack buffer is too small for CLM chunks. Build the
+		 * iovar buffer manually and call ioctl directly.
+		 */
+		{
+			static const char clmload[] = "clmload";
+			uint32_t namelen = sizeof(clmload);
+			uint32_t paylen = sizeof(*chunk) + chunk_len;
+			uint32_t total = namelen + paylen;
+			uint8_t *iobuf = malloc(total, M_BRCMFMAC,
+			    M_WAITOK);
+			memcpy(iobuf, clmload, namelen);
+			memcpy(iobuf + namelen, chunk, paylen);
+			error = sc->bus_ops->ioctl(sc,
+			    263 /* C_SET_VAR */, iobuf, total, NULL);
+			free(iobuf, M_BRCMFMAC);
+		}
+		if (error != 0) {
+			device_printf(sc->dev,
+			    "CLM download failed at offset %u: %d\n",
+			    cumulative, error);
+			break;
+		}
+
+		dl_flag &= ~DL_BEGIN;
+		cumulative += chunk_len;
+		datalen -= chunk_len;
+	} while (datalen > 0);
+
+	free(chunk, M_BRCMFMAC);
+	firmware_put(fw, FIRMWARE_UNLOAD);
+
+	if (error == 0) {
+		error = brcmf_fil_iovar_int_get(sc, "clmload_status",
+		    &status);
+		if (error == 0 && status != 0) {
+			device_printf(sc->dev,
+			    "CLM load status: %u\n", status);
+		} else if (error == 0) {
+			device_printf(sc->dev, "CLM blob loaded\n");
+		}
+	}
+}
 
 static int brcmf_sdio_probe(device_t dev);
 static int brcmf_sdio_bus_attach(device_t dev);
@@ -200,8 +308,30 @@ brcmf_sdio_bus_attach(device_t dev)
 		} else {
 			device_printf(sc->dev,
 			    "firmware ver ioctl failed: %d\n", error);
+			goto fail;
 		}
 	}
+
+	/* Diagnostic: check firmware capabilities before cfg_attach */
+	{
+		char caps[256];
+		memset(caps, 0, sizeof(caps));
+		error = brcmf_fil_iovar_data_get(sc, "cap", caps,
+		    sizeof(caps) - 1);
+		if (error == 0)
+			device_printf(sc->dev, "cap: %s\n", caps);
+		else
+			device_printf(sc->dev, "cap iovar failed: %d\n", error);
+	}
+
+	/* Download CLM blob if available */
+	brcmf_sdio_load_clm(sc);
+
+	error = brcmf_cfg_attach(sc);
+	if (error != 0)
+		goto fail;
+
+	brcmf_sdpcm_start_poll(sc);
 
 	return (0);
 

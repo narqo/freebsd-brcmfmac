@@ -584,8 +584,10 @@ brcmf_parent(struct ieee80211com *ic)
 		sc->running = 0;
 	}
 
-	if (startall)
+	if (startall) {
+		BRCMF_DBG(sc, "parent: startall\n");
 		ieee80211_start_all(ic);
+	}
 }
 
 static void
@@ -605,14 +607,17 @@ brcmf_scan_start(struct ieee80211com *ic)
 	 * from the channel list). We just kick off a parallel firmware
 	 * scan. Swscan's channel dwell prevents busy-loop restarts.
 	 */
-	if (sc->scan_active)
+	if (sc->scan_active) {
+		BRCMF_DBG(sc, "scan_start: already active, skip\n");
 		return;
+	}
 
 	if (vap->iv_des_nssid > 0 && vap->iv_des_ssid[0].len > 0) {
 		ssid = vap->iv_des_ssid[0].ssid;
 		ssid_len = vap->iv_des_ssid[0].len;
 	}
 
+	BRCMF_DBG(sc, "scan_start: launching escan\n");
 	brcmf_do_escan(sc, ssid, ssid_len);
 }
 
@@ -712,7 +717,9 @@ static void
 brcmf_getradiocaps(struct ieee80211com *ic, int maxchans, int *nchans,
     struct ieee80211_channel chans[])
 {
+	struct brcmf_softc *sc = ic->ic_softc;
 	uint8_t bands[IEEE80211_MODE_BYTES];
+	int has_vht = (sc->chip == 0x4350);
 
 	memset(bands, 0, sizeof(bands));
 
@@ -726,13 +733,15 @@ brcmf_getradiocaps(struct ieee80211com *ic, int maxchans, int *nchans,
 	memset(bands, 0, sizeof(bands));
 	setbit(bands, IEEE80211_MODE_11A);
 	setbit(bands, IEEE80211_MODE_11NA);
-	setbit(bands, IEEE80211_MODE_VHT_5GHZ);
+	if (has_vht)
+		setbit(bands, IEEE80211_MODE_VHT_5GHZ);
 
 	ieee80211_add_channel_list_5ghz(chans, maxchans, nchans,
 	    (const uint8_t[]){36, 40, 44, 48, 52, 56, 60, 64,
 	    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
 	    149, 153, 157, 161, 165}, 25, bands,
-	    NET80211_CBW_FLAG_HT40 | NET80211_CBW_FLAG_VHT80);
+	    has_vht ? (NET80211_CBW_FLAG_HT40 | NET80211_CBW_FLAG_VHT80) :
+	    NET80211_CBW_FLAG_HT40);
 }
 
 int
@@ -787,7 +796,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	}
 
 	/* Bring firmware down for configuration, then back up */
-	brcmf_fil_bss_down(sc);
+	error = brcmf_fil_bss_down(sc);
+	BRCMF_DBG(sc, "bss_down: %d\n", error);
 	{
 		uint32_t val = htole32(1);
 		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
@@ -818,7 +828,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			    "failed to set country: %d\n", error);
 	}
 
-	brcmf_fil_bss_up(sc);
+	error = brcmf_fil_bss_up(sc);
+	BRCMF_DBG(sc, "bss_up: %d\n", error);
 
 	/* Enable firmware events early so none are missed */
 	brcmf_setup_events(sc);
@@ -880,26 +891,26 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	    IEEE80211_HTCAP_DSSSCCK40 |
 	    IEEE80211_HTCAP_MAXAMSDU_3839;
 
-	/* BCM4350: 2SS VHT, MCS 0-9, SGI80 */
-	ic->ic_vht_cap.vht_cap_info =
-	    IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
-	    IEEE80211_VHTCAP_SHORT_GI_80 |
-	    IEEE80211_VHTCAP_RXLDPC;
-	/* 2SS MCS 0-9, streams 3-8 unsupported */
-	ic->ic_vht_cap.supp_mcs.rx_mcs_map = htole16(
-	    IEEE80211_VHT_MCS_SUPPORT_0_9 |
-	    (IEEE80211_VHT_MCS_SUPPORT_0_9 << 2) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 4) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 6) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 8) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 10) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 12) |
-	    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 14));
-	ic->ic_vht_cap.supp_mcs.tx_mcs_map =
-	    ic->ic_vht_cap.supp_mcs.rx_mcs_map;
-	/* Max rate: 867 Mbps (VHT80 2SS MCS9 SGI) */
-	ic->ic_vht_cap.supp_mcs.rx_highest = htole16(867);
-	ic->ic_vht_cap.supp_mcs.tx_highest = htole16(867);
+	/* VHT only on BCM4350 (2SS, MCS 0-9, SGI80) */
+	if (sc->chip == 0x4350) {
+		ic->ic_vht_cap.vht_cap_info =
+		    IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
+		    IEEE80211_VHTCAP_SHORT_GI_80 |
+		    IEEE80211_VHTCAP_RXLDPC;
+		ic->ic_vht_cap.supp_mcs.rx_mcs_map = htole16(
+		    IEEE80211_VHT_MCS_SUPPORT_0_9 |
+		    (IEEE80211_VHT_MCS_SUPPORT_0_9 << 2) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 4) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 6) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 8) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 10) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 12) |
+		    (IEEE80211_VHT_MCS_NOT_SUPPORTED << 14));
+		ic->ic_vht_cap.supp_mcs.tx_mcs_map =
+		    ic->ic_vht_cap.supp_mcs.rx_mcs_map;
+		ic->ic_vht_cap.supp_mcs.rx_highest = htole16(867);
+		ic->ic_vht_cap.supp_mcs.tx_highest = htole16(867);
+	}
 
 	/*
 	 * Set regdomain to DEBUG so the channel list isn't filtered

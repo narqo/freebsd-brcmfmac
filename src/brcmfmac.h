@@ -166,6 +166,10 @@ struct brcmf_softc {
 	uint8_t sdpcm_ioctl_tx[BRCMF_SDPCM_CTL_BUFSZ];
 	uint8_t sdpcm_ioctl_rx[BRCMF_SDPCM_CTL_BUFSZ];
 	uint8_t sdpcm_data_tx[2048];	/* BCDC+payload for brcmf_sdpcm_tx */
+	uint8_t sdpcm_poll_rx[BRCMF_SDPCM_CTL_BUFSZ]; /* RX poll buffer */
+	volatile u_int sdpcm_rx_busy;	/* atomic: ioctl or rx_task owns F2 */
+	struct callout sdpcm_callout;	/* RX poll callout (20ms) */
+	struct task sdpcm_rx_task;	/* RX processing task */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
@@ -382,6 +386,8 @@ void brcmf_sdpcm_process_event(struct brcmf_softc *sc,
     uint8_t *data, uint16_t len);
 void brcmf_sdpcm_process_rx(struct brcmf_softc *sc,
     uint8_t *data, uint16_t len);
+void brcmf_sdpcm_start_poll(struct brcmf_softc *sc);
+void brcmf_sdpcm_stop_poll(struct brcmf_softc *sc);
 void brcmf_sdpcm_cleanup(struct brcmf_softc *sc);
 
 /* fwil.c - Firmware interface layer */

@@ -1,5 +1,75 @@
 # Investigations
 
+## 22 Mar 2026: RPi4 net80211 attach success, escan BCME_UNSUPPORTED
+
+### What works
+
+- `brcmf_cfg_attach` completes on BCM43455 SDIO
+- MAC address: `dc:a6:32:29:7b:1b`
+- io_type: D11AC (not D11N as expected from spec)
+- `bss_down`, `bss_up` succeed
+- `event_msgs`, `mpc`, `roam_off` iovars succeed
+- `cap` iovar returns: `ap sta wme 802.11d 802.11h rm cqa cac
+  dualband ampdu ampdu_tx ampdu_rx amsdurx radio_pwrsave btamp
+  p2p proptxstatus mchan p2po anqpo vht-prop-rates dfrts
+  txpwrcache stbc-tx stbc-rx-1ss epno pfnx wnm bsstrans mfp
+  sae_ext fbt`
+- `ifconfig wlan0 create wlandev brcmfmac0` works
+- `ifconfig wlan0 up` works (brcmf_parent runs, no crash)
+- RX poll callout (20ms) running without panics
+
+### What fails
+
+| Iovar/cmd | fwerr | Meaning |
+|-----------|-------|---------|
+| `escan` (C_SET_VAR) | -4 | BCME_UNSUPPORTED |
+| `C_SCAN` (cmd=50) | -4 | BCME_UNSUPPORTED |
+| `country` (C_SET_VAR) | -2 | BCME_NOTFOUND |
+| `C_SET_ROAM_TRIGGER` (cmd=55) | -10 | BCME_RANGE |
+| `C_SET_ROAM_DELTA` (cmd=57) | -10 | BCME_RANGE |
+| `sup_wpa` (C_GET_VAR) | -23 | BCME_BADARG |
+
+### Firmware details
+
+Firmware: `wl0: Aug 29 2023 01:47:08 version 7.45.265 (28bca26 CY)
+FWID 01-b677b91b`
+
+NVRAM: `txchain=1 rxchain=1` (1T1R, 1SS)
+
+### BCME_UNSUPPORTED for C_SCAN is highly unusual
+
+C_SCAN (cmd=50) is a fundamental firmware command. Returning
+BCME_UNSUPPORTED means the firmware is either:
+1. Not fully initialized (missing init step)
+2. In a mode that doesn't support scanning (AP-only? monitor?)
+3. Needs a specific sequence before scan is allowed
+
+The Linux driver's SDIO init path includes steps we skip:
+- `C_SET_GLOM` (cmd=89) with val=0
+- `bus:txglomalign` and `bus:txglomsize` iovars
+- `assoc_listen` iovar
+- `ampdu_ba_wsize` iovar
+
+None of these should gate scanning, but the firmware may have
+internal state machine requirements.
+
+### RX poll concurrency
+
+Previous panic: `sleeping thread holds brcmfmac_ioctl` — caused
+by RX poll task holding ioctl_mtx while SDIO I/O sleeps in CAM.
+
+Fixed with `sdpcm_rx_busy` atomic flag: ioctl path sets it before
+send+recv, RX task skips if set. Removed ioctl_mtx from RX task
+entirely. Also removed intstatus backplane check from recv (avoids
+window register race between RX task and ioctl path).
+
+### Next steps
+
+1. Compare full Linux SDIO init sequence with our init
+2. Check if firmware console has error messages
+3. Try running without `bss_down`/`bss_up` during init
+4. Try sending `C_SET_GLOM` and SDIO-specific iovars
+
 ## 20 Mar 2026: SDIO F2 writes, kernel #25
 
 Kernel #25 — claimed to have SDHCI fixes. Tested with updated

@@ -183,20 +183,6 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 	uint32_t rdsz;
 	int error;
 
-	/* Check if data available via SDIO core status.
-	 * If no frame indication, try reading F2 anyway — the
-	 * intstatus check may miss frames if bits were acked
-	 * during init. An empty F2 read returns flen=0. */
-	if (sc->sdiocore.base != 0) {
-		uint32_t intst = brcmf_sdio_bp_read32(sc,
-		    sc->sdiocore.base + SD_REG_INTSTATUS);
-		if (intst & I_HMB_FRAME_IND) {
-			brcmf_sdio_bp_write32(sc,
-			    sc->sdiocore.base + SD_REG_INTSTATUS,
-			    intst & I_HMB_FRAME_IND);
-		}
-	}
-
 	/* Read one 64-byte block from the F2 FIFO. Block-mode reads
 	 * for more data than the FIFO holds fail, so read one block
 	 * at a time. With cur_blksize=64, sdiob sends b_count=1.
@@ -289,6 +275,9 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 		return (ENXIO);
 
 	mtx_lock(&sc->ioctl_mtx);
+	/* Block RX poll task from reading F2 while ioctl is in progress */
+	while (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
+		DELAY(100);
 
 	reqid = sc->sdpcm_reqid++;
 	is_set = (cmd != 262); /* 262 = C_GET_VAR; everything else is a set or non-var cmd */
@@ -320,11 +309,14 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	    txbuf, BCDC_DCMD_HDRLEN + len);
 	if (error != 0) {
 		device_printf(sc->dev, "SDPCM send failed: %d\n", error);
+		atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
 		mtx_unlock(&sc->ioctl_mtx);
 		return (error);
 	}
 
 	/* Poll for response on control channel */
+	int ctrl_frames = 0, event_frames = 0, data_frames = 0;
+	int recv_errors = 0, recv_empty = 0;
 	for (i = 0; i < BRCMF_SDPCM_IOCTL_TIMEOUT_MS / 10; i++) {
 		uint16_t chan, dlen;
 		uint8_t *payload;
@@ -333,11 +325,18 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 
 		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
 		    &chan, &dlen, &payload);
-		if (error != 0)
+		if (error == EAGAIN) {
+			recv_empty++;
 			continue;
+		}
+		if (error != 0) {
+			recv_errors++;
+			continue;
+		}
 
 		if (chan == SDPCM_CONTROL_CHANNEL &&
 		    dlen >= BCDC_DCMD_HDRLEN) {
+			ctrl_frames++;
 			struct bcdc_dcmd *resp = (struct bcdc_dcmd *)payload;
 			uint32_t rflags = le32toh(resp->flags);
 			uint16_t rid = (rflags & BCDC_DCMD_ID_MASK) >>
@@ -354,6 +353,12 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 				*resp_len = rlen;
 
 			if (rflags & BCDC_DCMD_ERROR) {
+				int32_t fwstatus =
+				    (int32_t)le32toh(resp->status);
+				BRCMF_DBG(sc,
+				    "ioctl cmd=0x%x fwerr=%d\n",
+				    cmd, fwstatus);
+				atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
 				mtx_unlock(&sc->ioctl_mtx);
 				return (EIO);
 			}
@@ -364,15 +369,19 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 				memcpy(buf, payload + BCDC_DCMD_HDRLEN, rlen);
 			}
 
+			atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
 			mtx_unlock(&sc->ioctl_mtx);
 			return (0);
 		}
 
 		/* Non-control frames during ioctl poll — process them */
-		if (chan == SDPCM_EVENT_CHANNEL)
+		if (chan == SDPCM_EVENT_CHANNEL) {
+			event_frames++;
 			brcmf_sdpcm_process_event(sc, payload, dlen);
-		else if (chan == SDPCM_DATA_CHANNEL)
+		} else if (chan == SDPCM_DATA_CHANNEL) {
+			data_frames++;
 			brcmf_sdpcm_process_rx(sc, payload, dlen);
+		}
 	}
 
 	{
@@ -381,8 +390,12 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 			intst = brcmf_sdio_bp_read32(sc,
 			    sc->sdiocore.base + SD_REG_INTSTATUS);
 		device_printf(sc->dev,
-		    "IOCTL timeout cmd=0x%x intst=0x%08x\n", cmd, intst);
+		    "IOCTL timeout cmd=0x%x intst=0x%08x "
+		    "ctrl=%d evt=%d data=%d empty=%d err=%d\n",
+		    cmd, intst, ctrl_frames, event_frames,
+		    data_frames, recv_empty, recv_errors);
 	}
+	atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
 	mtx_unlock(&sc->ioctl_mtx);
 	return (ETIMEDOUT);
 }
@@ -513,12 +526,86 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 }
 
 /*
+ * RX poll task — runs on taskqueue_thread so SDIO I/O can sleep.
+ * Drains all pending frames from the F2 FIFO.
+ */
+static void
+brcmf_sdpcm_rx_task(void *arg, int pending)
+{
+	struct brcmf_softc *sc = arg;
+	uint8_t *rxbuf = sc->sdpcm_poll_rx;
+	uint16_t chan, dlen;
+	uint8_t *payload;
+
+	if (sc->fw_dead || sc->detaching)
+		return;
+
+	/*
+	 * Skip if an ioctl is in progress — the ioctl poll loop
+	 * reads the F2 FIFO and handles events/data inline.
+	 * Running concurrently would interleave partial FIFO reads.
+	 */
+	if (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
+		return;
+
+	for (;;) {
+		int error = brcmf_sdpcm_recv(sc, rxbuf,
+		    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+		if (error != 0)
+			break;
+
+		if (chan == SDPCM_EVENT_CHANNEL)
+			brcmf_sdpcm_process_event(sc, payload, dlen);
+		else if (chan == SDPCM_DATA_CHANNEL)
+			brcmf_sdpcm_process_rx(sc, payload, dlen);
+	}
+	atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+}
+
+/*
+ * Callout handler — enqueues rx_task.
+ * Cannot do SDIO I/O directly (callout context can't sleep).
+ */
+static void
+brcmf_sdpcm_poll(void *arg)
+{
+	struct brcmf_softc *sc = arg;
+
+	if (sc->fw_dead || sc->detaching)
+		return;
+
+	taskqueue_enqueue(taskqueue_thread, &sc->sdpcm_rx_task);
+	callout_reset(&sc->sdpcm_callout, hz / 50, brcmf_sdpcm_poll, sc);
+}
+
+/*
+ * Start the RX polling callout. Called after attach is complete.
+ */
+void
+brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
+{
+	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
+	callout_init(&sc->sdpcm_callout, 1);
+	callout_reset(&sc->sdpcm_callout, hz / 50, brcmf_sdpcm_poll, sc);
+}
+
+/*
+ * Stop the RX polling callout and drain pending tasks.
+ */
+void
+brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
+{
+	callout_drain(&sc->sdpcm_callout);
+	taskqueue_drain(taskqueue_thread, &sc->sdpcm_rx_task);
+}
+
+/*
  * SDPCM cleanup. Implements bus_ops->cleanup.
  */
 void
 brcmf_sdpcm_cleanup(struct brcmf_softc *sc)
 {
-	/* Nothing to free — no DMA rings or pre-posted buffers */
+	brcmf_sdpcm_stop_poll(sc);
 }
 
 /*

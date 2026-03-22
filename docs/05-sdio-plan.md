@@ -167,14 +167,16 @@ Blocked on M-S3 (F2 writes).
 - [ ] Channel/mode setup (1SS HT, no VHT)
 - [ ] Scan, association, WPA2
 
-## Current status: M-S3 in progress
+## Current status: M-S5 in progress
 
-**Status (21 Mar 2026, kernel SDIO):**
+**Status (22 Mar 2026, kernel SDIO):**
 
-F2 data path is operational. Firmware boots, IORdy poll works
-(F2 ready in ~40ms), F2 CMD53 write succeeds. The "ver" ioctl
-times out — firmware doesn't respond within 3s. Next: debug
-the ioctl response path.
+M-S3 and M-S4 complete. `brcmf_cfg_attach` succeeds.
+net80211 interface created, wlan0 VAP works. RX poll callout
+running. Blocked on `escan` iovar returning `BCME_UNSUPPORTED
+(-4)`. `C_SCAN` (cmd=50) also returns `-4`. Firmware is UP
+and accepts other iovars. See `docs/10-investigations.md`
+(22 Mar 2026 entry) for details.
 
 **Resolved blockers:**
 1. IORdy poll hang — sdiob F0 timeout was 0 (kernel fix)

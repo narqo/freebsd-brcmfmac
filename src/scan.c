@@ -165,8 +165,23 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 	sc->scan_active = 1;
 
 	error = brcmf_fil_iovar_data_set(sc, "escan", params, params_size);
-	if (error != 0)
+	if (error != 0) {
+		device_printf(sc->dev, "escan iovar failed: %d, "
+		    "trying C_SCAN\n", error);
+		/* Fallback to C_SCAN (cmd=50) with scan_params directly */
+		error = brcmf_fil_cmd_data_set(sc, 50 /* WLC_SCAN */,
+		    &params->params_le,
+		    sizeof(params->params_le));
+		if (error != 0)
+			device_printf(sc->dev,
+			    "C_SCAN also failed: %d\n", error);
+	}
+	if (error != 0) {
 		sc->scan_active = 0;
+	} else {
+		BRCMF_DBG(sc, "scan started, sync_id=%u\n",
+		    le16toh(params->sync_id));
+	}
 
 	free(params, M_BRCMFMAC);
 	return (error);
