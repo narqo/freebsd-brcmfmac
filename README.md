@@ -1,7 +1,6 @@
-# brcmfmac — FreeBSD native WiFi driver for BCM4350
+# brcmfmac — FreeBSD native WiFi driver
 
-Kernel module (KLD) for the Broadcom BCM4350 FullMAC WiFi adapter,
-built into the 2016 MacBook Pro (PCIe device `14e4:43a3`).
+Kernel module (KLD) for the Broadcom BCM4350 and BCM43455 (_wip!_) FullMAC WiFi adapters.
 
 ## Project status
 
