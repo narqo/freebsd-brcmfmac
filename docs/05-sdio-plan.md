@@ -183,8 +183,8 @@ the ioctl response path.
 3. F2 readiness — was never a card issue; IORdy poll couldn't
    wait due to the F0 timeout bug
 
-**Required kernel change:**
-- sdiob: `cardinfo.f[0].timeout = 5000`
+**No kernel patches required.** The driver works on an
+unmodified FreeBSD 15-STABLE kernel with SDIO support.
 
 **Driver-side F2 transfer strategy:**
 - F2 block size: 64 bytes (keeps SDHCI PIO bursts small)

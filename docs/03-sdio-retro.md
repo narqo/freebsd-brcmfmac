@@ -96,9 +96,10 @@ poll iterations × 10ms). The firmware was ready all along.
 
 ## Required kernel changes
 
-One kernel change is needed:
-
-1. **sdiob: F0 timeout init** — `cardinfo.f[0].timeout = 5000`
+None. The driver works on an unmodified FreeBSD 15-STABLE
+kernel with SDIO support. The sdiob F0 timeout=0 issue does
+not affect the driver because the SDHCI uses its own 10-second
+timeout callout independent of the CAM CCB timeout.
 
 ## Driver code changes
 

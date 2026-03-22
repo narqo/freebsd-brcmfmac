@@ -15,7 +15,8 @@ firmware: wl0: Aug 29 2023 01:47:08 version 7.45.265 (28bca26 CY)
 ```
 
 F2 transfers work with 64-byte blocks, fixed address, tolerant
-recv. No kernel changes beyond sdiob F0 timeout fix.
+recv. No kernel patches required — works on unmodified
+FreeBSD 15-STABLE with SDIO support.
 
 ### Key lessons (avoid repeating)
 
