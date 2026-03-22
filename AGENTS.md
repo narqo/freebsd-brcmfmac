@@ -24,6 +24,13 @@ Use the docs/10-investigations.md document to persist mid-session investigation 
 
 The rest of the docs/ has context-dependent details.
 
+### Project rules
+
+- Do not guess. When stuck — stop and ask
+- Never assume — verify before interpreting results
+- Always use timeout on remote commands and tool calls
+- Do not make git commits unless asked explicitely
+
 ## Driver specification
 
 Study the spec/ directory for the brcmfmac driver specification:

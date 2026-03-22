@@ -94,20 +94,24 @@ To read address `0x18102408`:
 
 ## Firmware download approach
 
-**Decision**: Implement minimal firmware download first, skip NVRAM initially.
+**Decision**: Firmware download is driver-managed on both PCIe and SDIO.
+Use the firmware binary together with NVRAM; for CYW43455 also load the
+CLM blob after firmware boot.
 
 **Rationale**:
 
-The firmware binary contains everything needed to boot. NVRAM (configuration) can be added later.
+The firmware image is copied into RAM by the driver, then started from the
+chip-specific reset vector. NVRAM provides board configuration. On CYW43455,
+scan also depends on a successful CLM blob download.
 
 Steps:
 1. Halt ARM CR4 core (via wrapper IOCTL/RESET_CTL)
-2. Copy firmware to TCM at ram_base
+2. Copy firmware to RAM at `ram_base`
 3. Clear shared RAM address (last 4 bytes)
-4. Release ARM core with reset vector = ram_base
+4. Release ARM core with reset vector = `ram_base`
 5. Poll shared RAM address until firmware writes it
-
-**Current blocker**: Firmware not executing. Needs investigation.
+6. Upload NVRAM
+7. Upload CLM blob where required
 
 ## Memory allocation
 

@@ -7,8 +7,9 @@ on 2.4GHz and 5GHz, handles link loss recovery, interface cycling.
 Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
 
 **SDIO milestones M-S1 through M-S4 complete, M-S5 in progress.**
-BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs.
-Next: association + WPA2.
+BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs,
+and reaches AUTH reliably. SET_SSID success is intermittent; association
+is not stable yet.
 
 ## Milestones
 
@@ -401,7 +402,7 @@ Gaps found during spec review (14 Mar 2026). See
 
 ### SDIO Milestones (BCM43455, Raspberry Pi 4)
 
-Detailed plan: `docs/05-sdio-plan.md`
+Reference: `docs/03-sdio-reference.md`; retrospective: `docs/07-sdio-retro.md`
 
 #### M-S1: Bus ops abstraction (DONE)
 #### M-S2: SDIO bus layer (DONE)
@@ -417,9 +418,28 @@ Detailed plan: `docs/05-sdio-plan.md`
 - [x] Scan with IEs: SSID-based IE offset detection (512-byte firmware header)
 - [x] Immediate scan result delivery (swscan timing workaround)
 - [x] Clean kldunload (~35-45s)
-- [ ] Association + WPA2
+- [x] Join flow: try "join" iovar, fall back to SET_SSID
+- [x] AUTH success (code=3 status=0)
+- [x] SET_SSID success observed (code=0 status=0)
+- [x] link_up triggered on SET_SSID success
+- [ ] Consistent association (currently intermittent)
+- [ ] 4-way handshake completion
 - [ ] TX data path (ping)
 - [ ] Throughput testing
+
+##### Current state (23 Mar 2026)
+
+AUTH succeeds. Association sometimes completes (SET_SSID status=0) but
+inconsistently fails — DISASSOC_IND arrives before JOIN/SET_SSID events.
+5GHz BSSID appears more reliable than 2.4GHz.
+
+Key findings:
+- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on CYW 7.45.265
+- `join` iovar returns BCME_NOTREADY (-14), SET_SSID fallback works
+- When SET_SSID succeeds, link_task transitions to RUN state
+- EAPOL frames received on data channel but 4-way may timeout
+
+Next: investigate association inconsistency (timing? AP disassoc reason?)
 
 ### Milestone X: Automated testing (TODO)
 

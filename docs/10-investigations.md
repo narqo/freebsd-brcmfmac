@@ -839,3 +839,119 @@ and the write flag (`SD_IOE_RW_WR`). Both are set correctly by sdiob.
 The BCM43455 firmware reports F2 as enabled (IOEx=0x06). The SDIO
 core intstatus shows frame indication (0x80000000 or 0x008000c0),
 suggesting the firmware is ready to communicate.
+
+### IE false positive fix + dedup (22 Mar 2026)
+
+SSID search without validation produced false matches at offset
+128 for `bi_len=460` entries — the SSID bytes appeared by
+coincidence in the extended header fields. Added
+`brcmf_check_ie_chain` that validates SSID IE + Rates IE (tag 1)
+sequence. Changed search to start from `bi_len / 2` to skip the
+extended header entirely.
+
+Also changed dedup to prefer entries with more IE data (`>=`
+instead of `> 0` check).
+
+Result: `bi_len=536` entries correctly find IEs at offset 512
+(24 bytes IE). `bi_len=460` entries find IEs at offset 328 (132
+bytes IE, includes RSN). But some entries still fall back to
+offset 128 — these are the short BSS info responses where the
+SSID+Rates pattern doesn't appear at the expected position.
+
+Association blocked: wpa_supplicant sees APs in the scan cache
+but the RSN IE is missing from some/all entries at the time
+wpa_supplicant checks. The dedup "prefer more IEs" change helps
+but doesn't fully solve it because the timing of which escan
+event arrives first is non-deterministic.
+
+Next: may need to check if the 128-byte fallback can be disabled
+entirely for CYW firmwares, or use a different strategy (e.g.,
+`bi_len - some_constant` based on observed patterns).
+
+## 23 Mar 2026: BCM43455 AUTH timeout investigation
+
+### Current state
+
+Scan works:
+- escan returns BSS results with valid RSN IEs
+- `ifconfig wlan0 list scan` shows AP with RSN flag
+- `wpa_supplicant` detects the BSS and selects it
+
+Association fails at AUTH:
+- `SET_SSID` command succeeds (returns 0)
+- Firmware generates AUTH events with status=2 (TIMEOUT)
+- Eventually SET_SSID event reports status=1 (FAIL)
+- Net result: wpa_supplicant reports "Authentication timed out"
+
+### Event sequence observed
+
+```
+event code=3 status=2 (AUTH timeout)
+event code=0 status=1 (SET_SSID fail)
+event code=3 status=6 (AUTH abort)
+event code=5 status=0 (DEAUTH)
+```
+
+### Security settings
+
+- wsec = 0x4 (AES_ENABLED)
+- wpa_auth = 0x80 (WPA2_AUTH_PSK)
+- auth = 0 (open system, required for WPA2)
+- infra = 1 (BSS mode)
+
+### Firmware info
+
+Firmware: `7.45.265 (28bca26 CY)` (CYW43455)
+Chip: 0x4345
+
+### Eliminated causes
+
+1. Country code: tried with/without "DE" country setting
+2. Scan result parsing: RSN IE is now correctly published
+3. Channel: verified AP on chan 6, SET_SSID includes chan info
+
+### Open questions
+
+1. Why does firmware AUTH time out?
+   - TX appears to work (scan probe requests get responses)
+   - Could be something blocking auth frame TX specifically
+   - Or AP responding on wrong channel/timing
+
+2. Linux uses `"join"` iovar instead of SET_SSID
+   - Our `"join"` iovar returns fwerr=-14 (BCME_NOTREADY)
+   - SET_SSID accepted but auth fails
+   - May need additional setup before `"join"` works
+
+3. Missing pre-association setup?
+   - Linux sets join_pref, various bsscfg iovars
+   - We only set wsec, wpa_auth, auth, infra
+
+### Next steps
+
+1. Compare Linux brcmfmac connect flow in detail
+2. Check if there's a required iovar before join
+3. Try using full ext_join_params with scan params
+4. Consider packet capture on working Linux RPi to compare
+
+### Changes tried (session 2)
+
+1. Added RSN IE push via `wpaie` iovar — returns BCME_UNSUPPORTED (-23) on CYW43455 fw 7.45.265
+2. Implemented join iovar → SET_SSID fallback (Linux pattern) — join returns BCME_NOTREADY (-14)
+3. Fixed ext_join_params.scan.scan_type to -1 (not 0) — matches Linux
+4. Fixed nprobes to 16 (320ms/20ms) — matches Linux active dwell calculation
+5. Tried broadcast BSSID in C_SET_SSID — got status=3 (NO_NETWORKS) instead of auth timeout
+6. Reverted to specific BSSID — back to auth timeout
+
+### Current state
+
+- join iovar: always fails with BCME_NOTREADY (-14)
+- wpaie iovar: not supported (-23)
+- C_SET_SSID: accepted, but firmware AUTH phase times out
+- Scan params match Linux: scan_type=-1, active=320ms, passive=400ms, nprobes=16
+
+### Next steps to try
+
+1. Compare with working Linux RPi4 packet capture
+2. Try connecting to open network (no WPA) to isolate auth vs security
+3. Test if firmware supplicant (sup_wpa=1 + PMK) makes a difference
+4. Check if there's a firmware-specific init sequence for CYW43455

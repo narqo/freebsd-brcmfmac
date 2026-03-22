@@ -20,13 +20,25 @@ struct brcmf_vap {
 
 #define BRCMF_VAP(vap) ((struct brcmf_vap *)(vap))
 
+/* Join scan dwell times (ms), matching Linux brcmfmac defaults */
+#define BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS	320
+#define BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS	400
+#define BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS	20
+
 /* Event codes */
 #define BRCMF_E_SET_SSID	0
+#define BRCMF_E_JOIN		1
+#define BRCMF_E_AUTH		3
 #define BRCMF_E_DEAUTH		5
 #define BRCMF_E_DEAUTH_IND	6
+#define BRCMF_E_ASSOC		7
+#define BRCMF_E_REASSOC		8
 #define BRCMF_E_DISASSOC	11
 #define BRCMF_E_DISASSOC_IND	12
 #define BRCMF_E_LINK		16
+#define BRCMF_E_PSK_SUP		46
+#define BRCMF_E_ASSOC_IND	18
+#define BRCMF_E_REASSOC_IND	19
 #define BRCMF_E_IF		54
 #define BRCMF_E_ESCAN_RESULT	69
 
@@ -214,13 +226,27 @@ struct brcmf_escan_result_le {
 struct brcmf_assoc_params_le {
 	uint8_t bssid[6];
 	uint32_t chanspec_num;
-	uint16_t chanspec_list[];
+	uint16_t chanspec_list[1];
 } __packed;
 
 struct brcmf_join_params {
 	struct brcmf_ssid_le ssid_le;
 	uint8_t bssid[6];
 	uint32_t chanspec_num;
+} __packed;
+
+struct brcmf_join_scan_params {
+	uint8_t scan_type;
+	uint32_t nprobes;
+	uint32_t active_time;
+	uint32_t passive_time;
+	uint32_t home_time;
+} __packed;
+
+struct brcmf_ext_join_params {
+	struct brcmf_ssid_le ssid_le;
+	struct brcmf_join_scan_params scan;
+	struct brcmf_assoc_params_le assoc;
 } __packed;
 
 /* scan.c */

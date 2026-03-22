@@ -25,6 +25,10 @@
 
 #include "cfg.h"
 
+static int brcmf_ie_has_rsn_wpa(const uint8_t *ie, uint16_t ie_len);
+static int brcmf_find_security_ie(const uint8_t *raw, uint32_t start,
+    uint32_t bi_len, const uint8_t **ie, uint32_t *ie_len);
+
 static int
 brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 {
@@ -163,51 +167,99 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 }
 
 /*
+ * Score whether offset j in raw[] starts a plausible IE chain.
+ * Require SSID + Rates. Prefer SSID matching the fixed header and
+ * chains that also contain an RSN/WPA IE.
+ */
+static int
+brcmf_score_ie_chain(const struct brcmf_bss_info_le *bi,
+    const uint8_t *raw, uint32_t bi_len, uint32_t j)
+{
+	const uint8_t *sec_ie;
+	uint32_t next, sec_ie_len;
+	uint8_t ssid_len;
+	int score;
+
+	if (j + 2 > bi_len)
+		return (0);
+	if (raw[j] != IEEE80211_ELEMID_SSID)
+		return (0);
+	ssid_len = raw[j + 1];
+	if (ssid_len > 32 || j + 2 + ssid_len > bi_len)
+		return (0);
+
+	/* Validate: next IE should be Supported Rates (tag 1) */
+	next = j + 2 + ssid_len;
+	if (next + 2 > bi_len)
+		return (0);
+	if (raw[next] != IEEE80211_ELEMID_RATES)
+		return (0);
+
+	score = 1;
+	if (ssid_len == bi->SSID_len &&
+	    (ssid_len == 0 ||
+	    memcmp(raw + j + 2, bi->SSID, ssid_len) == 0))
+		score += 2;
+	if (brcmf_find_security_ie(raw, next, bi_len, &sec_ie, &sec_ie_len))
+		score += 4;
+
+	return (score);
+}
+
+/*
  * Find the byte offset where IEs begin within a raw bss_info buffer.
  * Returns 0 if IEs cannot be located.
  *
  * The firmware's bss_info struct is larger than the public 128-byte
  * header and varies by firmware version (see spec/A2-structures.md).
  * The ie_offset/ie_length fields may contain garbage on newer
- * firmwares, so we search for the SSID IE matching the fixed header.
+ * firmwares, so we search for the SSID IE matching the fixed header,
+ * validated by checking that a Rates IE follows immediately.
  */
 static uint32_t
-brcmf_find_ie_offset(const struct brcmf_bss_info_le *bi,
-    const uint8_t *raw, uint32_t bi_len)
+brcmf_find_ie_offset(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
+    const uint8_t *raw, uint32_t bi_len, uint8_t *quality)
 {
-	uint32_t j;
+	uint32_t j, best = 0;
+	int best_score = 0;
 
-	/* Search for SSID IE matching the fixed-header SSID */
-	if (bi->SSID_len > 0 && bi->SSID_len <= 32) {
-		for (j = sizeof(*bi);
-		    j + 2 + bi->SSID_len <= bi_len; j++) {
-			if (raw[j] == IEEE80211_ELEMID_SSID &&
-			    raw[j + 1] == bi->SSID_len &&
-			    memcmp(raw + j + 2, bi->SSID,
-			    bi->SSID_len) == 0)
-				return (j);
+	*quality = 0;
+
+	/*
+	 * Scan from the midpoint to avoid false SSID matches in the
+	 * extended header fields (first half of the struct).
+	 */
+	{
+		uint32_t start = bi_len / 2;
+		if (start < sizeof(*bi))
+			start = sizeof(*bi);
+		for (j = start; j + 2 <= bi_len; j++) {
+			int score = brcmf_score_ie_chain(bi, raw, bi_len, j);
+			if (score > best_score) {
+				best_score = score;
+				best = j;
+			}
 		}
-	}
-
-	/* Hidden SSID: tag 0x00, length 0, followed by Rates (tag 0x01) */
-	if (bi->SSID_len == 0) {
-		for (j = sizeof(*bi); j + 4 <= bi_len; j++) {
-			if (raw[j] == 0x00 && raw[j + 1] == 0x00 &&
-			    raw[j + 2] == 0x01)
-				return (j);
+		if (best_score > 0) {
+			*quality = best_score >= 5 ? 3 : 2;
+			return (best);
 		}
 	}
 
 	/* Trust ie_offset if it looks plausible */
 	{
 		uint16_t raw_off = le16toh(bi->ie_offset);
-		if (raw_off >= sizeof(*bi) && raw_off < bi_len)
+		if (raw_off >= sizeof(*bi) && raw_off < bi_len) {
+			*quality = 2;
 			return (raw_off);
+		}
 	}
 
-	/* Last resort: assume 128-byte header (BCM4350 firmware) */
-	if (bi_len > 128)
+	/* Last resort: assume 128-byte header on older 4350 firmware only. */
+	if (sc->chip == 0x4350 && bi_len > 128) {
+		*quality = 1;
 		return (128);
+	}
 
 	return (0);
 }
@@ -219,7 +271,7 @@ brcmf_find_ie_offset(const struct brcmf_bss_info_le *bi,
 static struct brcmf_scan_result *
 brcmf_store_bss(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
     int chan, int16_t rssi, int8_t noise, uint16_t chanspec,
-    const uint8_t *ie_data, uint32_t ie_len)
+    const uint8_t *ie_data, uint32_t ie_len, uint8_t ie_quality)
 {
 	struct brcmf_scan_result *sr;
 	int k, dup = -1;
@@ -234,9 +286,14 @@ brcmf_store_bss(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
 		}
 	}
 
-	/* Don't overwrite an entry that has IEs with one that doesn't */
-	if (dup >= 0 && sc->scan_results[dup].ie_len > 0 && ie_len == 0)
-		return (NULL);
+	/* Prefer validated IE chains over larger unvalidated blobs. */
+	if (dup >= 0) {
+		if (sc->scan_results[dup].ie_quality > ie_quality)
+			return (NULL);
+		if (sc->scan_results[dup].ie_quality == ie_quality &&
+		    sc->scan_results[dup].ie_len >= ie_len)
+			return (NULL);
+	}
 
 	sr = (dup >= 0) ? &sc->scan_results[dup] :
 	    &sc->scan_results[sc->scan_nresults++];
@@ -254,6 +311,7 @@ brcmf_store_bss(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
 	if (ie_len > BRCMF_SCAN_IE_MAX)
 		ie_len = BRCMF_SCAN_IE_MAX;
 	sr->ie_len = ie_len;
+	sr->ie_quality = ie_quality;
 	if (ie_len > 0)
 		memcpy(sr->ie, ie_data, ie_len);
 
@@ -292,6 +350,9 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		uint32_t bi_len = le32toh(bi->length);
 		uint8_t *raw = (uint8_t *)bi;
 		uint32_t ie_off, ie_len;
+		uint8_t ie_quality;
+		const uint8_t *ie_data, *sec_ie;
+		int protected, publish;
 		struct brcmf_scan_result *sr;
 		int16_t rssi;
 		int8_t noise;
@@ -304,15 +365,32 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		if (noise == 0)
 			noise = -95;
 
-		ie_off = brcmf_find_ie_offset(bi, raw, bi_len);
-		ie_len = (ie_off > 0 && ie_off < bi_len) ?
-		    bi_len - ie_off : 0;
+		ie_off = brcmf_find_ie_offset(sc, bi, raw, bi_len, &ie_quality);
+		ie_data = (ie_off > 0 && ie_off < bi_len) ? raw + ie_off : NULL;
+		ie_len = (ie_data != NULL) ? bi_len - ie_off : 0;
+
+		protected = (le16toh(bi->capability) & IEEE80211_CAPINFO_PRIVACY) != 0;
+		publish = ie_quality > 0 &&
+		    (!protected || brcmf_ie_has_rsn_wpa(ie_data, ie_len));
+		if (protected && !publish &&
+		    brcmf_find_security_ie(raw,
+		    ie_off > 0 ? ie_off : bi_len / 2, bi_len, &sec_ie, &ie_len)) {
+			ie_data = sec_ie;
+			ie_quality = 1;
+			publish = 1;
+		}
+
+		BRCMF_DBG(sc, "bss: len=%u ie@%u+%u q=%u protected=%d publish=%d chanspec=0x%04x first=%02x%02x\n",
+		    bi_len, ie_off, ie_len, ie_quality, protected, publish,
+		    le16toh(bi->chanspec),
+		    ie_data != NULL && ie_len > 1 ? ie_data[0] : 0xff,
+		    ie_data != NULL && ie_len > 1 ? ie_data[1] : 0xff);
 
 		sr = brcmf_store_bss(sc, bi,
 		    brcmf_chanspec_to_channel(sc, le16toh(bi->chanspec)),
 		    rssi, noise, le16toh(bi->chanspec),
-		    (ie_off > 0) ? raw + ie_off : NULL, ie_len);
-		if (sr != NULL)
+		    ie_data, ie_len, ie_quality);
+		if (sr != NULL && publish)
 			brcmf_add_scan_result(sc, sr);
 
 		bi = (struct brcmf_bss_info_le *)(raw + bi_len);
@@ -343,6 +421,59 @@ static const uint8_t default_wmm_ie[] = {
 	0x00, 0x50, 0xf2, 0x02,
 	0x00, 0x01, 0x00,
 };
+
+static int
+brcmf_ie_has_rsn_wpa(const uint8_t *ie, uint16_t ie_len)
+{
+	const uint8_t *p = ie;
+	const uint8_t *end = ie + ie_len;
+
+	while (p + 2 <= end) {
+		uint8_t id = p[0];
+		uint8_t len = p[1];
+
+		if (p + 2 + len > end)
+			break;
+		if (id == IEEE80211_ELEMID_RSN)
+			return (1);
+		if (id == IEEE80211_ELEMID_VENDOR && len >= 4 &&
+		    p[2] == 0x00 && p[3] == 0x50 &&
+		    p[4] == 0xf2 && p[5] == 0x01)
+			return (1);
+		p += 2 + len;
+	}
+
+	return (0);
+}
+
+static int
+brcmf_find_security_ie(const uint8_t *raw, uint32_t start, uint32_t bi_len,
+    const uint8_t **ie, uint32_t *ie_len)
+{
+	uint32_t j;
+
+	for (j = start; j + 2 <= bi_len; j++) {
+		uint8_t id = raw[j];
+		uint8_t len = raw[j + 1];
+
+		if (j + 2 + len > bi_len)
+			continue;
+		if (id == IEEE80211_ELEMID_RSN) {
+			*ie = raw + j;
+			*ie_len = 2 + len;
+			return (1);
+		}
+		if (id == IEEE80211_ELEMID_VENDOR && len >= 4 &&
+		    raw[j + 2] == 0x00 && raw[j + 3] == 0x50 &&
+		    raw[j + 4] == 0xf2 && raw[j + 5] == 0x01) {
+			*ie = raw + j;
+			*ie_len = 2 + len;
+			return (1);
+		}
+	}
+
+	return (0);
+}
 
 /*
  * swscan sets ISCAN_DISCARD at scan start and clears it at first

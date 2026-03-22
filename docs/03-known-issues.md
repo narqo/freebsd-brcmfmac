@@ -2,6 +2,22 @@
 
 ## Open
 
+### BCM43455 association is intermittent
+
+On RPi4 / BCM43455, scan works and AUTH succeeds (`code=3 status=0`),
+but association is not stable yet. Some attempts reach `SET_SSID`
+success (`code=0 status=0`), while others receive `DISASSOC_IND`
+before JOIN/SET_SSID completion.
+
+Observed details:
+- `join` iovar returns BCME_NOTREADY (-14); driver falls back to SET_SSID
+- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on firmware 7.45.265
+- 5GHz BSSID appears more reliable than 2.4GHz
+- EAPOL frames are seen on the data channel, but the 4-way handshake
+  does not complete consistently
+
+Root cause is still under investigation.
+
 ### 5GHz limited to HT40
 
 Firmware reports `bw_cap(5G)=0x1` (20MHz cap). `BRCMF_C_DOWN` returns NOTDOWN,

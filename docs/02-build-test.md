@@ -19,12 +19,19 @@ Key paths:
 
 | Host | Address | Purpose |
 |------|---------|---------|
-| Build host | varankinv@192.168.20.82 | Compile the kernel module |
-| Test VM | root@192.168.200.10 | Load and test the module (has BCM4350 hardware) |
+| PCIe build host | varankinv@192.168.20.82 | Build and VM test flow for BCM4350 |
+| PCIe test VM | root@192.168.200.10 | Load and test the module on BCM4350 |
+| SDIO RPi4 host | freebsd@192.168.20.106 | Build and test BCM43455 over SDIO |
 
 ## Workflow
 
-### 1. Sync code to build host
+This file covers two test paths:
+- PCIe / BCM4350: remote build host + VM
+- SDIO / BCM43455: build and test directly on the RPi4 host
+
+### PCIe workflow
+
+#### 1. Sync code to build host
 
 ```sh
 rsync -avz --exclude='*.ko' --exclude=.git/ --exclude=.jj/ --exclude=.claude/ \
@@ -91,6 +98,37 @@ Unload:
 ```sh
 kldunload if_brcmfmac
 ```
+
+## SDIO workflow (RPi4 / BCM43455)
+
+Sync source to the RPi4 host and build there:
+
+```sh
+rsync -avz --exclude='*.ko' --exclude=.git/ --exclude=.jj/ --exclude=.claude/ \
+    --exclude-from=.gitignore --delete \
+    . freebsd@192.168.20.106:src/brcmfmac2/
+
+ssh -o ConnectTimeout=5 freebsd@192.168.20.106 \
+    'cd ~/src/brcmfmac2 && make'
+```
+
+Load and test on the same host:
+
+```sh
+ssh -o ConnectTimeout=5 freebsd@192.168.20.106
+cd ~/src/brcmfmac2
+sudo kldload ./if_brcmfmac.ko
+sudo ifconfig wlan0 create wlandev brcmfmac0
+sudo ifconfig wlan0 up
+sudo sysctl dev.brcmfmac.0.debug=2
+sudo wpa_supplicant -Dbsd -iwlan0 -c/etc/wpa_supplicant.conf -B
+```
+
+Notes:
+- `kldunload` / `kldload` works for normal edit-test cycles, but some failed
+  SDIO states still require a reboot to recover the chip
+- always verify the built `.ko` with `file` and `wc -c`
+- after an unclean reboot, prefer a fresh rebuild before loading
 
 ## Quick one-liner
 

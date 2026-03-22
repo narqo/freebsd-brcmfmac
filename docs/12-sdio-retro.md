@@ -1,5 +1,9 @@
 # SDIO Bring-up Retrospective (20-21 Mar 2026)
 
+Historical bring-up notes for the early BCM43455 SDIO work.
+This file is not the current status tracker; see docs/00-progress.md.
+For static hardware and host reference, see docs/03-sdio-reference.md.
+
 ## Problems and resolutions
 
 ### 1. IORdy poll hang (days of investigation)

@@ -54,6 +54,8 @@ brcmf_link_task(void *arg, int pending)
 	if (vap == NULL)
 		return;
 
+	BRCMF_DBG(sc, "link_task: link_up=%d\n", sc->link_up);
+
 	if (sc->link_up) {
 		uint32_t chanspec_raw;
 		int bw, sb;
@@ -155,6 +157,8 @@ brcmf_link_task(void *arg, int pending)
 		}
 		IEEE80211_UNLOCK(ic);
 
+		BRCMF_DBG(sc, "link_task: ni=%p chan=%d bssid=%6D\n",
+		    ni, channum, bssid, ":");
 		if (ni != NULL) {
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
@@ -182,14 +186,24 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 {
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
-		if (status != BRCMF_E_STATUS_SUCCESS) {
+		if (status == BRCMF_E_STATUS_SUCCESS) {
+			sc->link_up = 1;
+			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
+		} else {
 			device_printf(sc->dev, "SET_SSID failed, status=%u\n", status);
 			sc->link_up = 0;
 			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
 		break;
 
+	case BRCMF_E_JOIN:
+	case BRCMF_E_AUTH:
+	case BRCMF_E_ASSOC:
+	case BRCMF_E_REASSOC:
+		break;
+
 	case BRCMF_E_LINK:
+		BRCMF_DBG(sc, "LINK event: flags=0x%x\n", flags);
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
 		if (!sc->link_up) {
 			sc->scan_active = 0;
@@ -248,6 +262,7 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	join.ssid_le.SSID_len = htole32(sr->ssid_len);
 	memcpy(join.ssid_le.SSID, sr->ssid, sr->ssid_len);
 	memcpy(join.bssid, sr->bssid, 6);
+	join.chanspec_num = htole32(0);
 
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
 	if (error != 0)
@@ -257,26 +272,53 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 }
 
 /*
- * Initiate association to a BSS (from net80211 node).
+ * Initiate association to a BSS.
+ *
+ * Mirrors Linux: try "join" iovar first, fall back to C_SET_SSID on any error.
+ * The join iovar may return BCME_NOTREADY on some firmware builds; the fallback
+ * ensures we still attempt connection.
  */
 static int
 brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 {
+	struct brcmf_ext_join_params ejoin;
 	struct brcmf_join_params join;
-	int error;
+	int chan, error;
+	uint16_t chanspec;
 
 	memcpy(sc->join_bssid, ni->ni_bssid, 6);
 
+	chan = ieee80211_chan2ieee(&sc->ic, ni->ni_chan);
+	chanspec = brcmf_channel_to_chanspec(sc, chan);
+
+	memset(&ejoin, 0, sizeof(ejoin));
+	ejoin.ssid_le.SSID_len = htole32(ni->ni_esslen);
+	memcpy(ejoin.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
+	ejoin.scan.scan_type = -1;
+	ejoin.scan.nprobes = htole32(BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS /
+	    BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS);
+	ejoin.scan.active_time = htole32(BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS);
+	ejoin.scan.passive_time = htole32(BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS);
+	ejoin.scan.home_time = htole32(-1);
+	memcpy(ejoin.assoc.bssid, ni->ni_bssid, 6);
+	ejoin.assoc.chanspec_num = htole32(1);
+	ejoin.assoc.chanspec_list[0] = htole16(chanspec);
+
+	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
+	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
+
+	error = brcmf_fil_iovar_data_set(sc, "join", &ejoin, sizeof(ejoin));
+	if (error == 0)
+		return 0;
+
+	/* join failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID */
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
 	memcpy(join.bssid, ni->ni_bssid, 6);
+	join.chanspec_num = htole32(0);
 
-	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
-	if (error != 0)
-		return error;
-
-	return 0;
+	return brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
 }
 
 static int
@@ -290,6 +332,10 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	evmask[BRCMF_E_IF / 8] |= 1 << (BRCMF_E_IF % 8);
 	evmask[BRCMF_E_ESCAN_RESULT / 8] |= 1 << (BRCMF_E_ESCAN_RESULT % 8);
 	evmask[BRCMF_E_SET_SSID / 8] |= 1 << (BRCMF_E_SET_SSID % 8);
+	evmask[BRCMF_E_JOIN / 8] |= 1 << (BRCMF_E_JOIN % 8);
+	evmask[BRCMF_E_AUTH / 8] |= 1 << (BRCMF_E_AUTH % 8);
+	evmask[BRCMF_E_ASSOC / 8] |= 1 << (BRCMF_E_ASSOC % 8);
+	evmask[BRCMF_E_REASSOC / 8] |= 1 << (BRCMF_E_REASSOC % 8);
 	evmask[BRCMF_E_LINK / 8] |= 1 << (BRCMF_E_LINK % 8);
 	evmask[BRCMF_E_DEAUTH / 8] |= 1 << (BRCMF_E_DEAUTH % 8);
 	evmask[BRCMF_E_DEAUTH_IND / 8] |= 1 << (BRCMF_E_DEAUTH_IND % 8);
@@ -405,6 +451,22 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 				wsec |= AES_ENABLED;
 
 			brcmf_set_security(sc, wsec, wpa_auth);
+
+			/*
+			 * Push RSN/WPA IE to firmware. wpa_supplicant delivers
+			 * this via IEEE80211_IOC_APPIE before triggering S_AUTH,
+			 * so iv_rsn_ie / iv_wpa_ie should be populated here.
+			 * Firmware uses wpaie for auth/assoc frame construction.
+			 */
+			BRCMF_DBG(sc, "auth: rsn_ie=%p wpa_ie=%p\n",
+			    vap->iv_rsn_ie, vap->iv_wpa_ie);
+			if (vap->iv_rsn_ie != NULL)
+				brcmf_fil_iovar_data_set(sc, "wpaie",
+				    vap->iv_rsn_ie, vap->iv_rsn_ie[1] + 2);
+			else if (vap->iv_wpa_ie != NULL)
+				brcmf_fil_iovar_data_set(sc, "wpaie",
+				    vap->iv_wpa_ie, vap->iv_wpa_ie[1] + 2);
+
 			/* BCM4350 note: spec uses sup_wpa=1, but
 			 * v7.35.180.133 returns BCME_BADARG. */
 			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
@@ -633,39 +695,15 @@ brcmf_set_channel(struct ieee80211com *ic)
 }
 
 /*
- * Scan current channel. For FullMAC, firmware handles channel
- * dwell and timing. We enqueue a short timeout to prevent swscan
- * from completing instantly and busy-looping. The task will check
- * ISCAN_CANCEL/ISCAN_ABORT before accessing ss_vap.
+ * FullMAC scan offload: firmware scans all channels asynchronously.
+ * swscan stays parked until the firmware signals completion and the
+ * driver calls ieee80211_scan_done().
  */
 static void
 brcmf_scan_curchan(struct ieee80211_scan_state *ss, unsigned long maxdwell)
 {
-	struct ieee80211com *ic = ss->ss_ic;
-	struct brcmf_softc *sc = ic->ic_softc;
-	struct brcmf_scan_priv *priv = (struct brcmf_scan_priv *)ss;
-	struct ieee80211vap *vap;
-	unsigned long dwell;
-
-	/*
-	 * On the first channel, wait for the firmware escan to
-	 * complete before letting swscan advance. For subsequent
-	 * channels, use minimal dwell to finish quickly.
-	 */
-	if (sc->scan_complete || ss->ss_next > 1)
-		dwell = 1;
-	else
-		dwell = maxdwell;
-
-	IEEE80211_LOCK(ic);
-	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap != NULL)
-		ss->ss_vap = vap;
-	if (ss->ss_vap != NULL &&
-	    (priv->iflags & (0x08 | 0x10)) == 0)  /* !CANCEL && !ABORT */
-		taskqueue_enqueue_timeout(ic->ic_tq,
-		    &priv->scan_curchan, dwell);
-	IEEE80211_UNLOCK(ic);
+	(void)ss;
+	(void)maxdwell;
 }
 
 static void
@@ -882,6 +920,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	    IEEE80211_CRYPTO_WEP |
 	    IEEE80211_CRYPTO_TKIP |
 	    IEEE80211_CRYPTO_AES_CCM;
+	ic->ic_flags_ext |= IEEE80211_FEXT_SCAN_OFFLOAD;
 
 	ic->ic_htcaps =
 	    IEEE80211_HTCAP_CHWIDTH40 |

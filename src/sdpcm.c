@@ -222,19 +222,28 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 		}
 	}
 
-	/* If frame is larger than 64 bytes, fetch remaining blocks. */
+	/* If frame is larger than 64 bytes, fetch the exact remainder. */
 	{
 		uint16_t peek_flen = buf[0] | (buf[1] << 8);
 		if (peek_flen > 64 && peek_flen <= bufsz) {
 			uint32_t remain = peek_flen - 64;
-			/* round up to block boundary */
-			remain = (remain + 63) & ~63;
-			if (remain + 64 > bufsz)
-				remain = bufsz - 64;
-			error = SDIO_READ_EXTENDED(
-			    device_get_parent(sc->sdio_func2->dev),
-			    sc->sdio_func2->fn, 0x8000, remain,
-			    buf + 64, false);
+			uint32_t blk = remain & ~63U;
+			uint32_t tail = remain - blk;
+			uint32_t off = 64;
+
+			if (blk > 0) {
+				error = SDIO_READ_EXTENDED(
+				    device_get_parent(sc->sdio_func2->dev),
+				    sc->sdio_func2->fn, 0x8000, blk,
+				    buf + off, false);
+				off += blk;
+			}
+			if (tail > 0) {
+				error = SDIO_READ_EXTENDED(
+				    device_get_parent(sc->sdio_func2->dev),
+				    sc->sdio_func2->fn, 0x8000, tail,
+				    buf + off, false);
+			}
 			/* ignore error on follow-up reads if we have
 			 * enough data for the frame */
 		}

@@ -313,6 +313,7 @@ struct brcmf_softc {
 		uint16_t capinfo;
 		uint16_t bintval;
 		uint16_t ie_len;
+		uint8_t ie_quality;
 		uint8_t ie[BRCMF_SCAN_IE_MAX];
 	} scan_results[BRCMF_SCAN_RESULTS_MAX];
 	int scan_nresults;
