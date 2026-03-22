@@ -206,13 +206,16 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 	buflen = le32toh(result->buflen);
 	bss_count = le16toh(result->bss_count);
 
-	/* no filtering — accept all escan events */
+	BRCMF_DBG(sc, "escan_result: bss_count=%u buflen=%u datalen=%u\n",
+	    bss_count, buflen, datalen);
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
 		return;
 
 	if (bss_count == 0) {
+		BRCMF_DBG(sc, "escan complete: nresults=%d\n",
+		    sc->scan_nresults);
 		sc->scan_active = 0;
 		sc->scan_complete = 1;
 		taskqueue_enqueue(taskqueue_thread, &sc->scan_task);
@@ -479,6 +482,12 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 		    sr->bssid[3], sr->bssid[4], sr->bssid[5]);
 		return;
 	}
+
+	BRCMF_DBG(sc,
+	    "add_scan: %02x:%02x:%02x:%02x:%02x:%02x ch=%u rssi=%d ie=%u\n",
+	    sr->bssid[0], sr->bssid[1], sr->bssid[2],
+	    sr->bssid[3], sr->bssid[4], sr->bssid[5],
+	    sr->chan, sr->rssi, sr->ie_len);
 
 	ieee80211_add_scan(vap, chan, &sp, &wh,
 	    IEEE80211_FC0_SUBTYPE_BEACON,

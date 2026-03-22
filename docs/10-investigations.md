@@ -63,12 +63,56 @@ send+recv, RX task skips if set. Removed ioctl_mtx from RX task
 entirely. Also removed intstatus backplane check from recv (avoids
 window register race between RX task and ioctl path).
 
-### Next steps
+### CLM blob download (RESOLVED)
 
-1. Compare full Linux SDIO init sequence with our init
-2. Check if firmware console has error messages
-3. Try running without `bss_down`/`bss_up` during init
-4. Try sending `C_SET_GLOM` and SDIO-specific iovars
+The CYW 7.45.265 firmware requires a CLM (Country Locale Matrix)
+blob for channel/regulatory data. Without it, both `escan` and
+`C_SCAN` return `BCME_UNSUPPORTED (-4)`. After downloading the
+4733-byte CLM blob via `clmload` iovar (chunked, 1400 bytes/chunk),
+the firmware accepts scan commands.
+
+CLM blob: `brcmfmac43455-sdio.clm_blob` from linux-firmware
+(cypress directory), placed at `/boot/firmware/`.
+
+### BCDC header on SDIO events (RESOLVED)
+
+SDIO event frames (SDPCM channel 1) include a 4-byte BCDC data
+header before the Broadcom event frame. The PCIe path strips
+this at a different layer. `brcmf_sdpcm_process_event` must
+strip the BCDC header before parsing the event. Without this,
+the OUI check fails and all events are silently dropped.
+
+### Scan working (22 Mar 2026)
+
+After CLM download + BCDC header fix, escan produces results:
+```
+SSID/MESH ID                      BSSID              CHAN RATE  S:N   INT CAPS
+Kolabox                           1c:ed:6f:1f:bc:3b    1  18M -70:-95 100 EPS
+FRITZ!Box 7530 RU                 1c:ed:6f:1f:bc:42    1  18M -80:-95 100 EPS
+```
+
+Scan takes ~40-60s end-to-end (firmware scans all channels,
+50ms RX poll rate). IE data is mostly empty (`ie=1`), so no
+HT caps or RSN flags displayed. Needs investigation — the BSS
+info parsing might have an offset issue specific to this firmware.
+
+### Open issues
+
+1. **Scan IE data nearly empty** — `ie_len=1` for all BSS entries.
+   The IE extraction code uses the same logic as PCIe (128-byte
+   header offset). May need adjustment for firmware 7.45.265.
+
+2. **kldunload hangs** — detach path doesn't drain sdpcm callout
+   and rx_task before ieee80211_ifdetach. Need to call
+   `brcmf_sdpcm_stop_poll` early in detach.
+
+3. **Scan latency** — 40-60s for a full scan at 50ms poll. The
+   firmware sends events slowly (one per channel dwell, ~1-2s each).
+   Poll rate may not be the bottleneck.
+
+4. **RX poll SDIO bus saturation** — 20ms poll rate caused hangs.
+   50ms works. The Arasan SDHCI controller can't handle rapid
+   repeated F2 reads when the FIFO is empty.
 
 ## 20 Mar 2026: SDIO F2 writes, kernel #25
 

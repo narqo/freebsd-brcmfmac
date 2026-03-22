@@ -183,6 +183,19 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 	uint32_t rdsz;
 	int error;
 
+	/* Acknowledge pending frame indication. The firmware uses
+	 * I_HMB_FRAME_IND to signal data availability; without ack
+	 * it may stop sending more frames. */
+	if (sc->sdiocore.base != 0) {
+		uint32_t intst = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_INTSTATUS);
+		if (intst & I_HMB_FRAME_IND) {
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_INTSTATUS,
+			    intst & I_HMB_FRAME_IND);
+		}
+	}
+
 	/* Read one 64-byte block from the F2 FIFO. Block-mode reads
 	 * for more data than the FIFO holds fail, so read one block
 	 * at a time. With cur_blksize=64, sdiob sends b_count=1.
@@ -408,6 +421,20 @@ brcmf_sdpcm_process_event(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 {
 	struct brcmf_event *event;
 	uint32_t event_code, datalen;
+	uint8_t data_offset;
+
+	/* Strip BCDC header (4 bytes + data_offset padding) */
+	if (len < BCDC_HEADER_LEN)
+		return;
+	data_offset = data[3];
+	{
+		uint16_t hdr_total = BCDC_HEADER_LEN +
+		    (uint16_t)data_offset * 4;
+		if (hdr_total > len)
+			return;
+		data += hdr_total;
+		len -= hdr_total;
+	}
 
 	if (len < sizeof(*event))
 		return;
@@ -419,6 +446,9 @@ brcmf_sdpcm_process_event(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 
 	event_code = be32toh(event->msg.event_type);
 	datalen = be32toh(event->msg.datalen);
+
+	BRCMF_DBG(sc, "event: code=%u status=%u datalen=%u len=%u\n",
+	    event_code, be32toh(event->msg.status), datalen, len);
 
 	switch (event_code) {
 	case 0:  /* E_SET_SSID */
@@ -536,6 +566,7 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	uint8_t *rxbuf = sc->sdpcm_poll_rx;
 	uint16_t chan, dlen;
 	uint8_t *payload;
+	int i;
 
 	if (sc->fw_dead || sc->detaching)
 		return;
@@ -548,12 +579,17 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	if (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
 		return;
 
-	for (;;) {
+	for (i = 0; i < 16; i++) {
 		int error = brcmf_sdpcm_recv(sc, rxbuf,
 		    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
-		if (error != 0)
+		if (error != 0) {
+			if (i == 0 && error != EAGAIN)
+				BRCMF_DBG(sc,
+				    "rx_task: recv err=%d\n", error);
 			break;
+		}
 
+		BRCMF_DBG(sc, "rx_task: ch=%u dlen=%u\n", chan, dlen);
 		if (chan == SDPCM_EVENT_CHANNEL)
 			brcmf_sdpcm_process_event(sc, payload, dlen);
 		else if (chan == SDPCM_DATA_CHANNEL)
@@ -575,7 +611,7 @@ brcmf_sdpcm_poll(void *arg)
 		return;
 
 	taskqueue_enqueue(taskqueue_thread, &sc->sdpcm_rx_task);
-	callout_reset(&sc->sdpcm_callout, hz / 50, brcmf_sdpcm_poll, sc);
+	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
 
 /*
@@ -586,7 +622,7 @@ brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
 {
 	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
 	callout_init(&sc->sdpcm_callout, 1);
-	callout_reset(&sc->sdpcm_callout, hz / 50, brcmf_sdpcm_poll, sc);
+	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
 
 /*

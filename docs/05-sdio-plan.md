@@ -133,7 +133,7 @@ Build on RPi4: `cd ~/src/brcmfmac2`
 Firmware download was ~2-3 minutes on kernel #16 (1-bit bus).
 On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 
-### M-S3: SDPCM + BCDC protocol (IN PROGRESS)
+### M-S3: SDPCM + BCDC protocol (DONE)
 
 - [x] SDPCM frame encode/decode (12-byte header)
 - [x] BCDC command header (16 bytes)
@@ -143,8 +143,7 @@ On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 - [x] `brcmf_sdpcm_process_event()` dispatches firmware events
 - [x] `brcmf_sdpcm_process_rx()` delivers data frames
 - [x] `brcmf_sdio_bus_ops` wired into `main.c`
-- [ ] **BLOCKED**: F2 writes return EIO. CCCR IORdy shows F2 not ready.
-  See "Current blocker" below.
+- [x] BCDC header stripping for event frames (SDIO-specific)
 
 ### M-S4: SDIO probe/attach (DONE)
 
@@ -158,14 +157,19 @@ On kernel #19 (4-bit bus, 25 MHz) it completes in seconds.
 - [x] Makefile includes SDIO sources and `sdio_if.h`
 - [x] `kldload` creates `brcmfmac0` on `sdiob0`
 
-### M-S5: net80211 for BCM43455
+### M-S5: net80211 for BCM43455 (IN PROGRESS)
 
-Blocked on M-S3 (F2 writes).
-
-- [ ] Firmware version and MAC query
-- [ ] `brcmf_cfg_attach` (net80211 integration)
-- [ ] Channel/mode setup (1SS HT, no VHT)
-- [ ] Scan, association, WPA2
+- [x] Firmware version and MAC query
+- [x] CLM blob download (required for CYW 7.45.x firmware)
+- [x] `brcmf_cfg_attach` (net80211 integration)
+- [x] Channel/mode setup (D11AC chanspec, no VHT for chip!=0x4350)
+- [x] RX poll callout (50ms) + task for async event delivery
+- [x] Scan: escan iovar, event dispatch, scan cache populated
+- [x] `ifconfig wlan0 list scan` shows APs
+- [ ] IE data mostly empty — BSS info IE offset needs fix
+- [ ] Clean kldunload (callout/task drain in detach path)
+- [ ] Association + WPA2
+- [ ] TX data path verification (ping)
 
 ## Current status: M-S5 in progress
 
