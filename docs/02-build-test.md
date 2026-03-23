@@ -23,6 +23,9 @@ Key paths:
 | PCIe test VM | root@192.168.200.10 | Load and test the module on BCM4350 |
 | SDIO RPi4 host | freebsd@192.168.20.106 | Build and test BCM43455 over SDIO |
 
+The firmware files on the test hosts were copied from working Linux hosts,
+where WiFi association succeeds in all test cases. This confirms the firmware is known-good.
+
 ## Workflow
 
 This file covers two test paths:

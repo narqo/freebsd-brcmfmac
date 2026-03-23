@@ -2,8 +2,14 @@
 
 Reference details for BCM43455 on Raspberry Pi 4.
 This file is static context, not milestone tracking.
-See docs/00-progress.md for current status, docs/07-sdio-retro.md for
-bring-up lessons, and docs/10-investigations.md for session notes.
+See docs/00-progress.md for current status, docs/12-sdio-retro.md for
+historical bring-up lessons, and docs/10-investigations.md for session notes.
+
+## RPi4 host
+
+- Host: `freebsd@192.168.20.106`
+- Build dir: `~/src/brcmfmac2`
+- `/tmp` is cleared on reboot
 
 ## Hardware
 
@@ -22,18 +28,14 @@ bring-up lessons, and docs/10-investigations.md for session notes.
 - NVRAM: `/boot/firmware/brcmfmac43455-sdio.txt`
 - CLM blob: `/boot/firmware/brcmfmac43455-sdio.clm_blob`
 
+The firmware files came from a working RPi4 running Linux where WiFi association succeeds.
+
 ## Radio capabilities
 
 - 1SS HT
 - MCS 0-7
 - 20/40 MHz
 - No VHT support in the current net80211 exposure for BCM43455
-
-## RPi4 host
-
-- Host: `freebsd@192.168.20.106`
-- Build dir: `~/src/brcmfmac2`
-- `/tmp` is cleared on reboot
 
 ## Boot prerequisites
 
@@ -52,3 +54,5 @@ bring-up lessons, and docs/10-investigations.md for session notes.
 - after failed loads, check `/var/crash` and `/var/log/messages`
 - R5 response bits in `resp[0]` must be decoded with `mmcreg.h` bit positions
 - repeated failed SDIO states can leave the chip needing a reboot
+
+Retrospective (only for historical context): `docs/12-sdio-retro.md`.

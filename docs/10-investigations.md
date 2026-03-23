@@ -868,265 +868,291 @@ Next: may need to check if the 128-byte fallback can be disabled
 entirely for CYW firmwares, or use a different strategy (e.g.,
 `bi_len - some_constant` based on observed patterns).
 
-## 23 Mar 2026: BCM43455 AUTH timeout investigation
+## 23 Mar 2026: BCM43455 association diagnosis after spec review
 
-### Current state
+### Summary
 
-Scan works:
-- escan returns BSS results with valid RSN IEs
-- `ifconfig wlan0 list scan` shows AP with RSN flag
-- `wpa_supplicant` detects the BSS and selects it
+The SDIO path can boot firmware, load CLM, scan, and exchange firmware
+ioctls/events, but association is still broken even on an open 2.4GHz
+AP (`TestAP`). The working Linux RPi4 uses the same firmware and connects
+normally. That shifts the focus away from WPA, the AP, and net80211, and
+back to the SDIO transport/runtime implementation.
 
-Association fails at AUTH:
-- `SET_SSID` command succeeds (returns 0)
-- Firmware generates AUTH events with status=2 (TIMEOUT)
-- Eventually SET_SSID event reports status=1 (FAIL)
-- Net result: wpa_supplicant reports "Authentication timed out"
+### What the tests established
 
-### Event sequence observed
+- Open network (`TestAP`, ch1, 2.4GHz) fails the same way as WPA2:
+  `AUTH` timeout (`code=3 status=2`), then `SET_SSID` fail (`code=0 status=1`)
+- `join` iovar returns `BCME_NOTREADY (-14)` on CYW43455, including the
+  bsscfg-scoped form Linux uses
+- `C_SET_SSID` is accepted by firmware, but auth still times out
+- `C_GET_UP` returns `isup=1` after `bss_up`
+- Earlier 5GHz runs that reached LINK/SET_SSID success were not stable
+  and do not change the diagnosis
 
-```
-event code=3 status=2 (AUTH timeout)
-event code=0 status=1 (SET_SSID fail)
-event code=3 status=6 (AUTH abort)
-event code=5 status=0 (DEAUTH)
-```
+This eliminates several earlier theories:
+- not WPA-specific
+- not DFS-specific
+- not explained by deferred RUN transition timing
+- not explained by EAPOL TX filtering alone
 
-### Security settings
+### Spec vs implementation gap
 
-- wsec = 0x4 (AES_ENABLED)
-- wpa_auth = 0x80 (WPA2_AUTH_PSK)
-- auth = 0 (open system, required for WPA2)
-- infra = 1 (BSS mode)
+Re-reading `spec/02-bus-sdio.md`, `spec/04-protocol-bcdc.md`, and
+`spec/08-initialization.md` against the current code shows that the SDIO
+path does not yet implement the runtime model the docs describe.
 
-### Firmware info
+Missing or incomplete SDIO-specific pieces:
 
-Firmware: `7.45.265 (28bca26 CY)` (CYW43455)
-Chip: 0x4345
+1. **Common attach / bus-started ordering**
+   - Spec: bus preinit and protocol init_done happen before cfg attach
+   - Code: `src/main.c` calls `ver`, `cap`, CLM load, and `brcmf_cfg_attach`
+     directly, then only starts SDIO polling afterward
 
-### Eliminated causes
+2. **BCDC protocol init_done**
+   - Spec: BCDC attach has an `init_done` phase
+   - Code: SDIO bypasses any protocol-layer attach object and uses
+     `src/sdpcm.c` directly via `bus_ops`
 
-1. Country code: tried with/without "DE" country setting
-2. Scan result parsing: RSN IE is now correctly published
-3. Channel: verified AP on chan 6, SET_SSID includes chan info
+3. **Firmware signaling (`fwsignal`)**
+   - Spec: SDIO/USB BCDC uses `fwsignal` for credit-based flow control
+   - Code: no `fwsignal` implementation is present for SDIO
 
-### Open questions
+4. **Real SDIO DPC/runtime loop**
+   - Spec: DPC processes intstatus, mailbox, FC changes, RX, TX
+   - Code: current SDIO path is a polled RX loop plus synchronous ioctls
 
-1. Why does firmware AUTH time out?
-   - TX appears to work (scan probe requests get responses)
-   - Could be something blocking auth frame TX specifically
-   - Or AP responding on wrong channel/timing
+5. **SDPCM TX credit enforcement**
+   - Spec: host must stop TX when sequence exceeds firmware max sequence
+   - Code: `sdpcm_max_seq` is recorded from RX headers but never enforced
 
-2. Linux uses `"join"` iovar instead of SET_SSID
-   - Our `"join"` iovar returns fwerr=-14 (BCME_NOTREADY)
-   - SET_SSID accepted but auth fails
-   - May need additional setup before `"join"` works
+### Why PCIe works and SDIO does not
 
-3. Missing pre-association setup?
-   - Linux sets join_pref, various bsscfg iovars
-   - We only set wsec, wpa_auth, auth, infra
+PCIe uses the substantially complete msgbuf transport: IRQ-driven D2H,
+control/event buffers, completion handling, and flowring management.
+
+SDIO uses a simplified transport that is sufficient for:
+- firmware boot
+- `ver` / `cap` / CLM ioctls
+- escan
+- event delivery
+
+But it is still missing SDIO-specific runtime pieces that Linux brcmfmac
+has during connect. The strongest symptom is `join` returning
+`BCME_NOTREADY` on SDIO while the same firmware works on Linux.
+
+### Current conclusion
+
+The primary blocker is an **SDIO transport/runtime completeness issue**.
+This is below cfg80211/net80211 and below WPA logic.
+
+Useful fixes from this session that should stay:
+- log firmware `reason` on disconnect events
+- skip unsupported `wpaie` / `sup_wpa` on CYW43455
+- allow EAPOL TX before RUN
+- use saved `join_chan` in `link_task`
+- `brcmf_fil_bsscfg_data_set()` helper for bsscfg-scoped iovars
+
+But those do not address the root cause.
 
 ### Next steps
 
-1. Compare Linux brcmfmac connect flow in detail
-2. Check if there's a required iovar before join
-3. Try using full ext_join_params with scan params
-4. Consider packet capture on working Linux RPi to compare
+1. Rework SDIO attach to follow the spec's common attach / bus-started order
+2. Add the missing BCDC `init_done` step for SDIO
+3. Implement the SDIO DPC/runtime pieces:
+   - interrupt status processing
+   - mailbox handling
+   - flow-control updates
+   - RX/TX progression in one runtime path
+4. Enforce SDPCM TX credits from `sdpcm_max_seq`
+5. Only then revisit association behavior
 
-### Changes tried (session 2)
+### 24 Mar 2026: worker-mode reboot root cause
 
-1. Added RSN IE push via `wpaie` iovar — returns BCME_UNSUPPORTED (-23) on CYW43455 fw 7.45.265
-2. Implemented join iovar → SET_SSID fallback (Linux pattern) — join returns BCME_NOTREADY (-14)
-3. Fixed ext_join_params.scan.scan_type to -1 (not 0) — matches Linux
-4. Fixed nprobes to 16 (320ms/20ms) — matches Linux active dwell calculation
-5. Tried broadcast BSSID in C_SET_SSID — got status=3 (NO_NETWORKS) instead of auth timeout
-6. Reverted to specific BSSID — back to auth timeout
+The reboot introduced by the new SDIO worker-mode path was not random.
+It was a transport serialization bug.
 
-### Current state
+Observed panic from `savecore`:
 
-- join iovar: always fails with BCME_NOTREADY (-14)
-- wpaie iovar: not supported (-23)
-- C_SET_SSID: accepted, but firmware AUTH phase times out
-- Scan params match Linux: scan_type=-1, active=320ms, passive=400ms, nprobes=16
-
-### Next steps to try
-
-1. Compare with working Linux RPi4 packet capture
-2. Try connecting to open network (no WPA) to isolate auth vs security
-3. Test if firmware supplicant (sup_wpa=1 + PMK) makes a difference
-4. Check if there's a firmware-specific init sequence for CYW43455
-
-## 23 Mar 2026: Association diagnosis with DISASSOC reason codes
-
-### Changes deployed
-
-1. `brcmf_link_event` now receives and logs `reason` field from firmware events
-2. `wpaie` iovar skipped on non-BCM4350 chips (CYW43455 returns UNSUPPORTED)
-3. `sup_wpa=0` iovar skipped when `feat_sup_wpa=0` (CYW43455 doesn't support it)
-4. SET_SSID fallback now sends target BSSID (was broadcast ff:ff:ff:ff:ff:ff)
-5. Double RUN transition guarded (skip if already in RUN state)
-
-### Observed event sequences (5GHz AP, ch116 DFS)
-
-**Run 1:**
 ```
-code=3 status=2  (AUTH timeout, first attempt)
-code=3 status=0  (AUTH success, second attempt)
-code=12 reason=2 (DISASSOC_IND: previous auth no longer valid)
-code=16 flags=0  (LINK down)
+camq_remove: Attempt to remove out-of-bounds index -3 from queue ... size 1
 ```
 
-**Run 2 (after reboot):**
+What changed:
+- worker-mode moved control-response delivery into `rx_task`
+- but the ioctl caller still sent the control frame directly from its own
+  thread
+- unlike the old path, the new path no longer held `sdpcm_rx_busy` across
+  the direct F2 write
+
+That allowed concurrent SDIO activity from two contexts:
+- ioctl thread doing F2 CMD53 write (`brcmf_sdpcm_send`)
+- `rx_task` doing F2 reads / SDIO traffic at the same time
+
+On this Arasan + sdiob + CAM stack, that corrupts lower-level queue state
+and panics in CAM (`camq_remove ... out-of-bounds index -3`).
+
+Fix applied:
+- restore F2 serialization for worker-mode sends by taking `sdpcm_rx_busy`
+  around the direct control-frame send
+- keep the worker responsible for draining F2 and delivering the response
+  after the send completes
+
+Result after fix:
+- no reboot on `kldload`
+- no reboot on `ifconfig wlan0 create` / `ifconfig wlan0 up`
+- no reboot from direct control/data F2 send races
+
+This removed the regression introduced while refactoring the SDIO runtime
+and confirmed that strict F2 serialization is required even with a central
+RX worker.
+
+### 24 Mar 2026: multi-block F2 reads were another SDIO runtime bug
+
+After the F2-serialization fix, the board still panicked later during scan /
+association loops. The new logs showed a different failure sequence before the
+same eventual CAM panic:
+
+- `sdhci_bcm0-slot0: Controller timeout`
+- `sdiob_rw_extended_cam: Failed to read ... size 576 ... error=5`
+- later another timeout on `size 1152`
+- then `camq_remove ... out-of-bounds index -3`
+
+Those sizes came from `brcmf_sdpcm_recv()` reading the remainder of a frame in
+one large follow-up CMD53 after the first 64-byte block. The code comment said
+"read one block at a time", but the implementation still issued large multiblock
+reads for the remainder.
+
+Fix applied:
+- change SDPCM remainder reads to use 64-byte F2 reads throughout
+- keep reading until the exact frame length is collected
+
+Observed result after the fix:
+- repeated escan traffic stays alive
+- no SDHCI controller timeouts seen in the observed scan window
+- no `rx_task: ch=3` glom frames seen in the observed stable run
+- no reboot during the long scan/join retry loop
+
+Association behavior is still unchanged:
+- `join` returns `BCME_NOTREADY (-14)`
+- `SET_SSID` is accepted
+- firmware then reports AUTH timeout / SET_SSID failure
+
+This is still not the association fix, but it is a real SDIO runtime
+correction: the RX path now matches the earlier design intent of avoiding
+large F2 CMD53 reads on BCM2711.
+
+## 24 Mar 2026: SDIO worker-mode concurrent access panic
+
+### Panic: camq_remove out-of-bounds index -3
+
+System panic during SDIO association attempts with call stack through
+CAM queue management. Dump file: `/var/crash/vmcore.5`.
+
 ```
-code=7 status=0  (REASSOC_IND success)
-code=16 flags=1  (LINK up)
-code=1 status=0  (JOIN success)
-code=0 status=0  (SET_SSID success)
-code=12 reason=2 (DISASSOC_IND: previous auth no longer valid)
+Panic String: camq_remove: Attempt to remove out-of-bounds index -3
+              from queue 0xffffa00001443038 of size 1
 ```
-Association succeeded initially (LINK UP, RUN state). AP sent EAPOL
-frames (ch=2 dlen=117 x3). DISASSOC_IND arrived shortly after.
 
-**Run 3:**
+### Root cause
+
+The SDIO worker-mode ioctl path had a race condition with `rx_task`.
+When an ioctl timed out, the ioctl thread called `brcmf_sdio_bp_read32`
+to read interrupt status for diagnostics while `rx_task` was still
+running SDIO I/O. This caused concurrent F1 (backplane) and F2 (data)
+SDIO commands, corrupting CAM's internal queue state.
+
+The ioctl thread holds `ioctl_mtx` during timeout handling, and
+`rx_task` acquires `sdpcm_rx_busy`. These are independent locks, so
+neither prevents the other from issuing SDIO commands.
+
+### Fix
+
+Removed the diagnostic backplane read in the worker-mode timeout path.
+The `brcmf_sdio_bp_read32` call was only used for logging interrupt
+status and is not essential. In worker mode, we cannot safely access
+the SDIO bus from the ioctl thread context.
+
+### Additional finding: firmware channel mismatch
+
+Debug output showed that when AUTH state tries to join:
+- Pre-join: `cur_chan=36 cur_chanspec=0xd024` (firmware on 5GHz ch36)
+- Target: `chan=1 chanspec=0x1001` (AP on 2.4GHz ch1)
+
+The firmware's radio is tuned to a different band than the target AP.
+Even when the channel naturally aligns after scan, AUTH still times
+out (code=3 status=2). Explicit `C_SET_CHANNEL` before join did not
+resolve the AUTH timeout.
+
+The AUTH timeout suggests the firmware is not actually transmitting
+802.11 authentication frames despite being told to join. This remains
+an open investigation.
+
+## 24 Mar 2026: Taskqueue contention fix
+
+### Problem
+AUTH state ioctls (C_SET_INFRA, C_SET_AUTH, wsec) were timing out
+on the first AUTH attempt after scan completion. Second attempt worked.
+
+### Root cause
+`scan_task` and `sdpcm_rx_task` both used `taskqueue_thread`. When
+escan completed, `rx_task` enqueued `scan_task`. `scan_task` called
+`ieee80211_scan_done` which triggered AUTH state transition. The AUTH
+handler called ioctls which needed `rx_task` to run, but `rx_task`
+couldn't run because `scan_task` was still executing on the same
+single-threaded taskqueue.
+
+### Fix
+Created dedicated `sdpcm_tq` taskqueue for `sdpcm_rx_task`. Now ioctls
+can complete even when triggered from `scan_task` context.
+
+### Result
+Security ioctls (`set_security`) now complete successfully on first
+AUTH attempt.
+
+### Remaining issue
+AUTH still times out (E_AUTH status=2). Firmware accepts SET_SSID
+but 802.11 authentication doesn't complete. This is not an ioctl
+timeout — it's the firmware reporting that the auth handshake
+with the AP timed out. The firmware might not be transmitting
+auth frames, or there's a missing init step.
+
+### Firmware known-good
+
+The firmware files on the test host (brcmfmac43455-sdio.bin,
+brcmfmac43455-sdio.txt, brcmfmac43455-sdio.clm_blob) were copied
+from a working Raspberry Pi 4 running Linux. The same firmware
+successfully associates with APs on Linux, so the AUTH timeout
+is not a firmware bug — it's a driver initialization or transport
+issue specific to the FreeBSD port.
+
+## 24 Mar 2026: Channel set commands ignored
+
+### Observation
+Both `C_SET_CHANNEL` and `chanspec` iovar return success (0) but
+firmware stays on previous channel:
+
 ```
-code=3 status=2  (AUTH timeout)
-code=3 status=6  (AUTH abort/unsolicited)
-code=5 reason=6  (DEAUTH: class 2 frame from non-auth STA)
+set_channel(1): 0
+verify_channel: 6      <- still on channel 6, not 1
+
+set_chanspec(0x1001): 0
+verify_chanspec: 0xd02c   <- still on 5GHz channel 44
 ```
-Firmware tried to associate without completing authentication.
 
-### Key finding: chanspec returns channel 1 for 5GHz association
+### Implications
+The firmware ignores channel changes in its current state. This might be:
+1. Normal behavior when not associated (firmware picks channel at join)
+2. Indication that firmware needs different state to accept channel changes
+3. Related to ongoing scan or other firmware activity
 
-`link_task` reports `chan=1 bssid=1c:ed:6f:1f:bc:3c` — the 5GHz
-BSSID on channel 1 is impossible. The `chanspec` iovar returns a
-value that decodes to channel 1 when the firmware is actually on
-ch116. This is a D11AC chanspec encoding issue for CYW43455, or the
-iovar returns stale data. Not directly related to the DISASSOC but
-indicates chanspec handling needs investigation.
+The channel in SET_SSID params should tell firmware which channel to
+use for the join attempt, but AUTH still times out regardless.
 
-### Analysis
+### Tested variations
+- `C_SET_CHANNEL` with channel number — ignored
+- `chanspec` iovar with full chanspec — ignored  
+- Including chanspec in SET_SSID join params — AUTH still times out
+- Broadcast BSSID + no chanspec (let firmware pick) — AUTH still times out
 
-The DISASSOC reason=2 pattern is consistent: the AP considers the
-STA's previous authentication expired or invalid. This happens even
-when AUTH and ASSOC events report success (Run 2). Possible causes:
-
-1. **EAPOL frame delivery timing**: EAPOL frames arrive before
-   `link_task` transitions VAP to RUN. If net80211 drops data
-   frames in non-RUN state, wpa_supplicant never sees EAPOL 1/4,
-   the AP's handshake timer expires, and it sends DISASSOC.
-
-2. **AP-side timer**: Kolabox AP may have aggressive auth timeout on
-   DFS channels (ch116). The 50ms SDIO poll rate adds latency to
-   every event and data frame delivery.
-
-3. **Firmware auth → assoc race on DFS**: DFS channels may require
-   additional steps or delays that the firmware doesn't handle
-   correctly with SET_SSID (vs the "join" iovar path).
-
-### Remaining failed iovars on CYW43455
-
-| Iovar/cmd | fwerr | Status |
-|-----------|-------|--------|
-| `C_SET_ROAM_TRIGGER` (0x37) | -10 (RANGE) | Benign, parameters out of firmware's range |
-| `C_SET_ROAM_DELTA` (0x39) | -10 (RANGE) | Benign, parameters out of firmware's range |
-
-These were already failing silently. No functional impact since
-`roam_off=1` disables firmware roaming entirely.
-
-### EAPOL TX path blocked (FOUND, 23 Mar 2026)
-
-`brcmf_vap_transmit` drops all frames when `iv_state != RUN`:
-```c
-if (vap->iv_state != IEEE80211_S_RUN) { m_freem(m); return ENETDOWN; }
-```
-EAPOL 2/4 from wpa_supplicant is dropped because the VAP isn't in
-RUN state when the AP sends EAPOL 1/4. Fix: allow ETHERTYPE_PAE
-through regardless of state.
-
-### RUN transition timing (23 Mar 2026, CORRECTED)
-
-Traced the full chain from firmware event to wpa_supplicant:
-
-1. `sdpcm_rx_task` reads SET_SSID success → enqueues `link_task`
-2. `link_task` (same `taskqueue_thread`) runs, calls `ieee80211_new_state(RUN)`
-3. net80211 enqueues actual state change on its own `ic->ic_tq` thread
-4. `ieee80211_newstate_cb` on `ic_tq` calls `sta_newstate(RUN)` →
-   `ieee80211_notify_node_join` → `rt_ieee80211msg(RTM_IEEE80211_ASSOC)` →
-   routing socket message → wpa_supplicant wakes up, enters ASSOCIATED
-
-The taskqueue hops themselves add <1ms. The problem is NOT the hop count.
-
-**Actual observation:** `link_task` DID run with `link_up=1` and triggered
-the RUN transition. Three EAPOL retransmits arrived AFTER link_task ran
-but BEFORE DISASSOC_IND. So the RUN transition was enqueued on `ic_tq`.
-
-The DISASSOC_IND reason=2 ("previous authentication no longer valid") is
-NOT an EAPOL timeout. It's a pure 802.11 auth invalidation. The AP
-decides the STA's authentication is stale, regardless of the handshake.
-This could be:
-- AP-side auth timeout (very short on DFS channels?)
-- Firmware sending something that triggers AP re-auth check
-- AP detecting a protocol violation in the association exchange
-
-The EAPOL TX passthrough and chanspec-free link_task are still good
-improvements (reduce latency, eliminate failed ioctls), but they don't
-address the 802.11 auth invalidation that's the actual disconnect cause.
-
-### 2.4GHz scan IE gap (23 Mar 2026)
-
-`ifconfig wlan0 list scan` shows only the 5GHz AP (bc:3c) with
-RSN IE. The 2.4GHz AP (bc:3b, chanspec=0x1001) appears in escan
-results but is not published to net80211's scan cache with RSN.
-wpa_supplicant can't match it and won't attempt association.
-
-This is the same IE extraction issue noted earlier — some BSS
-entries from CYW firmware don't have IEs at the expected offsets.
-
-### Open network test (23 Mar 2026)
-
-Tested with "TestAP" (open, ch1, 2.4GHz). Same result: AUTH
-timeout (code=3 status=2), then SET_SSID fail (code=0 status=1).
-
-The firmware can scan (escan finds TestAP) but cannot complete
-802.11 authentication with ANY AP, regardless of WPA/open or
-channel/band.
-
-### Additional findings
-
-- `C_GET_UP` returns `isup=1` after `bss_up` — firmware is up
-- `join` iovar: returns BCME_NOTREADY (-14) — both plain and bsscfg variants
-- `C_SET_SSID`: accepted (returns 0) but firmware auth times out
-- Country "ALL" is not supported (NOTFOUND); "DE" works
-- 200ms post-bss_up delay: no effect
-- `bsscfg:join` (with bsscfg index 0): same NOTREADY
-- Added `brcmf_fil_bsscfg_data_set` — works but iovar itself rejected
-- NVRAM macaddr is stale RPi3 MAC; firmware uses OTP MAC correctly
-
-### Root cause hypothesis
-
-The firmware sends AUTH request frames but they never reach the AP
-(or the AP's response never reaches the firmware). Since escan
-(probe req/resp) works, the radio itself is functional. Possible
-causes:
-
-1. **TX power**: Firmware may not apply TX power correctly after
-   country set. Auth frames require higher reliability than probes.
-2. **Channel mismatch**: Firmware may be on a different channel
-   than the AP when sending auth frames.
-3. **Firmware internal scan**: SET_SSID with chanspec_num=0 makes
-   firmware do its own scan. If that scan is passive-only or
-   broken, auth never starts.
-4. **Missing init step**: Some firmware init iovar that we're
-   missing may leave the firmware in a state where it can scan
-   but not authenticate.
-
-### Blocked — need AP-side diagnosis
-
-The driver has been methodically eliminated as the cause.
-The firmware is up, accepts commands, scans successfully, but
-can't auth. Need:
-
-1. AP-side logs to see if AUTH frames arrive
-2. Monitor-mode capture on a third device to see what's on the air
-3. Compare with Linux brcmfmac trace (`dmesg | grep brcmfmac` on
-   the working Linux RPi4) to find missing init steps
+The channel handling appears to be a red herring. The firmware receives
+correct channel info in the join params but doesn't complete auth.

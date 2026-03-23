@@ -8,8 +8,11 @@ Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
 
 **SDIO milestones M-S1 through M-S4 complete, M-S5 in progress.**
 BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs,
-and reaches AUTH reliably. SET_SSID success is intermittent; association
-is not stable yet.
+and handles firmware ioctls/events, but association is not functional.
+Current diagnosis: the SDIO transport/runtime still diverges from the
+project spec and Linux brcmfmac. PCIe works because its transport path
+is substantially complete; SDIO still lacks key BCDC/SDPCM runtime pieces
+needed for reliable connect.
 
 ## Milestones
 
@@ -402,7 +405,7 @@ Gaps found during spec review (14 Mar 2026). See
 
 ### SDIO Milestones (BCM43455, Raspberry Pi 4)
 
-Reference: `docs/03-sdio-reference.md`; retrospective: `docs/07-sdio-retro.md`
+Reference: `docs/03-sdio-reference.md`.
 
 #### M-S1: Bus ops abstraction (DONE)
 #### M-S2: SDIO bus layer (DONE)
@@ -419,47 +422,65 @@ Reference: `docs/03-sdio-reference.md`; retrospective: `docs/07-sdio-retro.md`
 - [x] Immediate scan result delivery (swscan timing workaround)
 - [x] Clean kldunload (~35-45s)
 - [x] Join flow: try "join" iovar, fall back to SET_SSID
-- [x] AUTH success (code=3 status=0)
-- [x] SET_SSID success observed (code=0 status=0)
-- [x] link_up triggered on SET_SSID success
-- [ ] Consistent association (currently intermittent)
+- [x] Event reason logging for DEAUTH/DISASSOC
+- [x] CYW43455-specific guards for unsupported `wpaie` / `sup_wpa`
+- [x] EAPOL TX passthrough before RUN
+- [x] link_task uses saved join channel instead of firmware chanspec ioctl
+- [ ] Consistent association
 - [ ] 4-way handshake completion
 - [ ] TX data path (ping)
 - [ ] Throughput testing
 
-##### Current state (23 Mar 2026)
+##### Current state (24 Mar 2026)
 
-Association completes (LINK UP, SET_SSID success, RUN state) but
-AP sends DISASSOC_IND reason=2 ("previous auth no longer valid")
-shortly after. EAPOL frames arrive on the data channel but the
-4-way handshake does not complete before DISASSOC.
+The SDIO path boots firmware, scans, and exchanges firmware events, but
+association fails even on an open 2.4GHz AP (`TestAP`). This eliminates
+WPA, DFS, and net80211 RUN timing as primary causes.
 
-Key findings:
-- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on CYW 7.45.265 — now skipped
-- `sup_wpa` iovar unsupported on CYW — now skipped
-- `join` iovar returns BCME_NOTREADY (-14), SET_SSID fallback works
-- SET_SSID fallback now sends target BSSID (was broadcast)
-- AUTH sometimes times out on first attempt, succeeds on second
-- DISASSOC reason=2 arrives even when AUTH+ASSOC succeed (Run 2)
-- DEAUTH reason=6 ("class 2 frame from non-auth STA") on some attempts
-- `chanspec` iovar returns wrong channel (1 instead of 116) after 5GHz join
-- RX poll at 50ms may be too slow for EAPOL handshake timing
+###### Taskqueue contention fix (24 Mar)
 
-Earlier hypothesis (EAPOL delivery race) was wrong — `link_task`
-runs before DISASSOC and triggers the RUN transition. The DISASSOC
-reason=2 is a 802.11 auth invalidation, not an EAPOL timeout.
-The AP considers the STA's authentication stale shortly after
-association completes.
+Found and fixed a major bug: `scan_task` and `sdpcm_rx_task` both used
+`taskqueue_thread`. When escan completed, `rx_task` enqueued `scan_task`.
+`scan_task` called `ieee80211_scan_done` which triggered AUTH transition.
+The AUTH handler called ioctls which needed `rx_task` to run, but
+`rx_task` couldn't run because `scan_task` was still executing on the
+same single-threaded taskqueue.
 
-Improvements deployed:
-- Removed chanspec ioctl from link_task critical path (uses join_chan)
-- EAPOL TX passthrough in brcmf_vap_transmit (ETHERTYPE_PAE bypasses
-  state check)
-- Skip wpaie/sup_wpa on CYW firmware
-- Target BSSID in SET_SSID fallback
+**Fix:** Created dedicated `sdpcm_tq` taskqueue for `sdpcm_rx_task`.
+Now ioctls complete even when triggered from `scan_task` context.
 
-Next: test open network (no WPA) to isolate auth vs WPA; capture
-AP-side exchange; fix 2.4GHz scan IE extraction
+**Result:** Security ioctls (`set_security`) now complete successfully
+on first AUTH attempt. Previously they timed out on first try.
+
+###### Remaining AUTH timeout issue
+
+After the taskqueue fix, ioctls work but AUTH still times out:
+- `join` iovar returns `BCME_NOTREADY (-14)` — expected per Linux expert
+- `C_SET_SSID` is accepted (returns 0)
+- Firmware reports AUTH timeout (`code=3 status=2`) ~2s later
+- Then SET_SSID failure (`code=0 status=1` or `status=3` NO_NETWORKS)
+
+Channel investigations:
+- C_SET_CHANNEL and chanspec iovar both return success but have no effect
+- Firmware stays on 5GHz (chanspec 0xd024) while AP is on channel 1
+- Including chanspec in SET_SSID params doesn't help
+- The firmware appears to ignore channel commands in current state
+
+SDIO-specific init (per Linux expert advice):
+- `tlv=0` iovar succeeds
+- `ampdu_hostreorder=1` times out
+- `assoc_retry_max=3` added but doesn't help
+
+###### Chip wedge pattern
+
+The chip wedges frequently after repeated failed AUTH cycles:
+- F2 write failures (`err=5`)
+- Clock enable timeout on next attach (`clkval=0x00`)
+- Only full host reboot recovers the chip
+
+###### Firmware known-good
+
+The AUTH timeout is a driver issue, not firmware.
 
 ### Milestone X: Automated testing (TODO)
 

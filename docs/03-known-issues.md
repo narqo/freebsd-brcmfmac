@@ -204,3 +204,21 @@ causing wpa_supplicant to set `wmm_enabled=1` and produce matching capabilities.
 Available-entry calculation missed the wrapped portion of the ring (`w_ptr < r_ptr`
 case). TX completions in the wrapped region were never processed under heavy traffic,
 stalling TX permanently. Fixed in all three D2H rings.
+
+## SDIO: kldunload/kldload cycle fails (OPEN)
+
+After kldunload, the next kldload fails with "clock enable timeout".
+The chip's clock control doesn't recover properly after detach.
+
+Root cause: `brcmf_sdio_clk_disable` writes 0 to CHIPCLKCSR, but on
+next attach `brcmf_sdio_clk_enable` can't bring the clock back up.
+The chip appears to need a full hardware reset (power cycle or
+similar) to recover.
+
+Workaround: Reboot the RPi4 between kldunload and kldload.
+
+Impact: Development iteration requires reboot after each module
+unload. First load after boot works correctly.
+
+TODO: Investigate proper SDIO shutdown sequence. Linux brcmfmac
+likely does additional cleanup or reset steps on detach.
