@@ -429,17 +429,37 @@ Reference: `docs/03-sdio-reference.md`; retrospective: `docs/07-sdio-retro.md`
 
 ##### Current state (23 Mar 2026)
 
-AUTH succeeds. Association sometimes completes (SET_SSID status=0) but
-inconsistently fails — DISASSOC_IND arrives before JOIN/SET_SSID events.
-5GHz BSSID appears more reliable than 2.4GHz.
+Association completes (LINK UP, SET_SSID success, RUN state) but
+AP sends DISASSOC_IND reason=2 ("previous auth no longer valid")
+shortly after. EAPOL frames arrive on the data channel but the
+4-way handshake does not complete before DISASSOC.
 
 Key findings:
-- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on CYW 7.45.265
+- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on CYW 7.45.265 — now skipped
+- `sup_wpa` iovar unsupported on CYW — now skipped
 - `join` iovar returns BCME_NOTREADY (-14), SET_SSID fallback works
-- When SET_SSID succeeds, link_task transitions to RUN state
-- EAPOL frames received on data channel but 4-way may timeout
+- SET_SSID fallback now sends target BSSID (was broadcast)
+- AUTH sometimes times out on first attempt, succeeds on second
+- DISASSOC reason=2 arrives even when AUTH+ASSOC succeed (Run 2)
+- DEAUTH reason=6 ("class 2 frame from non-auth STA") on some attempts
+- `chanspec` iovar returns wrong channel (1 instead of 116) after 5GHz join
+- RX poll at 50ms may be too slow for EAPOL handshake timing
 
-Next: investigate association inconsistency (timing? AP disassoc reason?)
+Earlier hypothesis (EAPOL delivery race) was wrong — `link_task`
+runs before DISASSOC and triggers the RUN transition. The DISASSOC
+reason=2 is a 802.11 auth invalidation, not an EAPOL timeout.
+The AP considers the STA's authentication stale shortly after
+association completes.
+
+Improvements deployed:
+- Removed chanspec ioctl from link_task critical path (uses join_chan)
+- EAPOL TX passthrough in brcmf_vap_transmit (ETHERTYPE_PAE bypasses
+  state check)
+- Skip wpaie/sup_wpa on CYW firmware
+- Target BSSID in SET_SSID fallback
+
+Next: test open network (no WPA) to isolate auth vs WPA; capture
+AP-side exchange; fix 2.4GHz scan IE extraction
 
 ### Milestone X: Automated testing (TODO)
 

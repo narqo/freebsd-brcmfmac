@@ -167,6 +167,28 @@ brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len)
 }
 
 /*
+ * Abort a running escan. Must be called before firmware join so
+ * the radio is free for the auth/assoc exchange.
+ */
+void
+brcmf_abort_escan(struct brcmf_softc *sc)
+{
+	struct brcmf_escan_params_le params;
+
+	if (!sc->scan_active)
+		return;
+
+	memset(&params, 0, sizeof(params));
+	params.version = htole32(BRCMF_ESCAN_REQ_VERSION);
+	params.action = htole16(WL_ESCAN_ACTION_ABORT);
+	params.sync_id = htole16(sc->escan_sync_id);
+	memset(params.params_le.bssid, 0xff, 6);
+
+	brcmf_fil_iovar_data_set(sc, "escan", &params, sizeof(params));
+	sc->scan_active = 0;
+}
+
+/*
  * Score whether offset j in raw[] starts a plausible IE chain.
  * Require SSID + Rates. Prefer SSID matching the fixed header and
  * chains that also contain an RSN/WPA IE.

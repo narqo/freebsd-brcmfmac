@@ -277,6 +277,7 @@ struct brcmf_softc {
 	int feat_mbss;     /* multi-BSS */
 	int feat_p2p;      /* P2P */
 	int feat_sae;      /* WPA3-SAE */
+	int feat_wpaie;    /* wpaie iovar accepted */
 
 	/* Scan state */
 	uint16_t escan_sync_id;
@@ -289,6 +290,7 @@ struct brcmf_softc {
 	struct task link_task;
 	struct task restart_task;
 	uint8_t join_bssid[6];
+	int join_chan;		/* channel number used for last join */
 
 	/* WPA PSK (set via sysctl) */
 	char psk[65];
@@ -401,6 +403,8 @@ int brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
     void *data, uint32_t len);
 int brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
     const void *data, uint32_t len);
+int brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
+    int bsscfg_idx, const void *data, uint32_t len);
 int brcmf_fil_iovar_int_set(struct brcmf_softc *sc, const char *name,
     uint32_t val);
 int brcmf_fil_iovar_int_get(struct brcmf_softc *sc, const char *name,
@@ -413,7 +417,7 @@ int brcmf_cfg_attach(struct brcmf_softc *sc);
 void brcmf_cfg_detach(struct brcmf_softc *sc);
 void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
 void brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
-    uint32_t status, uint16_t flags);
+    uint32_t status, uint32_t reason, uint16_t flags);
 
 /* core.c - chip parsing and EROM scan helpers */
 struct brcmf_chipinfo brcmf_parse_chipid(uint32_t regdata);

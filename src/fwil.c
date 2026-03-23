@@ -66,8 +66,44 @@ brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
 	if (data != NULL && len > 0)
 		memcpy(buf + namelen, data, len);
 
-	return sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
-	    namelen + len, NULL);
+	{
+		int err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
+		    namelen + len, NULL);
+		if (err != 0)
+			BRCMF_DBG(sc, "iovar_set '%s' failed: %d\n",
+			    name, err);
+		return err;
+	}
+}
+
+/*
+ * Set a bsscfg-indexed IOVAR.
+ * Wire format: name + NUL + bsscfg_idx(le32) + data
+ */
+int
+brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
+    int bsscfg_idx, const void *data, uint32_t len)
+{
+	char buf[512];
+	uint32_t namelen, idx_le;
+	int err;
+
+	namelen = strlen(name) + 1;
+	if (namelen + 4 + len > sizeof(buf))
+		return (EINVAL);
+
+	memcpy(buf, name, namelen);
+	idx_le = htole32(bsscfg_idx);
+	memcpy(buf + namelen, &idx_le, 4);
+	if (data != NULL && len > 0)
+		memcpy(buf + namelen + 4, data, len);
+
+	err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
+	    namelen + 4 + len, NULL);
+	if (err != 0)
+		BRCMF_DBG(sc, "bsscfg_set '%s' idx=%d failed: %d\n",
+		    name, bsscfg_idx, err);
+	return err;
 }
 
 /*

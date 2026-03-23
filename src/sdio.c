@@ -78,8 +78,10 @@
 /* SDIO device core (core ID 0x829) register offsets */
 #define SD_REG_INTSTATUS	0x020
 #define SD_REG_HOSTINTMASK	0x024
+#define SD_REG_TOSBMAILBOX	0x040
 #define SD_REG_TOSBMAILBOXDATA	0x048
 #define SD_REG_TOHOSTMAILBOXDATA 0x044
+#define I_SMB_INT_ACK		0x020000
 
 /* Protocol version for tosbmailboxdata */
 #define SDPCM_PROT_VERSION	4
@@ -690,6 +692,22 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    sc->sdiocore.base + SD_REG_HOSTINTMASK,
 		    I_HMB_SW_MASK | I_HMB_FRAME_IND |
 		    I_HMB_HOST_INT | I_HMB_FC_CHANGE);
+	}
+
+	/*
+	 * Read and ack the firmware's tohostmailbox. Linux does this
+	 * in its DPC loop before the first ioctl. Without the ack,
+	 * the firmware may not enable its connection state machine.
+	 */
+	if (sc->sdiocore.base != 0) {
+		uint32_t mbox = brcmf_sdio_bp_read32(sc,
+		    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
+		device_printf(sc->dev, "tohostmailbox=0x%08x\n", mbox);
+		if (mbox != 0) {
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_TOSBMAILBOX,
+			    I_SMB_INT_ACK);
+		}
 	}
 
 	/* F2 watermark and device control — required for F2 data flow */

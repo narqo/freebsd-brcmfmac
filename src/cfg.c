@@ -44,7 +44,6 @@ brcmf_link_task(void *arg, int pending)
 	struct ieee80211_channel *chan;
 	uint8_t bssid[6];
 	uint32_t channum;
-	int error;
 
 	if (sc->detaching)
 		return;
@@ -56,24 +55,19 @@ brcmf_link_task(void *arg, int pending)
 	BRCMF_DBG(sc, "link_task: link_up=%d\n", sc->link_up);
 
 	if (sc->link_up) {
-		uint32_t chanspec_raw;
 		int bw, sb;
 
 		memcpy(bssid, sc->join_bssid, 6);
 
-		error = brcmf_fil_iovar_int_get(sc, "chanspec", &chanspec_raw);
-		if (error != 0) {
-			error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_CHANNEL,
-			    &chanspec_raw, sizeof(chanspec_raw));
-		}
-		if (error != 0) {
-			channum = 1;
-			bw = BRCMF_BW_20;
-			sb = 0;
-		} else {
-			channum = brcmf_chanspec_to_channel(sc, chanspec_raw);
-			brcmf_chanspec_get_bw_sb(sc, chanspec_raw, &bw, &sb);
-		}
+		/*
+		 * Use the join channel for initial node setup — no
+		 * firmware ioctl needed. This gets the VAP to RUN
+		 * before the AP's EAPOL timer expires. The chanspec
+		 * iovar is queried after RUN for accurate bw/sb.
+		 */
+		channum = sc->join_chan;
+		bw = BRCMF_BW_20;
+		sb = 0;
 
 		{
 			int freq = ieee80211_ieee2mhz(channum,
@@ -84,16 +78,8 @@ brcmf_link_task(void *arg, int pending)
 
 			chan = NULL;
 
-			/* Try VHT80 */
-			if (bw == BRCMF_BW_80) {
-				int htdir = (sb & 1) ? IEEE80211_CHAN_HT40D :
-						       IEEE80211_CHAN_HT40U;
-				chan = ieee80211_find_channel(ic, freq,
-				    base | htdir | IEEE80211_CHAN_VHT80);
-			}
-
 			/* Try HT40 */
-			if (bw >= BRCMF_BW_40 && chan == NULL) {
+			if (bw >= BRCMF_BW_40) {
 				int htflag = (sb & 1) ? IEEE80211_CHAN_HT40D :
 							IEEE80211_CHAN_HT40U;
 				chan = ieee80211_find_channel(ic, freq,
@@ -112,8 +98,6 @@ brcmf_link_task(void *arg, int pending)
 				chan = &ic->ic_channels[0];
 		}
 
-		/* COM lock guarantees iv_bss won't be freed by
-		 * ieee80211_sta_join */
 		IEEE80211_LOCK(ic);
 		ic->ic_curchan = chan;
 		ic->ic_bsschan = chan;
@@ -135,12 +119,8 @@ brcmf_link_task(void *arg, int pending)
 				ni->ni_flags |= IEEE80211_NODE_VHT;
 				ni->ni_vhtcap = ic->ic_vht_cap.vht_cap_info;
 				ni->ni_vht_mcsinfo = ic->ic_vht_cap.supp_mcs;
-				if (bw >= BRCMF_BW_80)
-					ni->ni_vht_chanwidth =
-					    IEEE80211_VHT_CHANWIDTH_80MHZ;
-				else
-					ni->ni_vht_chanwidth =
-					    IEEE80211_VHT_CHANWIDTH_USE_HT;
+				ni->ni_vht_chanwidth =
+				    IEEE80211_VHT_CHANWIDTH_USE_HT;
 			}
 			if (vap->iv_des_nssid > 0) {
 				ni->ni_esslen = vap->iv_des_ssid[0].len;
@@ -152,7 +132,7 @@ brcmf_link_task(void *arg, int pending)
 
 		BRCMF_DBG(sc, "link_task: ni=%p chan=%d bssid=%6D\n", ni,
 		    channum, bssid, ":");
-		if (ni != NULL) {
+		if (ni != NULL && vap->iv_state != IEEE80211_S_RUN) {
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
 
@@ -161,7 +141,6 @@ brcmf_link_task(void *arg, int pending)
 			if (sc->bus_ops->flowring_create != NULL)
 				sc->bus_ops->flowring_create(sc, bssid);
 
-			/* Receive all multicast frames (no filtering) */
 			brcmf_fil_iovar_int_set(sc, "allmulti", 1);
 		}
 	} else {
@@ -175,7 +154,7 @@ brcmf_link_task(void *arg, int pending)
  */
 void
 brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
-    uint16_t flags)
+    uint32_t reason, uint16_t flags)
 {
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
@@ -210,6 +189,9 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 	case BRCMF_E_DEAUTH_IND:
 	case BRCMF_E_DISASSOC:
 	case BRCMF_E_DISASSOC_IND:
+		device_printf(sc->dev,
+		    "event %u: status=%u reason=%u flags=0x%x\n",
+		    event_code, status, reason, flags);
 		if (sc->link_up) {
 			sc->link_up = 0;
 			sc->scan_active = 0;
@@ -246,11 +228,12 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (error != 0)
 		return error;
 
-	/* BCM4350 note: spec uses sup_wpa=1 for firmware-managed WPA,
-	 * but v7.35.180.133 returns BCME_BADARG for SET_WSEC_PMK. */
-	brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
+	if (sc->feat_sup_wpa)
+		brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 
 	memcpy(sc->join_bssid, sr->bssid, 6);
+
+	brcmf_abort_escan(sc);
 
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(sr->ssid_len);
@@ -277,13 +260,15 @@ static int
 brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 {
 	struct brcmf_ext_join_params ejoin;
-	struct brcmf_join_params join;
 	int chan, error;
 	uint16_t chanspec;
 
 	memcpy(sc->join_bssid, ni->ni_bssid, 6);
 
+	brcmf_abort_escan(sc);
+
 	chan = ieee80211_chan2ieee(&sc->ic, ni->ni_chan);
+	sc->join_chan = chan;
 	chanspec = brcmf_channel_to_chanspec(sc, chan);
 
 	memset(&ejoin, 0, sizeof(ejoin));
@@ -303,20 +288,27 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
 	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
 
-	error = brcmf_fil_iovar_data_set(sc, "join", &ejoin, sizeof(ejoin));
+	error = brcmf_fil_bsscfg_data_set(sc, "join", 0, &ejoin, sizeof(ejoin));
 	if (error == 0)
 		return 0;
 
-	/* join failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID */
-	memset(&join, 0, sizeof(join));
-	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
-	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-	/* broadcast BSSID lets firmware pick from its scan cache */
-	memset(join.bssid, 0xff, 6);
-	join.chanspec_num = htole32(0);
+	/* join iovar failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID */
+	BRCMF_DBG(sc, "join iovar failed (%d), falling back to SET_SSID\n",
+	    error);
+	{
+		struct brcmf_join_params join;
 
-	return brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join,
-	    sizeof(join));
+		memset(&join, 0, sizeof(join));
+		join.ssid_le.SSID_len = htole32(ni->ni_esslen);
+		memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
+		memcpy(join.bssid, ni->ni_bssid, 6);
+		join.chanspec_num = htole32(0);
+
+		error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID,
+		    &join, sizeof(join));
+	}
+	BRCMF_DBG(sc, "SET_SSID cmd returned %d\n", error);
+	return error;
 }
 
 static int
@@ -449,24 +441,24 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			brcmf_set_security(sc, wsec, wpa_auth);
 
 			/*
-			 * Push RSN/WPA IE to firmware. wpa_supplicant delivers
-			 * this via IEEE80211_IOC_APPIE before triggering
-			 * S_AUTH, so iv_rsn_ie / iv_wpa_ie should be populated
-			 * here. Firmware uses wpaie for auth/assoc frame
-			 * construction.
+			 * Push RSN/WPA IE to firmware on chips that accept
+			 * wpaie. CYW43455 (7.45.x) returns UNSUPPORTED and
+			 * the failed iovar can taint firmware WPA state,
+			 * causing DISASSOC_IND before association completes.
 			 */
-			BRCMF_DBG(sc, "auth: rsn_ie=%p wpa_ie=%p\n",
-			    vap->iv_rsn_ie, vap->iv_wpa_ie);
-			if (vap->iv_rsn_ie != NULL)
-				brcmf_fil_iovar_data_set(sc, "wpaie",
-				    vap->iv_rsn_ie, vap->iv_rsn_ie[1] + 2);
-			else if (vap->iv_wpa_ie != NULL)
-				brcmf_fil_iovar_data_set(sc, "wpaie",
-				    vap->iv_wpa_ie, vap->iv_wpa_ie[1] + 2);
+			if (sc->feat_wpaie) {
+				if (vap->iv_rsn_ie != NULL)
+					brcmf_fil_iovar_data_set(sc, "wpaie",
+					    vap->iv_rsn_ie,
+					    vap->iv_rsn_ie[1] + 2);
+				else if (vap->iv_wpa_ie != NULL)
+					brcmf_fil_iovar_data_set(sc, "wpaie",
+					    vap->iv_wpa_ie,
+					    vap->iv_wpa_ie[1] + 2);
+			}
 
-			/* BCM4350 note: spec uses sup_wpa=1, but
-			 * v7.35.180.133 returns BCME_BADARG. */
-			brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
+			if (sc->feat_sup_wpa)
+				brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
 			brcmf_join_bss(sc, ni);
 		}
 		break;
@@ -717,10 +709,22 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 	struct brcmf_softc *sc = ic->ic_softc;
 
 	if (vap->iv_state != IEEE80211_S_RUN) {
+		/*
+		 * Allow EAPOL frames before RUN — the firmware has
+		 * associated but the deferred link_task hasn't
+		 * transitioned the VAP yet. Without this, EAPOL 2/4
+		 * is dropped and the AP's handshake timer expires.
+		 */
+		struct ether_header *eh;
+		if (m->m_len >= sizeof(*eh)) {
+			eh = mtod(m, struct ether_header *);
+			if (ntohs(eh->ether_type) == ETHERTYPE_PAE)
+				goto send;
+		}
 		m_freem(m);
 		return (ENETDOWN);
 	}
-
+send:
 	return sc->bus_ops->tx(sc, m);
 }
 
@@ -827,6 +831,17 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 		val = 0;
 		if (brcmf_fil_iovar_int_get(sc, "mfp", &val) == 0)
 			sc->feat_mfp = 1;
+
+		/*
+		 * wpaie iovar: BCM4350 (7.35.x) accepts it but CYW43455
+		 * (7.45.x) returns BCME_UNSUPPORTED. On BCM4350, sending
+		 * a raw RSN IE via wpaie causes SET_SSID status=1 anyway
+		 * (see decisions.md), but it's harmless when the IE
+		 * matches what wpa_supplicant expects. On CYW, sending it
+		 * may poison firmware WPA state and cause DISASSOC_IND.
+		 */
+		if (sc->chip == 0x4350)
+			sc->feat_wpaie = 1;
 	}
 
 	/* Bring firmware down for configuration, then back up */
@@ -865,6 +880,17 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	error = brcmf_fil_bss_up(sc);
 	BRCMF_DBG(sc, "bss_up: %d\n", error);
+
+	{
+		uint32_t isup = 0;
+		brcmf_fil_cmd_data_get(sc, 19 /* C_GET_UP */, &isup,
+		    sizeof(isup));
+		device_printf(sc->dev, "isup=%u after bss_up\n",
+		    le32toh(isup));
+	}
+
+	/* CYW firmware needs time after C_UP before join works */
+	pause_sbt("brcmup", mstosbt(200), 0, 0);
 
 	/* Enable firmware events early so none are missed */
 	brcmf_setup_events(sc);

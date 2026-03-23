@@ -255,6 +255,7 @@ void brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
     int *bw, int *sb);
 uint16_t brcmf_channel_to_chanspec(struct brcmf_softc *sc, int channel);
 int brcmf_do_escan(struct brcmf_softc *sc, const uint8_t *ssid, int ssid_len);
+void brcmf_abort_escan(struct brcmf_softc *sc);
 void brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen);
 void brcmf_scan_complete_task(void *arg, int pending);
 void brcmf_add_scan_result(struct brcmf_softc *sc,

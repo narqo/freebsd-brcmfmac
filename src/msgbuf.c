@@ -391,7 +391,7 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	case BRCMF_E_DISASSOC:
 	case BRCMF_E_DISASSOC_IND:
 		brcmf_link_event(sc, event_code, be32toh(event->msg.status),
-		    be16toh(event->msg.flags));
+		    be32toh(event->msg.reason), be16toh(event->msg.flags));
 		break;
 	case BRCMF_E_ESCAN_RESULT:
 		if (datalen > 0 && datalen < BRCMF_MSGBUF_MAX_CTL_PKT_SIZE - sizeof(*event))

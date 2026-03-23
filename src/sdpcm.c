@@ -183,16 +183,28 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 	uint32_t rdsz;
 	int error;
 
-	/* Acknowledge pending frame indication. The firmware uses
+	/* Acknowledge pending interrupts. The firmware uses
 	 * I_HMB_FRAME_IND to signal data availability; without ack
-	 * it may stop sending more frames. */
+	 * it may stop sending more frames. I_HMB_HOST_INT signals
+	 * firmware mailbox data — must be read and acked or the
+	 * firmware won't transition to connection-ready state. */
 	if (sc->sdiocore.base != 0) {
 		uint32_t intst = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + SD_REG_INTSTATUS);
-		if (intst & I_HMB_FRAME_IND) {
+		uint32_t ack = intst & (I_HMB_FRAME_IND | I_HMB_HOST_INT |
+		    I_HMB_FC_CHANGE);
+		if (ack != 0) {
 			brcmf_sdio_bp_write32(sc,
-			    sc->sdiocore.base + SD_REG_INTSTATUS,
-			    intst & I_HMB_FRAME_IND);
+			    sc->sdiocore.base + SD_REG_INTSTATUS, ack);
+		}
+		if (intst & I_HMB_HOST_INT) {
+			uint32_t mbox = brcmf_sdio_bp_read32(sc,
+			    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
+			BRCMF_DBG(sc, "mailbox: 0x%08x\n", mbox);
+			/* Ack by writing to tosbmailbox */
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_TOSBMAILBOX,
+			    I_SMB_INT_ACK);
 		}
 	}
 
@@ -468,6 +480,7 @@ brcmf_sdpcm_process_event(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 	case 16: /* E_LINK */
 		brcmf_link_event(sc, event_code,
 		    be32toh(event->msg.status),
+		    be32toh(event->msg.reason),
 		    be16toh(event->msg.flags));
 		break;
 	case 69: /* E_ESCAN_RESULT */
