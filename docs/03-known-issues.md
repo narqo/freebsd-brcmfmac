@@ -42,6 +42,17 @@ requiring a VM reset. Without wpa_supplicant the same cycles complete cleanly
 (8/8), so the deadlock is in the interaction between net80211 ioctl dispatch
 and the driver's state transition path. Not yet diagnosed.
 
+### Country code hardcoded to "DE"
+
+`brcmf_cfg_attach` sets the firmware regulatory domain to `DE` (Germany)
+via the `country` iovar (cfg.c:855). This restricts available channels
+and TX power limits to the DE regulatory profile. Users outside Germany
+get wrong channel availability — or, on firmwares that enforce TX power
+per-country, potentially illegal transmit levels.
+
+Needs a runtime-configurable country code, either via sysctl, loader
+tunable, or the net80211 regdomain interface.
+
 ### wpa_supplicant DELKEY warning at startup
 
 ```
