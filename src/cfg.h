@@ -20,63 +20,63 @@ struct brcmf_vap {
 
 #define BRCMF_VAP(vap) ((struct brcmf_vap *)(vap))
 
-/* Join scan dwell times (ms), matching Linux brcmfmac defaults */
-#define BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS	320
-#define BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS	400
-#define BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS	20
+/* Join scan dwell times (ms) */
+#define BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS  320
+#define BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS 400
+#define BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS     20
 
 /* Event codes */
-#define BRCMF_E_SET_SSID	0
-#define BRCMF_E_JOIN		1
-#define BRCMF_E_AUTH		3
-#define BRCMF_E_DEAUTH		5
-#define BRCMF_E_DEAUTH_IND	6
-#define BRCMF_E_ASSOC		7
-#define BRCMF_E_REASSOC		8
-#define BRCMF_E_DISASSOC	11
-#define BRCMF_E_DISASSOC_IND	12
-#define BRCMF_E_LINK		16
-#define BRCMF_E_PSK_SUP		46
-#define BRCMF_E_ASSOC_IND	18
-#define BRCMF_E_REASSOC_IND	19
-#define BRCMF_E_IF		54
-#define BRCMF_E_ESCAN_RESULT	69
+#define BRCMF_E_SET_SSID     0
+#define BRCMF_E_JOIN	     1
+#define BRCMF_E_AUTH	     3
+#define BRCMF_E_DEAUTH	     5
+#define BRCMF_E_DEAUTH_IND   6
+#define BRCMF_E_ASSOC	     7
+#define BRCMF_E_REASSOC	     8
+#define BRCMF_E_DISASSOC     11
+#define BRCMF_E_DISASSOC_IND 12
+#define BRCMF_E_LINK	     16
+#define BRCMF_E_PSK_SUP	     46
+#define BRCMF_E_ASSOC_IND    18
+#define BRCMF_E_REASSOC_IND  19
+#define BRCMF_E_IF	     54
+#define BRCMF_E_ESCAN_RESULT 69
 
 /* Event status codes */
-#define BRCMF_E_STATUS_SUCCESS	0
+#define BRCMF_E_STATUS_SUCCESS 0
 
 /* Event flags */
-#define BRCMF_EVENT_MSG_LINK	0x01
+#define BRCMF_EVENT_MSG_LINK 0x01
 
 /* IOCTL commands */
-#define BRCMF_C_SET_INFRA	20
-#define BRCMF_C_GET_BSSID	23
-#define BRCMF_C_SET_SSID	26
-#define BRCMF_C_GET_CHANNEL	29
-#define BRCMF_C_SET_PM		86
-#define BRCMF_C_SET_WSEC_PMK	268
+#define BRCMF_C_SET_INFRA    20
+#define BRCMF_C_GET_BSSID    23
+#define BRCMF_C_SET_SSID     26
+#define BRCMF_C_GET_CHANNEL  29
+#define BRCMF_C_SET_PM	     86
+#define BRCMF_C_SET_WSEC_PMK 268
 
 /* WSEC cipher flags */
-#define WSEC_NONE		0x0000
-#define WEP_ENABLED		0x0001
-#define TKIP_ENABLED		0x0002
-#define AES_ENABLED		0x0004
+#define WSEC_NONE    0x0000
+#define WEP_ENABLED  0x0001
+#define TKIP_ENABLED 0x0002
+#define AES_ENABLED  0x0004
 
 /* WPA auth flags */
-#define WPA_AUTH_DISABLED	0x0000
-#define WPA_AUTH_PSK		0x0004
-#define WPA2_AUTH_PSK		0x0080
-#define WPA2_AUTH_PSK_SHA256	0x8000
+#define WPA_AUTH_DISABLED    0x0000
+#define WPA_AUTH_PSK	     0x0004
+#define WPA2_AUTH_PSK	     0x0080
+#define WPA2_AUTH_PSK_SHA256 0x8000
 
 /* Crypto algorithm IDs for wsec_key */
-#define CRYPTO_ALGO_OFF		0
-#define CRYPTO_ALGO_WEP1	1
-#define CRYPTO_ALGO_TKIP	2
-#define CRYPTO_ALGO_WEP128	3
-#define CRYPTO_ALGO_AES_CCM	4
+#define CRYPTO_ALGO_OFF	    0
+#define CRYPTO_ALGO_WEP1    1
+#define CRYPTO_ALGO_TKIP    2
+#define CRYPTO_ALGO_WEP128  3
+#define CRYPTO_ALGO_AES_CCM 4
 
 /* Key flags */
-#define BRCMF_PRIMARY_KEY	(1 << 1)
+#define BRCMF_PRIMARY_KEY (1 << 1)
 
 /* PMK structure */
 struct brcmf_wsec_pmk_le {
@@ -85,8 +85,8 @@ struct brcmf_wsec_pmk_le {
 	uint8_t key[64];
 } __packed;
 
-#define BRCMF_WSEC_MAX_PSK_LEN	64
-#define BRCMF_WSEC_PASSPHRASE	(1 << 0)
+#define BRCMF_WSEC_MAX_PSK_LEN 64
+#define BRCMF_WSEC_PASSPHRASE  (1 << 0)
 
 /* wsec_key structure — natural alignment, 164 bytes on wire */
 struct brcmf_wsec_key {
@@ -108,51 +108,51 @@ struct brcmf_wsec_key {
 };
 
 /* Event mask */
-#define BRCMF_EVENTING_MASK_LEN	16
+#define BRCMF_EVENTING_MASK_LEN 16
 
 /* escan */
-#define WL_ESCAN_ACTION_START	1
+#define WL_ESCAN_ACTION_START	 1
 #define WL_ESCAN_ACTION_CONTINUE 2
-#define WL_ESCAN_ACTION_ABORT	3
-#define BRCMF_ESCAN_REQ_VERSION 1
-#define DOT11_BSSTYPE_ANY	2
-#define BRCMF_E_STATUS_PARTIAL	8
+#define WL_ESCAN_ACTION_ABORT	 3
+#define BRCMF_ESCAN_REQ_VERSION	 1
+#define DOT11_BSSTYPE_ANY	 2
+#define BRCMF_E_STATUS_PARTIAL	 8
 
 /* Chanspec io_type values (from C_GET_VERSION) */
-#define BRCMF_IO_TYPE_D11N		1
-#define BRCMF_IO_TYPE_D11AC		2
+#define BRCMF_IO_TYPE_D11N  1
+#define BRCMF_IO_TYPE_D11AC 2
 
 /* Common */
-#define BRCMF_CHSPEC_CHAN_MASK		0x00ff
+#define BRCMF_CHSPEC_CHAN_MASK 0x00ff
 
 /* D11AC chanspec encoding (BCM4350, modern chips) */
-#define BRCMF_CHSPEC_D11AC_SB_MASK	0x0700
-#define BRCMF_CHSPEC_D11AC_SB_SHIFT	8
-#define BRCMF_CHSPEC_D11AC_BW_MASK	0x3800
-#define BRCMF_CHSPEC_D11AC_BW_SHIFT	11
-#define BRCMF_CHSPEC_D11AC_BW_20	0x1000
-#define BRCMF_CHSPEC_D11AC_BAND_2G	0x0000
-#define BRCMF_CHSPEC_D11AC_BAND_5G	0xc000
+#define BRCMF_CHSPEC_D11AC_SB_MASK  0x0700
+#define BRCMF_CHSPEC_D11AC_SB_SHIFT 8
+#define BRCMF_CHSPEC_D11AC_BW_MASK  0x3800
+#define BRCMF_CHSPEC_D11AC_BW_SHIFT 11
+#define BRCMF_CHSPEC_D11AC_BW_20    0x1000
+#define BRCMF_CHSPEC_D11AC_BAND_2G  0x0000
+#define BRCMF_CHSPEC_D11AC_BAND_5G  0xc000
 
 /* Bandwidth in MHz (post-shift chanspec values, same for D11N and D11AC) */
-#define BRCMF_BW_20		2
-#define BRCMF_BW_40		3
-#define BRCMF_BW_80		4
-#define BRCMF_BW_160		5
+#define BRCMF_BW_20  2
+#define BRCMF_BW_40  3
+#define BRCMF_BW_80  4
+#define BRCMF_BW_160 5
 
 /* D11N chanspec encoding (BCM43455, older chips) */
-#define BRCMF_CHSPEC_D11N_SB_MASK	0x0300
-#define BRCMF_CHSPEC_D11N_SB_SHIFT	8
-#define BRCMF_CHSPEC_D11N_SB_NONE	0x0300
-#define BRCMF_CHSPEC_D11N_SB_LOWER	0x0100
-#define BRCMF_CHSPEC_D11N_SB_UPPER	0x0200
-#define BRCMF_CHSPEC_D11N_BW_MASK	0x0c00
-#define BRCMF_CHSPEC_D11N_BW_SHIFT	10
-#define BRCMF_CHSPEC_D11N_BW_20	0x0800
-#define BRCMF_CHSPEC_D11N_BW_40	0x0c00
-#define BRCMF_CHSPEC_D11N_BAND_MASK	0x3000
-#define BRCMF_CHSPEC_D11N_BAND_5G	0x1000
-#define BRCMF_CHSPEC_D11N_BAND_2G	0x2000
+#define BRCMF_CHSPEC_D11N_SB_MASK   0x0300
+#define BRCMF_CHSPEC_D11N_SB_SHIFT  8
+#define BRCMF_CHSPEC_D11N_SB_NONE   0x0300
+#define BRCMF_CHSPEC_D11N_SB_LOWER  0x0100
+#define BRCMF_CHSPEC_D11N_SB_UPPER  0x0200
+#define BRCMF_CHSPEC_D11N_BW_MASK   0x0c00
+#define BRCMF_CHSPEC_D11N_BW_SHIFT  10
+#define BRCMF_CHSPEC_D11N_BW_20	    0x0800
+#define BRCMF_CHSPEC_D11N_BW_40	    0x0c00
+#define BRCMF_CHSPEC_D11N_BAND_MASK 0x3000
+#define BRCMF_CHSPEC_D11N_BAND_5G   0x1000
+#define BRCMF_CHSPEC_D11N_BAND_2G   0x2000
 
 /* Scan structures */
 struct brcmf_ssid_le {
@@ -271,7 +271,6 @@ int brcmf_key_delete(struct ieee80211vap *vap, const struct ieee80211_key *k);
 void brcmf_security_sysctl_init(struct brcmf_softc *sc);
 
 /* cfg.c (internal, used by scan.c) */
-int brcmf_join_bss_direct(struct brcmf_softc *sc,
-    struct brcmf_scan_result *sr);
+int brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr);
 
 #endif /* _BRCMF_CFG_H_ */

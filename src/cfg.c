@@ -21,11 +21,10 @@
 #include <sys/sysctl.h>
 #include <sys/taskqueue.h>
 
-#include <net/if.h>
-#include <net/if_var.h>
-#include <net/if_media.h>
 #include <net/ethernet.h>
-
+#include <net/if.h>
+#include <net/if_media.h>
+#include <net/if_var.h>
 #include <net80211/ieee80211_var.h>
 
 #include "cfg.h"
@@ -62,8 +61,7 @@ brcmf_link_task(void *arg, int pending)
 
 		memcpy(bssid, sc->join_bssid, 6);
 
-		error = brcmf_fil_iovar_int_get(sc, "chanspec",
-		    &chanspec_raw);
+		error = brcmf_fil_iovar_int_get(sc, "chanspec", &chanspec_raw);
 		if (error != 0) {
 			error = brcmf_fil_cmd_data_get(sc, BRCMF_C_GET_CHANNEL,
 			    &chanspec_raw, sizeof(chanspec_raw));
@@ -80,27 +78,24 @@ brcmf_link_task(void *arg, int pending)
 		{
 			int freq = ieee80211_ieee2mhz(channum,
 			    channum <= 14 ? IEEE80211_CHAN_2GHZ :
-			    IEEE80211_CHAN_5GHZ);
-			int base = channum <= 14 ?
-			    IEEE80211_CHAN_G : IEEE80211_CHAN_A;
+					    IEEE80211_CHAN_5GHZ);
+			int base = channum <= 14 ? IEEE80211_CHAN_G :
+						   IEEE80211_CHAN_A;
 
 			chan = NULL;
 
 			/* Try VHT80 */
 			if (bw == BRCMF_BW_80) {
-				int htdir = (sb & 1) ?
-				    IEEE80211_CHAN_HT40D :
-				    IEEE80211_CHAN_HT40U;
+				int htdir = (sb & 1) ? IEEE80211_CHAN_HT40D :
+						       IEEE80211_CHAN_HT40U;
 				chan = ieee80211_find_channel(ic, freq,
-				    base | htdir |
-				    IEEE80211_CHAN_VHT80);
+				    base | htdir | IEEE80211_CHAN_VHT80);
 			}
 
 			/* Try HT40 */
 			if (bw >= BRCMF_BW_40 && chan == NULL) {
-				int htflag = (sb & 1) ?
-				    IEEE80211_CHAN_HT40D :
-				    IEEE80211_CHAN_HT40U;
+				int htflag = (sb & 1) ? IEEE80211_CHAN_HT40D :
+							IEEE80211_CHAN_HT40U;
 				chan = ieee80211_find_channel(ic, freq,
 				    base | htflag);
 			}
@@ -112,13 +107,13 @@ brcmf_link_task(void *arg, int pending)
 
 			/* Legacy */
 			if (chan == NULL)
-				chan = ieee80211_find_channel(ic, freq,
-				    base);
+				chan = ieee80211_find_channel(ic, freq, base);
 			if (chan == NULL)
 				chan = &ic->ic_channels[0];
 		}
 
-		/* COM lock guarantees iv_bss won't be freed by ieee80211_sta_join */
+		/* COM lock guarantees iv_bss won't be freed by
+		 * ieee80211_sta_join */
 		IEEE80211_LOCK(ic);
 		ic->ic_curchan = chan;
 		ic->ic_bsschan = chan;
@@ -138,10 +133,8 @@ brcmf_link_task(void *arg, int pending)
 			}
 			if (chan->ic_flags & IEEE80211_CHAN_VHT) {
 				ni->ni_flags |= IEEE80211_NODE_VHT;
-				ni->ni_vhtcap =
-				    ic->ic_vht_cap.vht_cap_info;
-				ni->ni_vht_mcsinfo =
-				    ic->ic_vht_cap.supp_mcs;
+				ni->ni_vhtcap = ic->ic_vht_cap.vht_cap_info;
+				ni->ni_vht_mcsinfo = ic->ic_vht_cap.supp_mcs;
 				if (bw >= BRCMF_BW_80)
 					ni->ni_vht_chanwidth =
 					    IEEE80211_VHT_CHANWIDTH_80MHZ;
@@ -157,8 +150,8 @@ brcmf_link_task(void *arg, int pending)
 		}
 		IEEE80211_UNLOCK(ic);
 
-		BRCMF_DBG(sc, "link_task: ni=%p chan=%d bssid=%6D\n",
-		    ni, channum, bssid, ":");
+		BRCMF_DBG(sc, "link_task: ni=%p chan=%d bssid=%6D\n", ni,
+		    channum, bssid, ":");
 		if (ni != NULL) {
 			ieee80211_new_state(vap, IEEE80211_S_RUN,
 			    IEEE80211_FC0_SUBTYPE_ASSOC_RESP);
@@ -181,8 +174,8 @@ brcmf_link_task(void *arg, int pending)
  * Handle link and association events from firmware.
  */
 void
-brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
-    uint32_t status, uint16_t flags)
+brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
+    uint16_t flags)
 {
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
@@ -190,7 +183,8 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code,
 			sc->link_up = 1;
 			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		} else {
-			device_printf(sc->dev, "SET_SSID failed, status=%u\n", status);
+			device_printf(sc->dev, "SET_SSID failed, status=%u\n",
+			    status);
 			sc->link_up = 0;
 			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		}
@@ -264,7 +258,8 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	memcpy(join.bssid, sr->bssid, 6);
 	join.chanspec_num = htole32(0);
 
-	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
+	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join,
+	    sizeof(join));
 	if (error != 0)
 		return error;
 
@@ -298,7 +293,8 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	ejoin.scan.nprobes = htole32(BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS /
 	    BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS);
 	ejoin.scan.active_time = htole32(BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS);
-	ejoin.scan.passive_time = htole32(BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS);
+	ejoin.scan.passive_time = htole32(
+	    BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS);
 	ejoin.scan.home_time = htole32(-1);
 	memcpy(ejoin.assoc.bssid, ni->ni_bssid, 6);
 	ejoin.assoc.chanspec_num = htole32(1);
@@ -315,10 +311,12 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-	memcpy(join.bssid, ni->ni_bssid, 6);
+	/* broadcast BSSID lets firmware pick from its scan cache */
+	memset(join.bssid, 0xff, 6);
 	join.chanspec_num = htole32(0);
 
-	return brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join, sizeof(join));
+	return brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join,
+	    sizeof(join));
 }
 
 static int
@@ -342,7 +340,8 @@ brcmf_setup_events(struct brcmf_softc *sc)
 	evmask[BRCMF_E_DISASSOC / 8] |= 1 << (BRCMF_E_DISASSOC % 8);
 	evmask[BRCMF_E_DISASSOC_IND / 8] |= 1 << (BRCMF_E_DISASSOC_IND % 8);
 
-	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask, sizeof(evmask));
+	error = brcmf_fil_iovar_data_set(sc, "event_msgs", evmask,
+	    sizeof(evmask));
 	if (error != 0)
 		device_printf(sc->dev, "failed to set event_msgs: %d\n", error);
 
@@ -362,8 +361,8 @@ brcmf_get_macaddr(struct brcmf_softc *sc)
 		return (error);
 	}
 	device_printf(sc->dev, "MAC address %02x:%02x:%02x:%02x:%02x:%02x\n",
-	    sc->macaddr[0], sc->macaddr[1], sc->macaddr[2],
-	    sc->macaddr[3], sc->macaddr[4], sc->macaddr[5]);
+	    sc->macaddr[0], sc->macaddr[1], sc->macaddr[2], sc->macaddr[3],
+	    sc->macaddr[4], sc->macaddr[5]);
 
 	return (0);
 }
@@ -384,10 +383,8 @@ brcmf_restart_task(void *arg, int pending)
 
 	IEEE80211_LOCK(ic);
 	vap = TAILQ_FIRST(&ic->ic_vaps);
-	if (vap != NULL &&
-	    vap->iv_state == IEEE80211_S_INIT &&
-	    (if_getflags(vap->iv_ifp) & IFF_UP) &&
-	    ic->ic_nrunning == 0)
+	if (vap != NULL && vap->iv_state == IEEE80211_S_INIT &&
+	    (if_getflags(vap->iv_ifp) & IFF_UP) && ic->ic_nrunning == 0)
 		ieee80211_start_locked(vap);
 	IEEE80211_UNLOCK(ic);
 }
@@ -418,8 +415,7 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			memset(&scbval, 0, sizeof(scbval));
 			scbval.val = htole32(3); /* DEAUTH_LEAVING */
 			memcpy(scbval.ea, sc->join_bssid, 6);
-			brcmf_fil_cmd_data_set(sc,
-			    52 /* BRCMF_C_DISASSOC */,
+			brcmf_fil_cmd_data_set(sc, 52 /* BRCMF_C_DISASSOC */,
 			    &scbval, sizeof(scbval));
 			sc->link_up = 0;
 		}
@@ -454,9 +450,10 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 			/*
 			 * Push RSN/WPA IE to firmware. wpa_supplicant delivers
-			 * this via IEEE80211_IOC_APPIE before triggering S_AUTH,
-			 * so iv_rsn_ie / iv_wpa_ie should be populated here.
-			 * Firmware uses wpaie for auth/assoc frame construction.
+			 * this via IEEE80211_IOC_APPIE before triggering
+			 * S_AUTH, so iv_rsn_ie / iv_wpa_ie should be populated
+			 * here. Firmware uses wpaie for auth/assoc frame
+			 * construction.
 			 */
 			BRCMF_DBG(sc, "auth: rsn_ie=%p wpa_ie=%p\n",
 			    vap->iv_rsn_ie, vap->iv_wpa_ie);
@@ -506,8 +503,8 @@ brcmf_vap_create(struct ieee80211com *ic, const char name[IFNAMSIZ], int unit,
 	bvap = malloc(sizeof(*bvap), M_80211_VAP, M_WAITOK | M_ZERO);
 	vap = &bvap->vap;
 
-	if (ieee80211_vap_setup(ic, vap, name, unit, opmode, flags,
-	    bssid) != 0) {
+	if (ieee80211_vap_setup(ic, vap, name, unit, opmode, flags, bssid) !=
+	    0) {
 		free(bvap, M_80211_VAP);
 		return (NULL);
 	}
@@ -567,8 +564,7 @@ brcmf_drain_scan_tasks(struct ieee80211com *ic)
 	IEEE80211_LOCK(ic);
 	priv->iflags |= 0x0018; /* ISCAN_CANCEL | ISCAN_ABORT */
 	if (priv->iflags & 0x0020 /* ISCAN_RUNNING */) {
-		taskqueue_cancel_timeout(ic->ic_tq, &priv->scan_curchan,
-		    NULL);
+		taskqueue_cancel_timeout(ic->ic_tq, &priv->scan_curchan, NULL);
 		taskqueue_enqueue_timeout(ic->ic_tq, &priv->scan_curchan, 0);
 	}
 	IEEE80211_UNLOCK(ic);
@@ -605,12 +601,12 @@ brcmf_parent(struct ieee80211com *ic)
 			brcmf_fil_bss_up(sc);
 
 			val = htole32(1);
-			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
-			    &val, sizeof(val));
+			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA, &val,
+			    sizeof(val));
 
 			val = htole32(0);
-			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
-			    &val, sizeof(val));
+			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM, &val,
+			    sizeof(val));
 
 			/* BCM4350 note: spec default is mpc=1, but we use 0
 			 * to avoid ~7ms wake latency after idle. */
@@ -634,8 +630,7 @@ brcmf_parent(struct ieee80211com *ic)
 			memset(&scbval, 0, sizeof(scbval));
 			scbval.val = htole32(3); /* DEAUTH_LEAVING */
 			memcpy(scbval.ea, sc->join_bssid, 6);
-			brcmf_fil_cmd_data_set(sc,
-			    52 /* BRCMF_C_DISASSOC */,
+			brcmf_fil_cmd_data_set(sc, 52 /* BRCMF_C_DISASSOC */,
 			    &scbval, sizeof(scbval));
 			sc->link_up = 0;
 		}
@@ -775,11 +770,12 @@ brcmf_getradiocaps(struct ieee80211com *ic, int maxchans, int *nchans,
 		setbit(bands, IEEE80211_MODE_VHT_5GHZ);
 
 	ieee80211_add_channel_list_5ghz(chans, maxchans, nchans,
-	    (const uint8_t[]){36, 40, 44, 48, 52, 56, 60, 64,
-	    100, 104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144,
-	    149, 153, 157, 161, 165}, 25, bands,
+	    (const uint8_t[]) { 36, 40, 44, 48, 52, 56, 60, 64, 100, 104, 108,
+		112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153, 157, 161,
+		165 },
+	    25, bands,
 	    has_vht ? (NET80211_CBW_FLAG_HT40 | NET80211_CBW_FLAG_VHT80) :
-	    NET80211_CBW_FLAG_HT40);
+		      NET80211_CBW_FLAG_HT40);
 }
 
 int
@@ -795,8 +791,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	/* Determine chanspec encoding: D11N (io_type=1) or D11AC (io_type=2) */
 	{
 		uint32_t revinfo = 0;
-		if (brcmf_fil_cmd_data_get(sc, 1 /* C_GET_VERSION */,
-		    &revinfo, sizeof(revinfo)) == 0)
+		if (brcmf_fil_cmd_data_get(sc, 1 /* C_GET_VERSION */, &revinfo,
+			sizeof(revinfo)) == 0)
 			sc->io_type = le32toh(revinfo);
 		if (sc->io_type != BRCMF_IO_TYPE_D11N)
 			sc->io_type = BRCMF_IO_TYPE_D11AC;
@@ -811,7 +807,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 		memset(caps, 0, sizeof(caps));
 		if (brcmf_fil_iovar_data_get(sc, "cap", caps,
-		    sizeof(caps) - 1) == 0) {
+			sizeof(caps) - 1) == 0) {
 			BRCMF_DBG(sc, "cap: %s\n", caps);
 			if (strstr(caps, "mbss") != NULL)
 				sc->feat_mbss = 1;
@@ -820,7 +816,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			/* "sae " with trailing space to avoid false matches */
 			if (strstr(caps, "sae ") != NULL ||
 			    (strlen(caps) >= 3 &&
-			     strcmp(caps + strlen(caps) - 3, "sae") == 0))
+				strcmp(caps + strlen(caps) - 3, "sae") == 0))
 				sc->feat_sae = 1;
 		}
 
@@ -838,15 +834,15 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	BRCMF_DBG(sc, "bss_down: %d\n", error);
 	{
 		uint32_t val = htole32(1);
-		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
-		    &val, sizeof(val));
+		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA, &val,
+		    sizeof(val));
 	}
 
 	/* Roam parameters */
 	brcmf_fil_cmd_data_set(sc, 55 /* C_SET_ROAM_TRIGGER */,
-	    &(int32_t){htole32(-75)}, sizeof(int32_t));
+	    &(int32_t) { htole32(-75) }, sizeof(int32_t));
 	brcmf_fil_cmd_data_set(sc, 57 /* C_SET_ROAM_DELTA */,
-	    &(uint32_t){htole32(20)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(20) }, sizeof(uint32_t));
 
 	/* Set regulatory domain so firmware enables 5GHz channels */
 	{
@@ -856,14 +852,15 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			char ccode[4];
 		} __packed country;
 		memset(&country, 0, sizeof(country));
-		strlcpy(country.country_abbrev, "DE", sizeof(country.country_abbrev));
+		strlcpy(country.country_abbrev, "DE",
+		    sizeof(country.country_abbrev));
 		strlcpy(country.ccode, "DE", sizeof(country.ccode));
 		country.rev = htole32(0);
-		error = brcmf_fil_iovar_data_set(sc, "country",
-		    &country, sizeof(country));
+		error = brcmf_fil_iovar_data_set(sc, "country", &country,
+		    sizeof(country));
 		if (error != 0)
-			device_printf(sc->dev,
-			    "failed to set country: %d\n", error);
+			device_printf(sc->dev, "failed to set country: %d\n",
+			    error);
 	}
 
 	error = brcmf_fil_bss_up(sc);
@@ -874,17 +871,17 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	/* Init commands matching spec dongle init sequence */
 	brcmf_fil_cmd_data_set(sc, 86 /* C_SET_PM */,
-	    &(uint32_t){htole32(0)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(0) }, sizeof(uint32_t));
 	brcmf_fil_cmd_data_set(sc, 185 /* C_SET_SCAN_CHANNEL_TIME */,
-	    &(uint32_t){htole32(40)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(40) }, sizeof(uint32_t));
 	brcmf_fil_cmd_data_set(sc, 187 /* C_SET_SCAN_UNASSOC_TIME */,
-	    &(uint32_t){htole32(40)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(40) }, sizeof(uint32_t));
 	brcmf_fil_cmd_data_set(sc, 258 /* C_SET_SCAN_PASSIVE_TIME */,
-	    &(uint32_t){htole32(120)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(120) }, sizeof(uint32_t));
 	brcmf_fil_iovar_int_set(sc, "bcn_timeout", 4);
 	/* Frameburst for throughput; firmware ignores if unsupported */
 	brcmf_fil_cmd_data_set(sc, 219 /* C_SET_FAKEFRAG */,
-	    &(uint32_t){htole32(1)}, sizeof(uint32_t));
+	    &(uint32_t) { htole32(1) }, sizeof(uint32_t));
 	/* RSSI-based join preference */
 	{
 		struct {
@@ -893,8 +890,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			uint8_t rssi_gain;
 			uint8_t band;
 		} __packed join_pref = { 1 /* RSSI */, 2, 0, 0 };
-		brcmf_fil_iovar_data_set(sc, "join_pref",
-		    &join_pref, sizeof(join_pref));
+		brcmf_fil_iovar_data_set(sc, "join_pref", &join_pref,
+		    sizeof(join_pref));
 	}
 
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
@@ -909,33 +906,22 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	ic->ic_phytype = IEEE80211_T_OFDM;
 	ic->ic_opmode = IEEE80211_M_STA;
 
-	ic->ic_caps =
-	    IEEE80211_C_STA |
-	    IEEE80211_C_WPA |
-	    IEEE80211_C_SHPREAMBLE |
-	    IEEE80211_C_SHSLOT |
-	    IEEE80211_C_WME;
+	ic->ic_caps = IEEE80211_C_STA | IEEE80211_C_WPA |
+	    IEEE80211_C_SHPREAMBLE | IEEE80211_C_SHSLOT | IEEE80211_C_WME;
 
-	ic->ic_cryptocaps =
-	    IEEE80211_CRYPTO_WEP |
-	    IEEE80211_CRYPTO_TKIP |
+	ic->ic_cryptocaps = IEEE80211_CRYPTO_WEP | IEEE80211_CRYPTO_TKIP |
 	    IEEE80211_CRYPTO_AES_CCM;
 	ic->ic_flags_ext |= IEEE80211_FEXT_SCAN_OFFLOAD;
 
-	ic->ic_htcaps =
-	    IEEE80211_HTCAP_CHWIDTH40 |
-	    IEEE80211_HTCAP_SMPS_OFF |
-	    IEEE80211_HTCAP_SHORTGI20 |
-	    IEEE80211_HTCAP_SHORTGI40 |
-	    IEEE80211_HTCAP_DSSSCCK40 |
-	    IEEE80211_HTCAP_MAXAMSDU_3839;
+	ic->ic_htcaps = IEEE80211_HTCAP_CHWIDTH40 | IEEE80211_HTCAP_SMPS_OFF |
+	    IEEE80211_HTCAP_SHORTGI20 | IEEE80211_HTCAP_SHORTGI40 |
+	    IEEE80211_HTCAP_DSSSCCK40 | IEEE80211_HTCAP_MAXAMSDU_3839;
 
 	/* VHT only on BCM4350 (2SS, MCS 0-9, SGI80) */
 	if (sc->chip == 0x4350) {
 		ic->ic_vht_cap.vht_cap_info =
 		    IEEE80211_VHTCAP_MAX_MPDU_LENGTH_3895 |
-		    IEEE80211_VHTCAP_SHORT_GI_80 |
-		    IEEE80211_VHTCAP_RXLDPC;
+		    IEEE80211_VHTCAP_SHORT_GI_80 | IEEE80211_VHTCAP_RXLDPC;
 		ic->ic_vht_cap.supp_mcs.rx_mcs_map = htole16(
 		    IEEE80211_VHT_MCS_SUPPORT_0_9 |
 		    (IEEE80211_VHT_MCS_SUPPORT_0_9 << 2) |
