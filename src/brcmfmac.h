@@ -159,6 +159,8 @@ struct brcmf_softc {
 	uint8_t sdpcm_tx_seq;		/* SDPCM TX sequence number */
 	uint8_t sdpcm_rx_seq;		/* SDPCM last received seq */
 	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
+	uint8_t sdpcm_fcmask;		/* per-priority flow-control bitmap */
+	int sdpcm_flowctl;		/* firmware flow-control active */
 	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
 	uint8_t sdpcm_txbuf[2048];
 	/* SDPCM ioctl buffers — too large for 16KB kernel stack */
@@ -167,10 +169,16 @@ struct brcmf_softc {
 	uint8_t sdpcm_ioctl_rx[BRCMF_SDPCM_CTL_BUFSZ];
 	uint8_t sdpcm_data_tx[2048];	/* BCDC+payload for brcmf_sdpcm_tx */
 	uint8_t sdpcm_poll_rx[BRCMF_SDPCM_CTL_BUFSZ]; /* RX poll buffer */
-	volatile u_int sdpcm_rx_busy;	/* atomic: ioctl or rx_task owns F2 */
+	uint16_t sdpcm_ioctl_reqid;	/* outstanding control request ID */
+	uint16_t sdpcm_ioctl_tx_len;	/* pending control frame length */
+	int sdpcm_ioctl_waiting;	/* waiting for control response */
+	int sdpcm_ioctl_tx_pending;	/* rx_task must send control frame */
+	int sdpcm_worker_mode;	/* control responses delivered by rx_task */
+	volatile u_int sdpcm_rx_busy;	/* atomic: rx_task owns F2 */
 	int sdpcm_poll_started;		/* guard for stop_poll */
 	struct callout sdpcm_callout;	/* RX poll callout (50ms) */
 	struct task sdpcm_rx_task;	/* RX processing task */
+	struct taskqueue *sdpcm_tq;	/* dedicated taskqueue for rx_task */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
@@ -390,6 +398,7 @@ void brcmf_sdpcm_process_event(struct brcmf_softc *sc,
     uint8_t *data, uint16_t len);
 void brcmf_sdpcm_process_rx(struct brcmf_softc *sc,
     uint8_t *data, uint16_t len);
+void brcmf_sdpcm_init(struct brcmf_softc *sc);
 void brcmf_sdpcm_start_poll(struct brcmf_softc *sc);
 void brcmf_sdpcm_stop_poll(struct brcmf_softc *sc);
 void brcmf_sdpcm_cleanup(struct brcmf_softc *sc);

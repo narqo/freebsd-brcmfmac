@@ -1,5 +1,56 @@
 # Investigations
 
+## 25 Mar 2026: sdio-auth-ref audit — root cause of AUTH timeout
+
+Systematic audit of `docs/sdio-auth-ref/` (authoritative Linux brcmfmac
+SDIO reference) against the FreeBSD source code. Found 12 deviations,
+3 critical. Full findings in `docs/00-progress.md` M-S6.
+
+### Critical findings
+
+1. **`proptxstatus_mode=1` actively harmful.** `cfg.c` sends this iovar
+   on SDIO attach. The ref doc is explicit: Linux does NOT enable
+   proptxstatus on the default SDIO path (`fcmode=NONE`,
+   `always_use_fws_queue` not set). Sending it tells the firmware to
+   expect TLV signaling metadata that the host never processes.
+
+2. **TX credits not enforced.** `sdpcm_max_seq` is recorded from byte 9
+   of every RX SDPCM header but `brcmf_sdpcm_send` never checks it.
+   The ref doc states the check is mandatory: `((uint8_t)(tx_max -
+   tx_seq)) & 0x80` must be zero before any transmission.
+
+3. **No integrated DPC loop.** Linux runs all SDIO bus I/O (interrupt
+   status, mailbox, RX, control TX, data TX) in one thread. The
+   FreeBSD code splits these across a 50ms callout, a taskqueue task,
+   inline ioctl polling, and direct TX calls.
+
+### Other findings
+
+- No BCDC `init_done` / fws_attach (Linux always creates fws object,
+  even in reduced `avoid_queueing` mode on default SDIO)
+- Attach ordering wrong (poll starts after cfg_attach, no bus-state-UP)
+- `tlv=0` and `ampdu_hostreorder=1` sent unnecessarily
+- Flow-control bitmap (SDPCM byte 8) never read
+- Mailbox data content not interpreted (only read + acked)
+- No error recovery (frame abort, NAK, rxskip)
+- F2 block size 64 vs Linux's 512
+
+### Method
+
+Read both ref docs completely, then checked every claim against
+`src/sdio.c`, `src/sdpcm.c`, `src/main.c`, `src/cfg.c`, and
+`src/brcmfmac.h`. Documented each deviation with the exact code
+location and the ref doc section that contradicts it.
+
+### Conclusion
+
+The AUTH timeout is caused by SDIO transport/runtime incompleteness,
+not by net80211, WPA, or channel selection issues. The `proptxstatus_mode=1`
+iovar is the most likely single-change fix candidate — it actively
+changes firmware behavior in a way the host can't support.
+
+---
+
 ## 22 Mar 2026: RPi4 net80211 attach success, escan BCME_UNSUPPORTED
 
 ### What works

@@ -210,6 +210,7 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 static int brcmf_sdio_probe(device_t dev);
 static int brcmf_sdio_bus_attach(device_t dev);
 static int brcmf_sdio_bus_detach(device_t dev);
+static int brcmf_sdio_bus_start(struct brcmf_softc *sc);
 
 static device_method_t brcmf_sdio_methods[] = {
 	DEVMETHOD(device_probe, brcmf_sdio_probe),
@@ -226,6 +227,42 @@ static driver_t brcmf_sdio_driver = {
 
 DRIVER_MODULE(if_brcmfmac, sdiob, brcmf_sdio_driver, NULL, NULL);
 MODULE_DEPEND(if_brcmfmac, sdiob, 1, 1, 1);
+
+static int
+brcmf_sdio_bus_start(struct brcmf_softc *sc)
+{
+	char ver[128];
+	char caps[256];
+	int error;
+
+	memset(ver, 0, sizeof(ver));
+	error = brcmf_fil_iovar_data_get(sc, "ver", ver, sizeof(ver) - 1);
+	if (error != 0) {
+		device_printf(sc->dev, "firmware ver ioctl failed: %d\n", error);
+		return (error);
+	}
+	{
+		char *nl = strchr(ver, '\n');
+		if (nl != NULL)
+			*nl = '\0';
+		device_printf(sc->dev, "firmware: %s\n", ver);
+	}
+
+	memset(caps, 0, sizeof(caps));
+	error = brcmf_fil_iovar_data_get(sc, "cap", caps, sizeof(caps) - 1);
+	if (error == 0)
+		device_printf(sc->dev, "cap: %s\n", caps);
+	else
+		device_printf(sc->dev, "cap iovar failed: %d\n", error);
+
+	/* Linux disables glom on SDIO during preinit. We do not support
+	 * glom descriptors yet; leaving it enabled can desynchronize F2 RX. */
+	brcmf_fil_cmd_data_set(sc, 89 /* C_SET_GLOM */,
+	    &(uint32_t){ htole32(0) }, sizeof(uint32_t));
+
+	brcmf_sdio_load_clm(sc);
+	return (0);
+}
 
 static int
 brcmf_sdio_probe(device_t dev)
@@ -294,48 +331,26 @@ brcmf_sdio_bus_attach(device_t dev)
 	if (error != 0)
 		goto fail;
 
-	/* Test F2 data path with firmware version ioctl */
-	{
-		char ver[128];
-		memset(ver, 0, sizeof(ver));
-		error = brcmf_fil_iovar_data_get(sc, "ver", ver,
-		    sizeof(ver) - 1);
-		if (error == 0) {
-			char *nl = strchr(ver, '\n');
-			if (nl)
-				*nl = '\0';
-			device_printf(sc->dev, "firmware: %s\n", ver);
-		} else {
-			device_printf(sc->dev,
-			    "firmware ver ioctl failed: %d\n", error);
-			goto fail;
-		}
-	}
+	brcmf_sdpcm_init(sc);
+	sc->sdpcm_worker_mode = 1;
 
-	/* Diagnostic: check firmware capabilities before cfg_attach */
-	{
-		char caps[256];
-		memset(caps, 0, sizeof(caps));
-		error = brcmf_fil_iovar_data_get(sc, "cap", caps,
-		    sizeof(caps) - 1);
-		if (error == 0)
-			device_printf(sc->dev, "cap: %s\n", caps);
-		else
-			device_printf(sc->dev, "cap iovar failed: %d\n", error);
-	}
+	error = brcmf_sdio_bus_start(sc);
+	if (error != 0)
+		goto fail;
 
-	/* Download CLM blob if available */
-	brcmf_sdio_load_clm(sc);
+	/* Start RX poll before cfg_attach so the runtime is active
+	 * during dongle init ioctls. Matches spec: bus preinit runs
+	 * before cfg attach. */
+	brcmf_sdpcm_start_poll(sc);
 
 	error = brcmf_cfg_attach(sc);
 	if (error != 0)
 		goto fail;
 
-	brcmf_sdpcm_start_poll(sc);
-
 	return (0);
 
 fail:
+	brcmf_sdpcm_stop_poll(sc);
 	brcmf_sdio_detach(sc);
 	return (error);
 }
@@ -347,6 +362,12 @@ brcmf_sdio_bus_detach(device_t dev)
 
 	sc = device_get_softc(dev);
 	sc->detaching = 1;
+
+	/* Bring firmware down before stopping poll/cleanup */
+	if (sc->cfg_attached) {
+		brcmf_fil_bss_down(sc);
+	}
+
 	sc->fw_dead = 1;
 
 	/* Stop RX poll before tearing down net80211 — the poll task

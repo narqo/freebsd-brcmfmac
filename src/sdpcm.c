@@ -78,6 +78,15 @@
 #define SD_REG_TOSBMAILBOX	0x040
 #define SD_REG_TOHOSTMAILBOXDATA 0x044
 
+/* To-host mailbox data bits */
+#define SMB_NAK			0x01
+#define SMB_INT_ACK		0x02
+#define SMB_USE_OOB		0x04
+#define SMB_DEV_INT		0x08
+#define SMB_FW_HALT		0x10
+#define SMB_DATA_VERSION_MASK	0x00FF0000
+#define SMB_DATA_VERSION_SHIFT	16
+
 /* F2 transfer sizes */
 #define SDPCM_MAX_FRAME_SIZE	2048
 /* Round frames to F2 block size so sdiob uses block-mode CMD53.
@@ -123,6 +132,30 @@ struct bcdc_dcmd {
 };
 
 /*
+ * Check whether the SDPCM transmit window allows sending.
+ * Returns true if transmission is permitted.
+ */
+static int
+brcmf_sdpcm_tx_ok(struct brcmf_softc *sc, uint8_t channel)
+{
+	uint8_t delta;
+
+	delta = (uint8_t)(sc->sdpcm_max_seq - sc->sdpcm_tx_seq);
+	if (delta & 0x80)
+		return (0);
+
+	/* Reserve 2 credits for control when sending data */
+	if (channel == SDPCM_DATA_CHANNEL && delta < 3)
+		return (0);
+
+	/* Firmware flow-control: block data when FC is asserted */
+	if (channel == SDPCM_DATA_CHANNEL && sc->sdpcm_flowctl)
+		return (0);
+
+	return (1);
+}
+
+/*
  * Build and send an SDPCM frame on F2.
  */
 static int
@@ -132,6 +165,9 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	uint8_t *frame;
 	uint16_t flen;
 	int error;
+
+	if (!brcmf_sdpcm_tx_ok(sc, channel))
+		return (ENOBUFS);
 
 	flen = SDPCM_HDRLEN + len;
 	if (flen > SDPCM_MAX_FRAME_SIZE)
@@ -162,10 +198,17 @@ brcmf_sdpcm_send(struct brcmf_softc *sc, uint8_t channel,
 	error = SDIO_WRITE_EXTENDED(
 	    device_get_parent(sc->sdio_func2->dev),
 	    sc->sdio_func2->fn, 0x8000, txlen, frame, false);
-	if (error != 0)
+	if (error != 0) {
+		uint8_t iordy = 0, ioex = 0;
+		int rerr;
+		ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &rerr);
+		iordy = sdio_f0_read_1(sc->sdio_func1, 0x03, &rerr);
 		device_printf(sc->dev,
-		    "F2 write failed: err=%d ch=%d flen=%u txlen=%u\n",
-		    error, channel, flen, txlen);
+		    "F2 write failed: err=%d ch=%d flen=%u txlen=%u "
+		    "blksz=%u IOEx=0x%02x IORdy=0x%02x\n",
+		    error, channel, flen, txlen,
+		    sc->sdio_func2->cur_blksize, ioex, iordy);
+	}
 
 	return (error);
 }
@@ -201,10 +244,20 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 			uint32_t mbox = brcmf_sdio_bp_read32(sc,
 			    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
 			BRCMF_DBG(sc, "mailbox: 0x%08x\n", mbox);
-			/* Ack by writing to tosbmailbox */
 			brcmf_sdio_bp_write32(sc,
 			    sc->sdiocore.base + SD_REG_TOSBMAILBOX,
 			    I_SMB_INT_ACK);
+			if (mbox & SMB_FW_HALT) {
+				device_printf(sc->dev,
+				    "firmware halted (mbox=0x%08x)\n", mbox);
+				sc->fw_dead = 1;
+			}
+		}
+		/* Update per-priority flow-control from FC_CHANGE */
+		if (intst & I_HMB_FC_CHANGE) {
+			uint32_t newfc = brcmf_sdio_bp_read32(sc,
+			    sc->sdiocore.base + SD_REG_INTSTATUS);
+			sc->sdpcm_flowctl = (newfc & I_HMB_FC_STATE) != 0;
 		}
 	}
 
@@ -234,30 +287,29 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 		}
 	}
 
-	/* If frame is larger than 64 bytes, fetch the exact remainder. */
+	/* If frame is larger than 64 bytes, fetch the exact remainder.
+	 * Use 64-byte reads throughout. Larger multiblock CMD53 reads on
+	 * BCM2711's Arasan controller are the failure mode that produced
+	 * repeated controller timeouts (e.g. 576/1152-byte F2 reads) and
+	 * eventual CAM queue corruption. */
 	{
 		uint16_t peek_flen = buf[0] | (buf[1] << 8);
 		if (peek_flen > 64 && peek_flen <= bufsz) {
 			uint32_t remain = peek_flen - 64;
-			uint32_t blk = remain & ~63U;
-			uint32_t tail = remain - blk;
 			uint32_t off = 64;
 
-			if (blk > 0) {
+			while (remain > 0) {
+				uint32_t xfer = remain > 64 ? 64 : remain;
+
 				error = SDIO_READ_EXTENDED(
 				    device_get_parent(sc->sdio_func2->dev),
-				    sc->sdio_func2->fn, 0x8000, blk,
+				    sc->sdio_func2->fn, 0x8000, xfer,
 				    buf + off, false);
-				off += blk;
+				off += xfer;
+				remain -= xfer;
+				/* ignore error on follow-up reads if we have
+				 * enough data for the frame */
 			}
-			if (tail > 0) {
-				error = SDIO_READ_EXTENDED(
-				    device_get_parent(sc->sdio_func2->dev),
-				    sc->sdio_func2->fn, 0x8000, tail,
-				    buf + off, false);
-			}
-			/* ignore error on follow-up reads if we have
-			 * enough data for the frame */
 		}
 	}
 
@@ -284,9 +336,45 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 
 	*payload_out = buf + data_offset;
 	*datalen_out = flen - data_offset;
+	sc->sdpcm_fcmask = buf[8];
 	sc->sdpcm_max_seq = buf[9];
 
 	return (0);
+}
+
+static void
+brcmf_sdpcm_process_control(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
+{
+	struct bcdc_dcmd *resp;
+	uint32_t rflags, rlen;
+	uint16_t rid;
+	int32_t fwstatus;
+
+	if (len < BCDC_DCMD_HDRLEN)
+		return;
+
+	resp = (struct bcdc_dcmd *)data;
+	rflags = le32toh(resp->flags);
+	rid = (rflags & BCDC_DCMD_ID_MASK) >> BCDC_DCMD_ID_SHIFT;
+	fwstatus = (int32_t)le32toh(resp->status);
+	rlen = le32toh(resp->len);
+	if (rlen > len - BCDC_DCMD_HDRLEN)
+		rlen = len - BCDC_DCMD_HDRLEN;
+
+	mtx_lock(&sc->ioctl_mtx);
+	if (!sc->sdpcm_ioctl_waiting || rid != sc->sdpcm_ioctl_reqid) {
+		mtx_unlock(&sc->ioctl_mtx);
+		return;
+	}
+
+	sc->ioctl_status = (rflags & BCDC_DCMD_ERROR) ? fwstatus : 0;
+	sc->ioctl_resp_len = rlen;
+	if (rlen > 0)
+		memcpy(sc->sdpcm_ioctl_rx, data + BCDC_DCMD_HDRLEN, rlen);
+	sc->ioctl_completed = 1;
+	sc->sdpcm_ioctl_waiting = 0;
+	wakeup(&sc->ioctl_completed);
+	mtx_unlock(&sc->ioctl_mtx);
 }
 
 /*
@@ -298,32 +386,149 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
     void *buf, uint32_t len, uint32_t *resp_len)
 {
 	uint8_t *txbuf = sc->sdpcm_ioctl_tx;
-	uint8_t *rxbuf = sc->sdpcm_ioctl_rx;
 	struct bcdc_dcmd *dcmd;
 	uint16_t reqid;
 	uint32_t flags;
-	int error, i;
+	int error, timeout;
 	int is_set;
 
 	if (sc->fw_dead)
 		return (ENXIO);
 
+	if (!sc->sdpcm_worker_mode) {
+		uint8_t *rxbuf = sc->sdpcm_ioctl_rx;
+		int i;
+		int ctrl_frames = 0, event_frames = 0, data_frames = 0;
+		int recv_errors = 0, recv_empty = 0;
+
+		mtx_lock(&sc->ioctl_mtx);
+		while (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
+			DELAY(100);
+
+		reqid = sc->sdpcm_reqid++;
+		is_set = (cmd != 262);
+		if (cmd == 263)
+			is_set = 1;
+		else if (cmd == 262)
+			is_set = 0;
+
+		dcmd = (struct bcdc_dcmd *)txbuf;
+		dcmd->cmd = htole32(cmd);
+		dcmd->len = htole32(len);
+		flags = (reqid << BCDC_DCMD_ID_SHIFT);
+		if (is_set)
+			flags |= BCDC_DCMD_SET;
+		dcmd->flags = htole32(flags);
+		dcmd->status = 0;
+
+		if (buf != NULL && len > 0) {
+			if (len > BRCMF_SDPCM_CTL_BUFSZ - BCDC_DCMD_HDRLEN)
+				len = BRCMF_SDPCM_CTL_BUFSZ - BCDC_DCMD_HDRLEN;
+			memcpy(txbuf + BCDC_DCMD_HDRLEN, buf, len);
+		}
+
+		/* Try to send; if out of TX credits, drain RX to get more */
+		for (i = 0; i < 50; i++) {
+			error = brcmf_sdpcm_send(sc, SDPCM_CONTROL_CHANNEL,
+			    txbuf, BCDC_DCMD_HDRLEN + len);
+			if (error != ENOBUFS)
+				break;
+			{
+				uint16_t rch;
+				uint16_t rdl;
+				uint8_t *rpay;
+				brcmf_sdpcm_recv(sc, rxbuf,
+				    BRCMF_SDPCM_CTL_BUFSZ,
+				    &rch, &rdl, &rpay);
+			}
+			pause_sbt("brcmtx", mstosbt(10), 0, 0);
+		}
+		if (error != 0) {
+			device_printf(sc->dev, "SDPCM send failed: %d\n", error);
+			atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+			mtx_unlock(&sc->ioctl_mtx);
+			return (error);
+		}
+
+		for (i = 0; i < BRCMF_SDPCM_IOCTL_TIMEOUT_MS / 10; i++) {
+			uint16_t chan, dlen;
+			uint8_t *payload;
+
+			pause_sbt("brcmio", mstosbt(10), 0, 0);
+			error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
+			    &chan, &dlen, &payload);
+			if (error == EAGAIN) {
+				recv_empty++;
+				continue;
+			}
+			if (error != 0) {
+				recv_errors++;
+				continue;
+			}
+			if (chan == SDPCM_CONTROL_CHANNEL && dlen >= BCDC_DCMD_HDRLEN) {
+				struct bcdc_dcmd *resp = (struct bcdc_dcmd *)payload;
+				uint32_t rflags = le32toh(resp->flags);
+				uint16_t rid = (rflags & BCDC_DCMD_ID_MASK) >>
+				    BCDC_DCMD_ID_SHIFT;
+				uint32_t rlen;
+
+				ctrl_frames++;
+				if (rid != reqid)
+					continue;
+				rlen = le32toh(resp->len);
+				if (rlen > dlen - BCDC_DCMD_HDRLEN)
+					rlen = dlen - BCDC_DCMD_HDRLEN;
+				if (resp_len != NULL)
+					*resp_len = rlen;
+				if (rflags & BCDC_DCMD_ERROR) {
+					int32_t fwstatus = (int32_t)le32toh(resp->status);
+					BRCMF_DBG(sc, "ioctl cmd=0x%x fwerr=%d\n", cmd,
+					    fwstatus);
+					atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+					mtx_unlock(&sc->ioctl_mtx);
+					return (EIO);
+				}
+				if (buf != NULL && rlen > 0) {
+					if (rlen > len)
+						rlen = len;
+					memcpy(buf, payload + BCDC_DCMD_HDRLEN, rlen);
+				}
+				atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+				mtx_unlock(&sc->ioctl_mtx);
+				return (0);
+			}
+			if (chan == SDPCM_EVENT_CHANNEL) {
+				event_frames++;
+				brcmf_sdpcm_process_event(sc, payload, dlen);
+			} else if (chan == SDPCM_DATA_CHANNEL) {
+				data_frames++;
+				brcmf_sdpcm_process_rx(sc, payload, dlen);
+			}
+		}
+
+		{
+			uint32_t intst = 0;
+			if (sc->sdiocore.base != 0)
+				intst = brcmf_sdio_bp_read32(sc,
+				    sc->sdiocore.base + SD_REG_INTSTATUS);
+			device_printf(sc->dev,
+			    "IOCTL timeout cmd=0x%x intst=0x%08x ctrl=%d evt=%d data=%d empty=%d err=%d\n",
+			    cmd, intst, ctrl_frames, event_frames, data_frames,
+			    recv_empty, recv_errors);
+		}
+		atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+		mtx_unlock(&sc->ioctl_mtx);
+		return (ETIMEDOUT);
+	}
+
 	mtx_lock(&sc->ioctl_mtx);
-	/* Block RX poll task from reading F2 while ioctl is in progress */
-	while (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
-		DELAY(100);
-
 	reqid = sc->sdpcm_reqid++;
-	is_set = (cmd != 262); /* 262 = C_GET_VAR; everything else is a set or non-var cmd */
-
-	/* For C_GET_VAR (262), it's a query. For C_SET_VAR (263), it's a set.
-	 * For other commands, check if buf has input data. */
+	is_set = (cmd != 262);
 	if (cmd == 263)
 		is_set = 1;
 	else if (cmd == 262)
 		is_set = 0;
 
-	/* Build BCDC header */
 	dcmd = (struct bcdc_dcmd *)txbuf;
 	dcmd->cmd = htole32(cmd);
 	dcmd->len = htole32(len);
@@ -339,99 +544,54 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 		memcpy(txbuf + BCDC_DCMD_HDRLEN, buf, len);
 	}
 
-	error = brcmf_sdpcm_send(sc, SDPCM_CONTROL_CHANNEL,
-	    txbuf, BCDC_DCMD_HDRLEN + len);
-	if (error != 0) {
-		device_printf(sc->dev, "SDPCM send failed: %d\n", error);
-		atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+	sc->sdpcm_ioctl_reqid = reqid;
+	sc->sdpcm_ioctl_waiting = 1;
+	sc->ioctl_completed = 0;
+	sc->ioctl_status = 0;
+	sc->ioctl_resp_len = 0;
+
+	sc->sdpcm_ioctl_tx_len = BCDC_DCMD_HDRLEN + len;
+	sc->sdpcm_ioctl_tx_pending = 1;
+
+	timeout = BRCMF_SDPCM_IOCTL_TIMEOUT_MS * hz / 1000;
+	while (!sc->ioctl_completed && !sc->fw_dead && !sc->detaching &&
+	    timeout > 0) {
+		taskqueue_enqueue(sc->sdpcm_tq, &sc->sdpcm_rx_task);
+		error = msleep(&sc->ioctl_completed, &sc->ioctl_mtx, 0,
+		    "brcmio", hz / 100);
+		if (error != 0 && error != EWOULDBLOCK)
+			break;
+		timeout -= hz / 100;
+	}
+
+	if (!sc->ioctl_completed) {
+		/*
+		 * In worker mode, rx_task may still be running SDIO I/O.
+		 * Skip the diagnostic backplane read to avoid concurrent
+		 * SDIO access which corrupts CAM queue state.
+		 */
+		device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
+		sc->sdpcm_ioctl_waiting = 0;
+		sc->sdpcm_ioctl_tx_pending = 0;
 		mtx_unlock(&sc->ioctl_mtx);
-		return (error);
+		return (ETIMEDOUT);
 	}
 
-	/* Poll for response on control channel */
-	int ctrl_frames = 0, event_frames = 0, data_frames = 0;
-	int recv_errors = 0, recv_empty = 0;
-	for (i = 0; i < BRCMF_SDPCM_IOCTL_TIMEOUT_MS / 10; i++) {
-		uint16_t chan, dlen;
-		uint8_t *payload;
-
-		pause_sbt("brcmio", mstosbt(10), 0, 0);
-
-		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
-		    &chan, &dlen, &payload);
-		if (error == EAGAIN) {
-			recv_empty++;
-			continue;
-		}
-		if (error != 0) {
-			recv_errors++;
-			continue;
-		}
-
-		if (chan == SDPCM_CONTROL_CHANNEL &&
-		    dlen >= BCDC_DCMD_HDRLEN) {
-			ctrl_frames++;
-			struct bcdc_dcmd *resp = (struct bcdc_dcmd *)payload;
-			uint32_t rflags = le32toh(resp->flags);
-			uint16_t rid = (rflags & BCDC_DCMD_ID_MASK) >>
-			    BCDC_DCMD_ID_SHIFT;
-
-			if (rid != reqid)
-				continue;
-
-			uint32_t rlen = le32toh(resp->len);
-			if (rlen > dlen - BCDC_DCMD_HDRLEN)
-				rlen = dlen - BCDC_DCMD_HDRLEN;
-
-			if (resp_len != NULL)
-				*resp_len = rlen;
-
-			if (rflags & BCDC_DCMD_ERROR) {
-				int32_t fwstatus =
-				    (int32_t)le32toh(resp->status);
-				BRCMF_DBG(sc,
-				    "ioctl cmd=0x%x fwerr=%d\n",
-				    cmd, fwstatus);
-				atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
-				mtx_unlock(&sc->ioctl_mtx);
-				return (EIO);
-			}
-
-			if (buf != NULL && rlen > 0) {
-				if (rlen > len)
-					rlen = len;
-				memcpy(buf, payload + BCDC_DCMD_HDRLEN, rlen);
-			}
-
-			atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
-			mtx_unlock(&sc->ioctl_mtx);
-			return (0);
-		}
-
-		/* Non-control frames during ioctl poll — process them */
-		if (chan == SDPCM_EVENT_CHANNEL) {
-			event_frames++;
-			brcmf_sdpcm_process_event(sc, payload, dlen);
-		} else if (chan == SDPCM_DATA_CHANNEL) {
-			data_frames++;
-			brcmf_sdpcm_process_rx(sc, payload, dlen);
-		}
+	if (resp_len != NULL)
+		*resp_len = sc->ioctl_resp_len;
+	if (sc->ioctl_status != 0) {
+		BRCMF_DBG(sc, "ioctl cmd=0x%x fwerr=%d\n", cmd, sc->ioctl_status);
+		mtx_unlock(&sc->ioctl_mtx);
+		return (EIO);
 	}
-
-	{
-		uint32_t intst = 0;
-		if (sc->sdiocore.base != 0)
-			intst = brcmf_sdio_bp_read32(sc,
-			    sc->sdiocore.base + SD_REG_INTSTATUS);
-		device_printf(sc->dev,
-		    "IOCTL timeout cmd=0x%x intst=0x%08x "
-		    "ctrl=%d evt=%d data=%d empty=%d err=%d\n",
-		    cmd, intst, ctrl_frames, event_frames,
-		    data_frames, recv_empty, recv_errors);
+	if (buf != NULL && sc->ioctl_resp_len > 0) {
+		uint32_t copylen = sc->ioctl_resp_len;
+		if (copylen > len)
+			copylen = len;
+		memcpy(buf, sc->sdpcm_ioctl_rx, copylen);
 	}
-	atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
 	mtx_unlock(&sc->ioctl_mtx);
-	return (ETIMEDOUT);
+	return (0);
 }
 
 /*
@@ -571,8 +731,16 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 	m_copydata(m, 0, pktlen, frame + BCDC_HEADER_LEN);
 	m_freem(m);
 
+	/*
+	 * Direct F2 writes must not race with rx_task reads. Worker-mode
+	 * control sends already serialize this; data TX needs the same guard.
+	 */
+	while (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
+		DELAY(100);
 	error = brcmf_sdpcm_send(sc, SDPCM_DATA_CHANNEL,
 	    frame, BCDC_HEADER_LEN + pktlen);
+	atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+
 
 	return (error);
 }
@@ -593,13 +761,46 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	if (sc->fw_dead || sc->detaching)
 		return;
 
-	/*
-	 * Skip if an ioctl is in progress — the ioctl poll loop
-	 * reads the F2 FIFO and handles events/data inline.
-	 * Running concurrently would interleave partial FIFO reads.
-	 */
 	if (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
 		return;
+
+	if (sc->sdpcm_worker_mode) {
+		uint16_t txlen = 0;
+
+		mtx_lock(&sc->ioctl_mtx);
+		if (sc->sdpcm_ioctl_tx_pending) {
+			txlen = sc->sdpcm_ioctl_tx_len;
+			sc->sdpcm_ioctl_tx_pending = 0;
+		}
+		mtx_unlock(&sc->ioctl_mtx);
+
+		if (txlen != 0) {
+			int error, retries;
+			/* Drain pending RX first to refresh TX credits */
+			for (retries = 0; retries < 50; retries++) {
+				error = brcmf_sdpcm_send(sc,
+				    SDPCM_CONTROL_CHANNEL,
+				    sc->sdpcm_ioctl_tx, txlen);
+				if (error != ENOBUFS)
+					break;
+				brcmf_sdpcm_recv(sc, rxbuf,
+				    BRCMF_SDPCM_CTL_BUFSZ,
+				    &chan, &dlen, &payload);
+				pause_sbt("brcmtx", mstosbt(10), 0, 0);
+			}
+			BRCMF_DBG(sc, "rx_task: TX ioctl len=%u err=%d\n", txlen, error);
+			if (error != 0) {
+				mtx_lock(&sc->ioctl_mtx);
+				sc->ioctl_status = error;
+				sc->ioctl_completed = 1;
+				sc->sdpcm_ioctl_waiting = 0;
+				wakeup(&sc->ioctl_completed);
+				mtx_unlock(&sc->ioctl_mtx);
+				atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+				return;
+			}
+		}
+	}
 
 	for (i = 0; i < 16; i++) {
 		int error = brcmf_sdpcm_recv(sc, rxbuf,
@@ -612,7 +813,9 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 		}
 
 		BRCMF_DBG(sc, "rx_task: ch=%u dlen=%u\n", chan, dlen);
-		if (chan == SDPCM_EVENT_CHANNEL)
+		if (chan == SDPCM_CONTROL_CHANNEL)
+			brcmf_sdpcm_process_control(sc, payload, dlen);
+		else if (chan == SDPCM_EVENT_CHANNEL)
 			brcmf_sdpcm_process_event(sc, payload, dlen);
 		else if (chan == SDPCM_DATA_CHANNEL)
 			brcmf_sdpcm_process_rx(sc, payload, dlen);
@@ -632,8 +835,20 @@ brcmf_sdpcm_poll(void *arg)
 	if (sc->fw_dead || sc->detaching)
 		return;
 
-	taskqueue_enqueue(taskqueue_thread, &sc->sdpcm_rx_task);
+	taskqueue_enqueue(sc->sdpcm_tq, &sc->sdpcm_rx_task);
 	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
+}
+
+void
+brcmf_sdpcm_init(struct brcmf_softc *sc)
+{
+	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
+	callout_init(&sc->sdpcm_callout, 1);
+
+	/* Dedicated taskqueue so rx_task doesn't block other tasks */
+	sc->sdpcm_tq = taskqueue_create("brcmfmac_sdpcm", M_WAITOK,
+	    taskqueue_thread_enqueue, &sc->sdpcm_tq);
+	taskqueue_start_threads(&sc->sdpcm_tq, 1, PI_NET, "brcmfmac_sdpcm");
 }
 
 /*
@@ -642,8 +857,8 @@ brcmf_sdpcm_poll(void *arg)
 void
 brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
 {
-	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
-	callout_init(&sc->sdpcm_callout, 1);
+	if (sc->sdpcm_poll_started)
+		return;
 	sc->sdpcm_poll_started = 1;
 	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
@@ -658,7 +873,8 @@ brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 		return;
 	sc->sdpcm_poll_started = 0;
 	callout_drain(&sc->sdpcm_callout);
-	taskqueue_drain(taskqueue_thread, &sc->sdpcm_rx_task);
+	if (sc->sdpcm_tq != NULL)
+		taskqueue_drain(sc->sdpcm_tq, &sc->sdpcm_rx_task);
 }
 
 /*
@@ -668,6 +884,10 @@ void
 brcmf_sdpcm_cleanup(struct brcmf_softc *sc)
 {
 	brcmf_sdpcm_stop_poll(sc);
+	if (sc->sdpcm_tq != NULL) {
+		taskqueue_free(sc->sdpcm_tq);
+		sc->sdpcm_tq = NULL;
+	}
 }
 
 /*

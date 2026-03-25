@@ -2,21 +2,24 @@
 
 ## Open
 
-### BCM43455 association is intermittent
+### BCM43455 association fails (AUTH timeout)
 
-On RPi4 / BCM43455, scan works and AUTH succeeds (`code=3 status=0`),
-but association is not stable yet. Some attempts reach `SET_SSID`
-success (`code=0 status=0`), while others receive `DISASSOC_IND`
-before JOIN/SET_SSID completion.
+Root cause identified (25 Mar): SDIO transport/runtime deviations from
+Linux brcmfmac. Audit of `docs/sdio-auth-ref/` against source code
+found multiple issues below net80211. See `docs/00-progress.md` M-S6
+for the full finding table and fix plan.
 
-Observed details:
-- `join` iovar returns BCME_NOTREADY (-14); driver falls back to SET_SSID
-- `wpaie` iovar returns BCME_UNSUPPORTED (-23) on firmware 7.45.265
-- 5GHz BSSID appears more reliable than 2.4GHz
-- EAPOL frames are seen on the data channel, but the 4-way handshake
-  does not complete consistently
+Summary of deviations causing the blocker:
+- `proptxstatus_mode=1` sent to firmware (Linux does NOT on default SDIO)
+- SDPCM TX credit window not enforced
+- No integrated DPC loop
+- No BCDC `init_done` / firmware-signaling attach
+- Wrong attach ordering
 
-Root cause is still under investigation.
+Symptom: firmware accepts `C_SET_SSID`, then reports AUTH timeout
+(`code=3 status=2`). Fails on open networks too, eliminating WPA as
+the cause. The `join` iovar returning `BCME_NOTREADY (-14)` is normal
+per ref doc (Linux falls back to SET_SSID).
 
 ### 5GHz limited to HT40
 

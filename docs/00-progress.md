@@ -6,13 +6,16 @@
 on 2.4GHz and 5GHz, handles link loss recovery, interface cycling.
 Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
 
-**SDIO milestones M-S1 through M-S4 complete, M-S5 in progress.**
+**SDIO milestones M-S1 through M-S5 complete, M-S6 in progress.**
 BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs,
 and handles firmware ioctls/events, but association is not functional.
-Current diagnosis: the SDIO transport/runtime still diverges from the
-project spec and Linux brcmfmac. PCIe works because its transport path
-is substantially complete; SDIO still lacks key BCDC/SDPCM runtime pieces
-needed for reliable connect.
+
+Root cause identified (25 Mar): systematic audit of `docs/sdio-auth-ref/`
+against source code found multiple SDIO transport/runtime deviations from
+Linux brcmfmac. The blocker is below net80211 — the SDPCM/BCDC runtime
+is incomplete. Key findings: TX credit window not enforced, no integrated
+DPC loop, `proptxstatus_mode=1` incorrectly enabled, no BCDC `init_done`,
+wrong attach ordering. M-S6 tracks the fixes.
 
 ## Milestones
 
@@ -412,7 +415,9 @@ Reference: `docs/03-sdio-reference.md`.
 #### M-S3: SDPCM + BCDC protocol (DONE)
 #### M-S4: SDIO probe/attach (DONE)
 
-#### M-S5: net80211 for BCM43455 (IN PROGRESS)
+#### M-S5: net80211 for BCM43455 (DONE)
+
+net80211 plumbing complete. Association blocked by SDIO transport issues (M-S6).
 
 - [x] CLM blob download (CYW 7.45.x requires it for scan)
 - [x] `brcmf_cfg_attach` (net80211 integration, chip-aware VHT/HT)
@@ -426,61 +431,126 @@ Reference: `docs/03-sdio-reference.md`.
 - [x] CYW43455-specific guards for unsupported `wpaie` / `sup_wpa`
 - [x] EAPOL TX passthrough before RUN
 - [x] link_task uses saved join channel instead of firmware chanspec ioctl
-- [ ] Consistent association
-- [ ] 4-way handshake completion
-- [ ] TX data path (ping)
+- [x] Taskqueue contention fix (dedicated `sdpcm_tq` for `sdpcm_rx_task`)
+- [x] F2 serialization (`sdpcm_rx_busy` atomic guard)
+- [x] Multi-block F2 read fix (64-byte reads only)
+- [x] Worker-mode concurrent access fix
+
+#### M-S6: SDIO transport/runtime (IN PROGRESS)
+
+Systematic audit (25 Mar 2026) of `docs/sdio-auth-ref/` against source
+code identified the root cause of the association blocker. The SDPCM/BCDC
+runtime is incomplete — the issue is below net80211 and below WPA logic.
+
+Reference: `docs/sdio-auth-ref/01-sdio-bus-and-runtime.md`,
+`docs/sdio-auth-ref/02-bcdc-fws-and-association.md`.
+
+##### Audit findings (25 Mar 2026)
+
+Deviations found, ordered by likely impact on the AUTH timeout blocker:
+
+| # | Finding | Severity | Ref doc section |
+|---|---------|----------|-----------------|
+| 1 | `proptxstatus_mode=1` sent — Linux does NOT enable this on default SDIO | Critical | 02 section 4 |
+| 2 | SDPCM TX credit window (`tx_max`) not enforced before send | Critical | 01 "Transmit sequence window" |
+| 3 | No integrated DPC loop — separate poll/task/inline paths | Critical | 01 "DPC runtime loop" |
+| 4 | No BCDC `init_done` / `fws_attach` (even reduced mode) | High | 02 "Why init_done matters" |
+| 5 | Attach ordering wrong: no bus-state-UP, no preinit, poll starts after cfg_attach | High | 02 "Protocol attach ordering" |
+| 6 | `tlv=0` sent unnecessarily (Linux doesn't send it at all on default SDIO) | Low | 02 section 4 |
+| 7 | Flow-control bitmap (SDPCM header byte 8) never read | Medium | 01 "SDPCM frame format" |
+| 8 | Mailbox content not interpreted (read+acked, but firmware-ready/NAK/halt bits ignored) | Medium | 01 "Mailbox and interrupt model" |
+| 9 | No error recovery (frame abort, NAK, rxskip, write-terminate) | Medium | 01 "Error handling" |
+| 10 | F2 block size 64 vs Linux's 512 for BCM43455 | Medium | 01 "SDIO functions and block sizes" |
+| 11 | Extra AUTH event registered (Linux doesn't) | Low | 02 "Events registered" |
+| 12 | Missing ROAM, PSK_SUP event registration | Low | 02 "Events registered" |
+
+##### Fix plan
+
+Priority-ordered. Each item can be tested independently.
+
+- [x] **Remove `proptxstatus_mode=1` and `tlv=0`**: removed all three
+  iovars (`proptxstatus_mode=1`, `tlv=0`, `ampdu_hostreorder=1`) from
+  the SDIO init block in `cfg.c`. Tested: module loads and scans, but
+  AUTH still times out. Expected — this was one of several independent
+  issues.
+- [x] **Enforce SDPCM TX credits**: added `brcmf_sdpcm_tx_ok()` check
+  before every `brcmf_sdpcm_send`. Control frames check
+  `(max_seq - tx_seq) & 0x80`; data frames reserve 2 extra credits
+  for control. Both ioctl paths (inline and worker-mode) retry with
+  interleaved RX drain when ENOBUFS. **This fixed the AUTH timeout.**
+  Firmware now completes 802.11 auth + assoc (code=3/0/1 status=0).
+  WPA handshake still fails (DISASSOC_IND ~4s after RUN).
+- [ ] **Build integrated DPC thread**: replace the 50ms poll callout +
+  separate control/data TX paths with a single thread that processes:
+  interrupt status -> mailbox (with content interpretation) -> RX ->
+  control TX (credit-gated) -> data TX (credit-gated). This eliminates
+  the `sdpcm_rx_busy` ad-hoc serialization.
+- [x] **Interpret mailbox content**: `SMB_FW_HALT` in mailbox data now
+  sets `fw_dead`. FC_CHANGE interrupt updates `sdpcm_flowctl` flag.
+  Tested 25 Mar: module loads, firmware boots, scans/ioctls work,
+  no regressions.
+- [x] **Read flow-control bitmap**: SDPCM header byte 8 stored in
+  `sdpcm_fcmask` on every RX. `brcmf_sdpcm_tx_ok` blocks data TX
+  when firmware flow-control is asserted. Tested with above build.
+- [x] **Fix attach ordering**: moved `brcmf_sdpcm_init` and
+  `brcmf_sdpcm_start_poll` before `brcmf_cfg_attach`. The RX poll
+  runtime is now active during dongle init ioctls. Worker mode set
+  before `brcmf_sdio_bus_start` so all ioctls use the DPC path.
+- [ ] **Add minimal BCDC `init_done`**: set `avoid_queueing=true` flag
+  at the right attach point. On default SDIO this is nearly a no-op
+  but matches Linux's protocol-layer lifecycle.
+- [ ] **Add error recovery**: frame abort on F2 read failure, write
+  termination on F2 write failure, rxskip until NAK ack. May fix the
+  chip-wedge pattern after repeated failed AUTH cycles.
+
+##### WPA handshake failure (under investigation)
+
+After the TX credit fix, 802.11 auth+assoc succeeds. The firmware
+reaches the AP, and SET_SSID completes (code=0 status=0). VAP
+transitions AUTH→RUN. EAPOL frame 2/4 is transmitted (121 bytes
+on bus, err=0), but the AP responds with DISASSOC_IND (reason=2,
+PREV_AUTH_NOT_VALID) ~4s later. AP retransmits frame 1/4 three
+times (replay counters 02, 03, 04) before DISASSOC.
+
+wpa_supplicant -dd analysis (25 Mar):
+- RSN IE in frame 2/4: capabilities `0x000c` — WMM IE injection
+  works, matches firmware expectations
+- `key_mgmt=0x2` (WPA-PSK), AKM `00:0f:ac:02` — correct
+- All EAPOL TX return err=0 with adequate TX credits (seq=57, max=96)
+- EAPOL frames arrive from both AP BSSIDs (bc:3b 2.4GHz, bc:3c 5GHz)
+  despite being associated only to bc:3b — suggests firmware delivers
+  data frames from both radios, or the AP's dual-radio setup confuses
+  the association
+
+The AP never sends frame 3/4, meaning it doesn't receive our frame
+2/4. The SDIO bus reports success, so the problem is either:
+- firmware fails to transmit the frame over the air
+- frame reaches the AP but is rejected (wrong BSSID, wrong key, etc.)
+- timing: the firmware's TX path isn't fully ready when EAPOL arrives
+
+##### Deferred (not blocking association)
+
+- [ ] F2 block size 512 (requires re-testing Arasan SDHCI stability)
+- [ ] ROAM and PSK_SUP event registration
 - [ ] Throughput testing
 
-##### Current state (24 Mar 2026)
+##### Background: previous investigation (24 Mar 2026)
 
-The SDIO path boots firmware, scans, and exchanges firmware events, but
-association fails even on an open 2.4GHz AP (`TestAP`). This eliminates
-WPA, DFS, and net80211 RUN timing as primary causes.
+Taskqueue contention fix: `scan_task` and `sdpcm_rx_task` shared
+`taskqueue_thread`. Created dedicated `sdpcm_tq` taskqueue. Security
+ioctls now complete on first AUTH attempt.
 
-###### Taskqueue contention fix (24 Mar)
+AUTH timeout pattern after the taskqueue fix:
+- `join` iovar returns `BCME_NOTREADY (-14)` — normal per ref doc
+- `C_SET_SSID` accepted, firmware reports AUTH timeout ~2s later
+- Chip wedges after repeated failed cycles (F2 err=5, clock timeout)
 
-Found and fixed a major bug: `scan_task` and `sdpcm_rx_task` both used
-`taskqueue_thread`. When escan completed, `rx_task` enqueued `scan_task`.
-`scan_task` called `ieee80211_scan_done` which triggered AUTH transition.
-The AUTH handler called ioctls which needed `rx_task` to run, but
-`rx_task` couldn't run because `scan_task` was still executing on the
-same single-threaded taskqueue.
+Channel investigations (channel set commands ignored, firmware stays on
+5GHz) were a red herring — the ref doc confirms explicit channel set
+before join is not required.
 
-**Fix:** Created dedicated `sdpcm_tq` taskqueue for `sdpcm_rx_task`.
-Now ioctls complete even when triggered from `scan_task` context.
-
-**Result:** Security ioctls (`set_security`) now complete successfully
-on first AUTH attempt. Previously they timed out on first try.
-
-###### Remaining AUTH timeout issue
-
-After the taskqueue fix, ioctls work but AUTH still times out:
-- `join` iovar returns `BCME_NOTREADY (-14)` — expected per Linux expert
-- `C_SET_SSID` is accepted (returns 0)
-- Firmware reports AUTH timeout (`code=3 status=2`) ~2s later
-- Then SET_SSID failure (`code=0 status=1` or `status=3` NO_NETWORKS)
-
-Channel investigations:
-- C_SET_CHANNEL and chanspec iovar both return success but have no effect
-- Firmware stays on 5GHz (chanspec 0xd024) while AP is on channel 1
-- Including chanspec in SET_SSID params doesn't help
-- The firmware appears to ignore channel commands in current state
-
-SDIO-specific init (per Linux expert advice):
-- `tlv=0` iovar succeeds
-- `ampdu_hostreorder=1` times out
-- `assoc_retry_max=3` added but doesn't help
-
-###### Chip wedge pattern
-
-The chip wedges frequently after repeated failed AUTH cycles:
-- F2 write failures (`err=5`)
-- Clock enable timeout on next attach (`clkval=0x00`)
-- Only full host reboot recovers the chip
-
-###### Firmware known-good
-
-The AUTH timeout is a driver issue, not firmware.
+The 25 Mar audit shifted focus from net80211/WPA to the SDPCM/BCDC
+transport layer, where the actual deviations from Linux are.
 
 ### Milestone X: Automated testing (TODO)
 

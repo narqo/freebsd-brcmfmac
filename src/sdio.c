@@ -387,7 +387,13 @@ brcmf_sdio_get_raminfo(struct brcmf_softc *sc)
 	uint32_t corecap;
 
 	if (sc->armcore.id == 0x83E) {
-		/* ARM CR4: read bank info from ARM core */
+		/*
+		 * ARM CR4: ensure core is out of reset before reading.
+		 * After kldunload, the core may be in undefined state.
+		 */
+		brcmf_sdio_core_reset(sc, &sc->armcore, 0, 0, 0);
+
+		/* Read bank info from ARM core */
 		corecap = brcmf_sdio_bp_read32(sc,
 		    sc->armcore.base + 0x04);
 		nbanks = (corecap & 0x0F) + ((corecap >> 4) & 0x0F);
@@ -726,6 +732,29 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    CY_43455_MES_WATERMARK | SBSDIO_MESBUSYCTRL_ENAB, &err);
 	}
 
+	/* Verify F2 block size on card side and probe F2 write path.
+	 * Read back CCCR FBR block size for F2 (registers 0x210/0x211). */
+	{
+		uint8_t bslo, bshi;
+		int berr;
+		bslo = sdio_f0_read_1(sc->sdio_func1, 0x210, &berr);
+		bshi = sdio_f0_read_1(sc->sdio_func1, 0x211, &berr);
+		device_printf(sc->dev,
+		    "F2 card blksz=%u sdiob_blksz=%u\n",
+		    bslo | (bshi << 8),
+		    sc->sdio_func2 ? sc->sdio_func2->cur_blksize : 0);
+	}
+
+	/* Probe: single-block F2 write (64 bytes of zeros) */
+	{
+		uint8_t probe[64];
+		memset(probe, 0, sizeof(probe));
+		int perr = SDIO_WRITE_EXTENDED(
+		    device_get_parent(sc->sdio_func2->dev),
+		    sc->sdio_func2->fn, 0x8000, sizeof(probe), probe, false);
+		device_printf(sc->dev, "F2 probe write (64B): err=%d\n", perr);
+	}
+
 	return (0);
 }
 
@@ -883,9 +912,77 @@ brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
 	return SYSCTL_OUT(req, buf, len);
 }
 
+/*
+ * Put chip into passive state: halt ARM, disable D11 core.
+ *
+ * Without this, the firmware continues running when we disable clocks,
+ * leaving the chip's internal state machine stuck. The next kldload
+ * then fails with "clock enable timeout" because CHIPCLKCSR can't
+ * bring clocks back up on a wedged chip.
+ *
+ * Matches Linux brcmf_chip_cr4_set_passive + brcmf_chip_coredisable(d11).
+ */
+static void
+brcmf_sdio_chip_set_passive(struct brcmf_softc *sc)
+{
+	uint32_t val;
+
+	/* Halt ARM CR4: read current IOCTL, keep only CPUHALT,
+	 * then resetcore with CPUHALT held throughout. */
+	if (sc->armcore.id != 0 && sc->armcore.wrapbase != 0) {
+		val = brcmf_sdio_bp_read32(sc,
+		    sc->armcore.wrapbase + BCMA_IOCTL);
+		val &= BCMA_IOCTL_CPUHALT;
+		brcmf_sdio_core_reset(sc, &sc->armcore,
+		    val, BCMA_IOCTL_CPUHALT, BCMA_IOCTL_CPUHALT);
+	}
+
+	/* Disable D11 core (radio) */
+	if (sc->d11core.id != 0 && sc->d11core.wrapbase != 0)
+		brcmf_sdio_core_disable(sc, &sc->d11core,
+		    0x08 | 0x04, 0x04);
+}
+
 void
 brcmf_sdio_detach(struct brcmf_softc *sc)
 {
+	int err;
+
+	if (sc->sdio_func1 == NULL)
+		return;
+
+	/* Bring backplane clocks up so we can access core wrappers */
+	err = brcmf_sdio_clk_enable(sc, 0);
+	if (err == 0) {
+		/* Clear SDIO core host interrupt mask and pending interrupts.
+		 * Linux does this in brcmf_sdio_bus_stop before set_passive. */
+		if (sc->sdiocore.base != 0) {
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_HOSTINTMASK, 0);
+		}
+
+		/* Disable F2 before halting ARM — matches Linux bus_stop.
+		 * Disabling F2 while firmware is still running lets the
+		 * SDIO core drain any pending write FIFO data cleanly. */
+		{
+			uint8_t ioex;
+			ioex = sdio_f0_read_1(sc->sdio_func1,
+			    SDIO_CCCR_IOEx, &err);
+			ioex &= ~0x04;
+			sdio_f0_write_1(sc->sdio_func1,
+			    SDIO_CCCR_IOEx, ioex, &err);
+		}
+
+		/* Clear pending interrupts after F2 disable */
+		if (sc->sdiocore.base != 0) {
+			brcmf_sdio_bp_write32(sc,
+			    sc->sdiocore.base + SD_REG_INTSTATUS,
+			    0xFFFFFFFF);
+		}
+
+		DELAY(20000);
+		brcmf_sdio_chip_set_passive(sc);
+	}
 
 	brcmf_sdio_clk_disable(sc);
 }

@@ -285,6 +285,33 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	ejoin.assoc.chanspec_num = htole32(1);
 	ejoin.assoc.chanspec_list[0] = htole16(chanspec);
 
+	{
+		uint32_t cur_chan = 0;
+		uint32_t cur_chanspec = 0;
+		int err1, err2;
+		err1 = brcmf_fil_cmd_data_get(sc, 29 /* C_GET_CHANNEL */,
+		    &cur_chan, sizeof(cur_chan));
+		err2 = brcmf_fil_iovar_int_get(sc, "chanspec", &cur_chanspec);
+		BRCMF_DBG(sc, "pre-join: cur_chan=%u (e=%d) cur_chanspec=0x%x (e=%d)\n",
+		    le32toh(cur_chan), err1, le32toh(cur_chanspec), err2);
+
+		/* Set channel via chanspec iovar */
+		{
+			error = brcmf_fil_iovar_int_set(sc, "chanspec",
+			    chanspec);
+			BRCMF_DBG(sc, "set_chanspec(0x%04x): %d\n",
+			    chanspec, error);
+			if (error == 0) {
+				pause_sbt("brcmch", mstosbt(50), 0, 0);
+				uint32_t verify_chanspec = 0;
+				brcmf_fil_iovar_int_get(sc, "chanspec",
+				    &verify_chanspec);
+				BRCMF_DBG(sc, "verify_chanspec: 0x%x\n",
+				    le32toh(verify_chanspec));
+			}
+		}
+	}
+
 	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
 	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
 
@@ -301,7 +328,8 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 		memset(&join, 0, sizeof(join));
 		join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 		memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-		memcpy(join.bssid, ni->ni_bssid, 6);
+		/* Use broadcast BSSID — let firmware pick from scan cache */
+		memset(join.bssid, 0xff, 6);
 		join.chanspec_num = htole32(0);
 
 		error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID,
@@ -390,8 +418,14 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	struct brcmf_vap *bvap = BRCMF_VAP(vap);
 	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_softc *sc = ic->ic_softc;
+	static const char *state_names[] = {
+		"INIT", "SCAN", "AUTH", "ASSOC", "CAC", "RUN", "CSA", "SLEEP"
+	};
 
 	IEEE80211_UNLOCK(ic);
+
+	BRCMF_DBG(sc, "newstate: %s -> %s arg=%d\n",
+	    state_names[vap->iv_state], state_names[nstate], arg);
 
 	if (sc->detaching)
 		goto done;
@@ -424,9 +458,15 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 		break;
 	case IEEE80211_S_AUTH: {
 		struct ieee80211_node *ni = vap->iv_bss;
+
+		/* Abort any active scan and wait for firmware to settle */
+		brcmf_abort_escan(sc);
+		pause_sbt("brcmab", mstosbt(100), 0, 0);
+
 		if (ni != NULL) {
 			uint32_t wsec = WSEC_NONE;
 			uint32_t wpa_auth = WPA_AUTH_DISABLED;
+			int err;
 
 			if (vap->iv_flags & IEEE80211_F_WPA2) {
 				wsec = AES_ENABLED;
@@ -438,13 +478,20 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			if (vap->iv_flags & IEEE80211_F_PRIVACY)
 				wsec |= AES_ENABLED;
 
-			brcmf_set_security(sc, wsec, wpa_auth);
+			BRCMF_DBG(sc, "AUTH: iv_flags=0x%x wsec=%u wpa_auth=%u\n",
+			    vap->iv_flags, wsec, wpa_auth);
+
+			err = brcmf_set_security(sc, wsec, wpa_auth);
+			BRCMF_DBG(sc, "AUTH: set_security=%d\n", err);
 
 			/*
-			 * Push RSN/WPA IE to firmware on chips that accept
-			 * wpaie. CYW43455 (7.45.x) returns UNSUPPORTED and
-			 * the failed iovar can taint firmware WPA state,
-			 * causing DISASSOC_IND before association completes.
+			 * Clear or set wpaie. For open networks, clear any
+			 * stale WPA IE. For WPA networks on chips that
+			 * accept wpaie, push the RSN/WPA IE.
+			 *
+			 * Note: CYW43455 (7.45.x) returns UNSUPPORTED for
+			 * wpaie, and the failed iovar can taint firmware
+			 * WPA state, so we only do this on feat_wpaie chips.
 			 */
 			if (sc->feat_wpaie) {
 				if (vap->iv_rsn_ie != NULL)
@@ -455,6 +502,12 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 					brcmf_fil_iovar_data_set(sc, "wpaie",
 					    vap->iv_wpa_ie,
 					    vap->iv_wpa_ie[1] + 2);
+				else {
+					/* Clear stale wpaie for open network */
+					uint8_t empty_ie[2] = { 0, 0 };
+					brcmf_fil_iovar_data_set(sc, "wpaie",
+					    empty_ie, sizeof(empty_ie));
+				}
 			}
 
 			if (sc->feat_sup_wpa)
@@ -582,29 +635,37 @@ brcmf_parent(struct ieee80211com *ic)
 {
 	struct brcmf_softc *sc = ic->ic_softc;
 	int startall = 0;
+	int error;
 
 	if (sc->detaching)
 		return;
+
+	BRCMF_DBG(sc, "parent: nrunning=%d running=%d\n",
+	    ic->ic_nrunning, sc->running);
 
 	if (ic->ic_nrunning > 0) {
 		if (!sc->running) {
 			uint32_t val;
 
-			brcmf_fil_bss_up(sc);
+			error = brcmf_fil_bss_up(sc);
+			BRCMF_DBG(sc, "parent: bss_up=%d\n", error);
 
 			val = htole32(1);
-			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA, &val,
-			    sizeof(val));
+			error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
+			    &val, sizeof(val));
+			BRCMF_DBG(sc, "parent: set_infra=%d\n", error);
 
 			val = htole32(0);
-			brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM, &val,
-			    sizeof(val));
+			error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
+			    &val, sizeof(val));
+			BRCMF_DBG(sc, "parent: set_pm=%d\n", error);
 
-			/* BCM4350 note: spec default is mpc=1, but we use 0
-			 * to avoid ~7ms wake latency after idle. */
-			brcmf_fil_iovar_int_set(sc, "mpc", 0);
-			/* No firmware-initiated roaming */
-			brcmf_fil_iovar_int_set(sc, "roam_off", 1);
+			error = brcmf_fil_iovar_int_set(sc, "mpc", 0);
+			BRCMF_DBG(sc, "parent: mpc=%d\n", error);
+
+			error = brcmf_fil_iovar_int_set(sc, "roam_off", 1);
+			BRCMF_DBG(sc, "parent: roam_off=%d\n", error);
+
 			/* Disable firmware ARP offload */
 			brcmf_fil_iovar_int_set(sc, "arp_ol", 0);
 			brcmf_fil_iovar_int_set(sc, "arpoe", 0);
@@ -905,6 +966,7 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	brcmf_fil_cmd_data_set(sc, 258 /* C_SET_SCAN_PASSIVE_TIME */,
 	    &(uint32_t) { htole32(120) }, sizeof(uint32_t));
 	brcmf_fil_iovar_int_set(sc, "bcn_timeout", 4);
+	brcmf_fil_iovar_int_set(sc, "assoc_retry_max", 3);
 	/* Frameburst for throughput; firmware ignores if unsupported */
 	brcmf_fil_cmd_data_set(sc, 219 /* C_SET_FAKEFRAG */,
 	    &(uint32_t) { htole32(1) }, sizeof(uint32_t));
@@ -1012,9 +1074,10 @@ brcmf_cfg_detach(struct brcmf_softc *sc)
 
 	/*
 	 * Drain tasks that may issue firmware ioctls before tearing down
-	 * net80211. Both run on taskqueue_thread; sc->detaching ensures
+	 * net80211. All run on taskqueue_thread; sc->detaching ensures
 	 * they exit without touching the firmware if re-enqueued.
 	 */
+	taskqueue_drain(taskqueue_thread, &sc->scan_task);
 	taskqueue_drain(taskqueue_thread, &sc->link_task);
 	taskqueue_drain(taskqueue_thread, &sc->restart_task);
 

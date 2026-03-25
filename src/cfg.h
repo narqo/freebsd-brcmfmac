@@ -233,6 +233,7 @@ struct brcmf_join_params {
 	struct brcmf_ssid_le ssid_le;
 	uint8_t bssid[6];
 	uint32_t chanspec_num;
+	uint16_t chanspec_list[1];
 } __packed;
 
 struct brcmf_join_scan_params {

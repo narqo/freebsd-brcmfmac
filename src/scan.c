@@ -650,6 +650,9 @@ brcmf_scan_complete_task(void *arg, int pending)
 	struct ieee80211vap *vap;
 	int n;
 
+	if (sc->detaching)
+		return;
+
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
 		return;
