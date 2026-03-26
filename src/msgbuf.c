@@ -960,9 +960,10 @@ brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
  * Execute IOCTL and wait for response.
  */
 int
-brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
     void *buf, uint32_t len, uint32_t *resp_len)
 {
+	(void)set;
 	int error, timeout;
 
 	if (sc->fw_dead)

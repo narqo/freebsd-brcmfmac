@@ -238,8 +238,8 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	memset(&join, 0, sizeof(join));
 	join.ssid_le.SSID_len = htole32(sr->ssid_len);
 	memcpy(join.ssid_le.SSID, sr->ssid, sr->ssid_len);
-	memcpy(join.bssid, sr->bssid, 6);
-	join.chanspec_num = htole32(0);
+	memcpy(join.params_le.bssid, sr->bssid, 6);
+	join.params_le.chanspec_num = htole32(0);
 
 	error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID, &join,
 	    sizeof(join));
@@ -285,32 +285,6 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	ejoin.assoc.chanspec_num = htole32(1);
 	ejoin.assoc.chanspec_list[0] = htole16(chanspec);
 
-	{
-		uint32_t cur_chan = 0;
-		uint32_t cur_chanspec = 0;
-		int err1, err2;
-		err1 = brcmf_fil_cmd_data_get(sc, 29 /* C_GET_CHANNEL */,
-		    &cur_chan, sizeof(cur_chan));
-		err2 = brcmf_fil_iovar_int_get(sc, "chanspec", &cur_chanspec);
-		BRCMF_DBG(sc, "pre-join: cur_chan=%u (e=%d) cur_chanspec=0x%x (e=%d)\n",
-		    le32toh(cur_chan), err1, le32toh(cur_chanspec), err2);
-
-		/* Set channel via chanspec iovar */
-		{
-			error = brcmf_fil_iovar_int_set(sc, "chanspec",
-			    chanspec);
-			BRCMF_DBG(sc, "set_chanspec(0x%04x): %d\n",
-			    chanspec, error);
-			if (error == 0) {
-				pause_sbt("brcmch", mstosbt(50), 0, 0);
-				uint32_t verify_chanspec = 0;
-				brcmf_fil_iovar_int_get(sc, "chanspec",
-				    &verify_chanspec);
-				BRCMF_DBG(sc, "verify_chanspec: 0x%x\n",
-				    le32toh(verify_chanspec));
-			}
-		}
-	}
 
 	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
 	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
@@ -319,21 +293,26 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	if (error == 0)
 		return 0;
 
-	/* join iovar failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID */
-	BRCMF_DBG(sc, "join iovar failed (%d), falling back to SET_SSID\n",
-	    error);
+	/* join iovar failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID.
+	 * Linux includes BSSID + chanspec when known, and adjusts the
+	 * command size: sizeof(ssid_le) + sizeof(assoc_params). */
+	BRCMF_DBG(sc, "join iovar failed (%d), falling back to SET_SSID "
+	    "bssid=%6D chanspec=0x%04x\n", error, ni->ni_bssid, ":", chanspec);
 	{
 		struct brcmf_join_params join;
+		uint32_t join_size;
 
 		memset(&join, 0, sizeof(join));
 		join.ssid_le.SSID_len = htole32(ni->ni_esslen);
 		memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-		/* Use broadcast BSSID — let firmware pick from scan cache */
-		memset(join.bssid, 0xff, 6);
-		join.chanspec_num = htole32(0);
+		memcpy(join.params_le.bssid, ni->ni_bssid, 6);
+		join.params_le.chanspec_num = htole32(1);
+		join.params_le.chanspec_list[0] = htole16(chanspec);
+
+		join_size = sizeof(join);
 
 		error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_SSID,
-		    &join, sizeof(join));
+		    &join, join_size);
 	}
 	BRCMF_DBG(sc, "SET_SSID cmd returned %d\n", error);
 	return error;
@@ -459,7 +438,6 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	case IEEE80211_S_AUTH: {
 		struct ieee80211_node *ni = vap->iv_bss;
 
-		/* Abort any active scan and wait for firmware to settle */
 		brcmf_abort_escan(sc);
 		pause_sbt("brcmab", mstosbt(100), 0, 0);
 
@@ -503,7 +481,6 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 					    vap->iv_wpa_ie,
 					    vap->iv_wpa_ie[1] + 2);
 				else {
-					/* Clear stale wpaie for open network */
 					uint8_t empty_ie[2] = { 0, 0 };
 					brcmf_fil_iovar_data_set(sc, "wpaie",
 					    empty_ie, sizeof(empty_ie));
@@ -527,7 +504,17 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 done:
 	IEEE80211_LOCK(ic);
-	return (bvap->newstate(vap, nstate, arg));
+	{
+		int ret = bvap->newstate(vap, nstate, arg);
+
+		/* FullMAC: firmware handles auth/assoc. Cancel net80211's
+		 * management frame timeout — it fires after 2s and aborts
+		 * the AUTH state before the firmware completes. */
+		if (nstate == IEEE80211_S_AUTH || nstate == IEEE80211_S_ASSOC)
+			callout_stop(&vap->iv_mgtsend);
+
+		return (ret);
+	}
 }
 
 static struct ieee80211vap *

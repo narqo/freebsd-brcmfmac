@@ -177,7 +177,7 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 			memcpy(iobuf, clmload, namelen);
 			memcpy(iobuf + namelen, chunk, paylen);
 			error = sc->bus_ops->ioctl(sc,
-			    263 /* C_SET_VAR */, iobuf, total, NULL);
+			    263 /* C_SET_VAR */, 1, iobuf, total, NULL);
 			free(iobuf, M_BRCMFMAC);
 		}
 		if (error != 0) {
@@ -333,15 +333,11 @@ brcmf_sdio_bus_attach(device_t dev)
 
 	brcmf_sdpcm_init(sc);
 	sc->sdpcm_worker_mode = 1;
+	brcmf_sdpcm_start_poll(sc);
 
 	error = brcmf_sdio_bus_start(sc);
 	if (error != 0)
 		goto fail;
-
-	/* Start RX poll before cfg_attach so the runtime is active
-	 * during dongle init ioctls. Matches spec: bus preinit runs
-	 * before cfg attach. */
-	brcmf_sdpcm_start_poll(sc);
 
 	error = brcmf_cfg_attach(sc);
 	if (error != 0)

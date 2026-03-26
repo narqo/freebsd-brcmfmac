@@ -119,7 +119,7 @@ struct brcmf_softc;
 
 /* Bus-agnostic operations (PCIe: msgbuf, SDIO: SDPCM+BCDC) */
 struct brcmf_bus_ops {
-	int (*ioctl)(struct brcmf_softc *sc, uint32_t cmd,
+	int (*ioctl)(struct brcmf_softc *sc, uint32_t cmd, int set,
 	    void *buf, uint32_t len, uint32_t *resp_len);
 	int (*tx)(struct brcmf_softc *sc, struct mbuf *m);
 	int (*flowring_create)(struct brcmf_softc *sc, const uint8_t *da);
@@ -161,6 +161,7 @@ struct brcmf_softc {
 	uint8_t sdpcm_max_seq;		/* firmware TX credit limit */
 	uint8_t sdpcm_fcmask;		/* per-priority flow-control bitmap */
 	int sdpcm_flowctl;		/* firmware flow-control active */
+	uint32_t sdpcm_shared_flags;	/* flags from sdpcm_shared struct */
 	uint16_t sdpcm_reqid;		/* BCDC request ID counter */
 	uint8_t sdpcm_txbuf[2048];
 	/* SDPCM ioctl buffers — too large for 16KB kernel stack */
@@ -179,6 +180,12 @@ struct brcmf_softc {
 	struct callout sdpcm_callout;	/* RX poll callout (50ms) */
 	struct task sdpcm_rx_task;	/* RX processing task */
 	struct taskqueue *sdpcm_tq;	/* dedicated taskqueue for rx_task */
+
+	/* DPC thread */
+	struct proc *sdpcm_dpc_proc;	/* DPC kernel thread */
+	int sdpcm_dpc_run;		/* thread keep-running flag */
+	uint16_t sdpcm_data_tx_len;	/* pending data frame length (0=none) */
+	uint32_t sdpcm_intstatus;	/* deferred interrupt bits */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */
@@ -368,7 +375,7 @@ void brcmf_msgbuf_ring_submit(struct brcmf_softc *sc,
 void brcmf_msgbuf_process_d2h(struct brcmf_softc *sc);
 int brcmf_msgbuf_init(struct brcmf_softc *sc);
 void brcmf_msgbuf_cleanup(struct brcmf_softc *sc);
-int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+int brcmf_msgbuf_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
     void *buf, uint32_t len, uint32_t *resp_len);
 int brcmf_msgbuf_tx(struct brcmf_softc *sc, struct mbuf *m);
 void brcmf_msgbuf_delete_flowring(struct brcmf_softc *sc);
@@ -391,7 +398,7 @@ void brcmf_sdio_bp_write32(struct brcmf_softc *sc, uint32_t addr,
 
 /* sdpcm.c - SDPCM/BCDC protocol */
 extern const struct brcmf_bus_ops brcmf_sdio_bus_ops;
-int brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd,
+int brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
     void *buf, uint32_t len, uint32_t *resp_len);
 int brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m);
 void brcmf_sdpcm_process_event(struct brcmf_softc *sc,

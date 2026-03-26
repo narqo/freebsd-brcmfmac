@@ -222,33 +222,34 @@ struct brcmf_escan_result_le {
 	struct brcmf_bss_info_le bss_info_le;
 } __packed;
 
-/* Join parameters */
+/* Join parameters — NOT packed. Firmware expects natural alignment
+ * (2 bytes padding between bssid[6] and chanspec_num). */
 struct brcmf_assoc_params_le {
 	uint8_t bssid[6];
+	uint16_t _pad;
 	uint32_t chanspec_num;
 	uint16_t chanspec_list[1];
-} __packed;
+};
 
 struct brcmf_join_params {
 	struct brcmf_ssid_le ssid_le;
-	uint8_t bssid[6];
-	uint32_t chanspec_num;
-	uint16_t chanspec_list[1];
-} __packed;
+	struct brcmf_assoc_params_le params_le;
+};
 
 struct brcmf_join_scan_params {
 	uint8_t scan_type;
+	uint8_t _pad[3];
 	uint32_t nprobes;
 	uint32_t active_time;
 	uint32_t passive_time;
 	uint32_t home_time;
-} __packed;
+};
 
 struct brcmf_ext_join_params {
 	struct brcmf_ssid_le ssid_le;
 	struct brcmf_join_scan_params scan;
 	struct brcmf_assoc_params_le assoc;
-} __packed;
+};
 
 /* scan.c */
 int brcmf_chanspec_to_channel(struct brcmf_softc *sc, uint16_t chanspec);

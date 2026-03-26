@@ -45,17 +45,9 @@ brcmf_set_security(struct brcmf_softc *sc, uint32_t wsec, uint32_t wpa_auth)
 {
 	int error;
 
+	/* C_SET_AUTH: open system. Linux sets this per-connect. */
 	{
-		uint32_t val;
-		/* Infrastructure (BSS) mode */
-		val = htole32(1);
-		error = brcmf_fil_cmd_data_set(sc, 20 /* BRCMF_C_SET_INFRA */,
-		    &val, sizeof(val));
-		if (error != 0)
-			device_printf(sc->dev, "set infra: %d\n", error);
-
-		/* Open system auth */
-		val = htole32(0);
+		uint32_t val = htole32(0);
 		error = brcmf_fil_cmd_data_set(sc, 22 /* BRCMF_C_SET_AUTH */,
 		    &val, sizeof(val));
 		if (error != 0)

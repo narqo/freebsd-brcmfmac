@@ -40,7 +40,7 @@ brcmf_fil_iovar_data_get(struct brcmf_softc *sc, const char *name,
 	memset(buf, 0, namelen + len);
 	memcpy(buf, name, namelen);
 
-	error = sc->bus_ops->ioctl(sc, BRCMF_C_GET_VAR, buf,
+	error = sc->bus_ops->ioctl(sc, BRCMF_C_GET_VAR, 0, buf,
 	    namelen + len, NULL);
 	if (error == 0 && data != NULL && len > 0)
 		memcpy(data, buf, len);
@@ -67,7 +67,7 @@ brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
 		memcpy(buf + namelen, data, len);
 
 	{
-		int err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
+		int err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, 1, buf,
 		    namelen + len, NULL);
 		if (err != 0)
 			BRCMF_DBG(sc, "iovar_set '%s' failed: %d\n",
@@ -98,7 +98,7 @@ brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
 	if (data != NULL && len > 0)
 		memcpy(buf + namelen + 4, data, len);
 
-	err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, buf,
+	err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, 1, buf,
 	    namelen + 4 + len, NULL);
 	if (err != 0)
 		BRCMF_DBG(sc, "bsscfg_set '%s' idx=%d failed: %d\n",
@@ -140,7 +140,8 @@ int
 brcmf_fil_cmd_data_set(struct brcmf_softc *sc, uint32_t cmd,
     const void *data, uint32_t len)
 {
-	return sc->bus_ops->ioctl(sc, cmd, __DECONST(void *, data), len, NULL);
+	return sc->bus_ops->ioctl(sc, cmd, 1, __DECONST(void *, data), len,
+	    NULL);
 }
 
 /*
@@ -150,7 +151,7 @@ int
 brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
     void *data, uint32_t len)
 {
-	return sc->bus_ops->ioctl(sc, cmd, data, len, NULL);
+	return sc->bus_ops->ioctl(sc, cmd, 0, data, len, NULL);
 }
 
 /*
@@ -159,8 +160,7 @@ brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
 int
 brcmf_fil_bss_up(struct brcmf_softc *sc)
 {
-	uint32_t val = 0;
-	return sc->bus_ops->ioctl(sc, BRCMF_C_UP, &val, sizeof(val), NULL);
+	return sc->bus_ops->ioctl(sc, BRCMF_C_UP, 1, NULL, 0, NULL);
 }
 
 /*
@@ -169,6 +169,5 @@ brcmf_fil_bss_up(struct brcmf_softc *sc)
 int
 brcmf_fil_bss_down(struct brcmf_softc *sc)
 {
-	uint32_t val = 0;
-	return sc->bus_ops->ioctl(sc, BRCMF_C_DOWN, &val, sizeof(val), NULL);
+	return sc->bus_ops->ioctl(sc, BRCMF_C_DOWN, 1, NULL, 0, NULL);
 }

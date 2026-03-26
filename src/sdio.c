@@ -661,6 +661,25 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 		device_printf(sc->dev,
 		    "firmware booted, sharedram=0x%08x\n", shared);
+
+		/* Read the sdpcm_shared structure at the advertised address.
+		 * Linux validates protocol version from flags and uses
+		 * console_addr for firmware log access. */
+		{
+			uint32_t sh_flags, sh_trap, sh_console, sh_fwid;
+
+			sh_flags = brcmf_sdio_bp_read32(sc, shared);
+			sh_trap = brcmf_sdio_bp_read32(sc, shared + 4);
+			sh_console = brcmf_sdio_bp_read32(sc, shared + 20);
+			sh_fwid = brcmf_sdio_bp_read32(sc, shared + 28);
+
+			device_printf(sc->dev,
+			    "sdpcm_shared: flags=0x%08x trap=0x%08x "
+			    "console=0x%08x fwid=0x%08x\n",
+			    sh_flags, sh_trap, sh_console, sh_fwid);
+
+			sc->sdpcm_shared_flags = sh_flags;
+		}
 	}
 
 	/* Poll F2 ready (CCCR IORdy bit 2), up to 3s.
@@ -745,14 +764,39 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		    sc->sdio_func2 ? sc->sdio_func2->cur_blksize : 0);
 	}
 
-	/* Probe: single-block F2 write (64 bytes of zeros) */
+	/* Enable SDIO interrupts in CCCR. Linux calls sdio_claim_irq()
+	 * which enables IEN for F1 and F2. The firmware may check
+	 * CCCR IENx to confirm host readiness. */
 	{
-		uint8_t probe[64];
-		memset(probe, 0, sizeof(probe));
-		int perr = SDIO_WRITE_EXTENDED(
-		    device_get_parent(sc->sdio_func2->dev),
-		    sc->sdio_func2->fn, 0x8000, sizeof(probe), probe, false);
-		device_printf(sc->dev, "F2 probe write (64B): err=%d\n", perr);
+		uint8_t ien;
+		int err;
+		ien = sdio_f0_read_1(sc->sdio_func1, 0x04, &err);
+		ien |= 0x01 | 0x02 | 0x04;  /* IEN master + F1 + F2 */
+		sdio_f0_write_1(sc->sdio_func1, 0x04, ien, &err);
+		device_printf(sc->dev, "CCCR IENx=0x%02x err=%d\n", ien, err);
+	}
+
+	/* SaveRestore init — required for BCM4345/CYW43455.
+	 * Configures wake-up control, card capability, and clock.
+	 * Without this the chip's radio may not transmit. */
+	{
+		uint8_t val;
+		int err;
+
+		/* WAKEUPCTRL: set HT wait bit */
+		val = sdio_read_1(sc->sdio_func1, 0x1001E, &err);
+		val |= (1 << 1);	/* HTWAIT */
+		sdio_write_1(sc->sdio_func1, 0x1001E, val, &err);
+
+		/* CCCR CARDCAP: enable CMD14 support */
+		sdio_f0_write_1(sc->sdio_func1, 0xF0,
+		    (1 << 1) | (1 << 2), &err);
+
+		/* CHIPCLKCSR: force HT clock */
+		sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_CHIPCLKCSR,
+		    SBSDIO_FORCE_HT, &err);
+
+		device_printf(sc->dev, "SR init done\n");
 	}
 
 	return (0);
