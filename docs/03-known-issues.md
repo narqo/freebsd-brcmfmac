@@ -4,22 +4,23 @@
 
 ### BCM43455 association fails (AUTH timeout)
 
-Root cause identified (25 Mar): SDIO transport/runtime deviations from
-Linux brcmfmac. Audit of `docs/sdio-auth-ref/` against source code
-found multiple issues below net80211. See `docs/00-progress.md` M-S6
-for the full finding table and fix plan.
+**Root cause found (26 Mar)**: three SDIO core register/constant bugs
+break the mailbox protocol. Full analysis in `docs/10-investigations.md`
+top entry.
 
-Summary of deviations causing the blocker:
-- `proptxstatus_mode=1` sent to firmware (Linux does NOT on default SDIO)
-- SDPCM TX credit window not enforced
-- No integrated DPC loop
-- No BCDC `init_done` / firmware-signaling attach
-- Wrong attach ordering
+1. `SD_REG_TOHOSTMAILBOXDATA` = 0x044 (wrong; should be 0x04C)
+2. `I_SMB_INT_ACK` = 0x020000 (wrong; should be 0x02 for tosbmailbox)
+3. `I_HMB_FC_STATE` = 0x08, `I_HMB_FC_CHANGE` = 0x10 in sdpcm.c
+   (wrong; should be 0x10, 0x20 — off by one bit position)
 
-Symptom: firmware accepts `C_SET_SSID`, then reports AUTH timeout
-(`code=3 status=2`). Fails on open networks too, eliminating WPA as
-the cause. The `join` iovar returning `BCME_NOTREADY (-14)` is normal
-per ref doc (Linux falls back to SET_SSID).
+The firmware never receives a proper mailbox ACK from the host. Its
+connection state machine stays in degraded state. This explains all
+symptoms: scans work, ioctls work, `join` returns NOTREADY, SET_SSID
+accepted but AUTH times out. Same firmware works on Linux because
+Linux sends the correct ACK (0x02) to the correct register (0x04C).
+
+Previous deviations (proptxstatus, TX credits, DPC loop, etc.) were
+real bugs fixed during M-S6, but were not the AUTH timeout cause.
 
 ### 5GHz limited to HT40
 

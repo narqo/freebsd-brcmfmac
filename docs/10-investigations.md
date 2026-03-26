@@ -1,5 +1,193 @@
 # Investigations
 
+## 26 Mar 2026: ROOT CAUSE FOUND — three SDIO core register bugs
+
+**Priority: fix before any other work.**
+
+Traced the full SDIO init and runtime path against the canonical Linux
+source (`freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.c`
+and `sdio.h`). Found three bugs that break the SDIO mailbox protocol.
+The firmware never receives a proper host acknowledgment after boot.
+
+### Bug 1: wrong register offset for tohostmailboxdata
+
+Files: `src/sdio.c`, `src/sdpcm.c`
+
+```c
+#define SD_REG_TOHOSTMAILBOXDATA 0x044   // WRONG
+```
+
+The SDIO core register layout (from Linux `struct sdpcmd_regs`):
+
+| Offset | Register            | Direction        |
+|--------|---------------------|------------------|
+| 0x040  | tosbmailbox         | host → firmware  |
+| 0x044  | tohostmailbox       | firmware → host (control) |
+| 0x048  | tosbmailboxdata     | host → firmware  |
+| 0x04C  | tohostmailboxdata   | firmware → host (data)    |
+
+We read 0x044 (the control register) when we should read 0x04C (the
+data register). The firmware puts `HMB_DATA_FWREADY`, `HMB_DATA_DEVREADY`,
+`HMB_DATA_FWHALT` etc. in the data register at 0x04C. We never see them.
+
+Affected code:
+- `sdpcm.c` `brcmf_sdpcm_hostmail()` — DPC runtime mailbox read
+- `sdio.c` `brcmf_sdio_download_fw()` — boot-time mailbox read
+
+Fix: `#define SD_REG_TOHOSTMAILBOXDATA 0x04C`
+
+### Bug 2: wrong value for tosbmailbox INT_ACK
+
+Files: `src/sdio.c`, `src/sdpcm.c`
+
+```c
+#define I_SMB_INT_ACK 0x020000   // WRONG — this is an intstatus bit position
+```
+
+The `tosbmailbox` register has its own bit layout, distinct from
+`intstatus`. From Linux:
+
+```c
+#define SMB_NAK       (1 << 0)   /* 0x01 — Frame NAK */
+#define SMB_INT_ACK   (1 << 1)   /* 0x02 — Host Interrupt ACK */
+#define SMB_USE_OOB   (1 << 2)   /* 0x04 — Use OOB Wakeup */
+#define SMB_DEV_INT   (1 << 3)   /* 0x08 — Miscellaneous Interrupt */
+```
+
+We write 0x020000 (bit 17 — reserved/undefined) to `tosbmailbox`.
+The firmware expects bit 1 (0x02) for `SMB_INT_ACK`. The firmware
+never sees our acknowledgment.
+
+Affected code:
+- `sdpcm.c` `brcmf_sdpcm_hostmail()` — runtime mailbox ACK
+- `sdio.c` `brcmf_sdio_download_fw()` — boot-time mailbox ACK
+
+Fix: define a separate `SMB_INT_ACK = 0x02` for the tosbmailbox
+register and use it in both locations. Remove or rename the
+intstatus-domain `I_SMB_INT_ACK` to avoid confusion.
+
+### Bug 3: wrong intstatus bit definitions for FC_STATE and FC_CHANGE
+
+File: `src/sdpcm.c` only (sdio.c has correct values)
+
+```c
+#define I_HMB_FC_STATE    0x000008   // WRONG — bit 3 is I_SMB_SW3 (to-SB)
+#define I_HMB_FC_CHANGE   0x000010   // WRONG — bit 4 is I_HMB_SW0 (FC_STATE)
+```
+
+Correct values from Linux:
+
+| Constant        | Ours (wrong) | Correct | Linux alias  |
+|-----------------|-------------|---------|--------------|
+| I_HMB_FC_STATE  | 0x08 (bit 3)| 0x10 (bit 4) | I_HMB_SW0 |
+| I_HMB_FC_CHANGE | 0x10 (bit 4)| 0x20 (bit 5) | I_HMB_SW1 |
+| I_HMB_FRAME_IND | 0x40 (bit 6)| 0x40 (bit 6) | I_HMB_SW2 ✓ |
+| I_HMB_HOST_INT  | 0x80 (bit 7)| 0x80 (bit 7) | I_HMB_SW3 ✓ |
+
+Bits 0-3 of `intstatus` are **to-SB** (host→firmware) mailbox bits.
+Bits 4-7 are **to-host** (firmware→host) bits. Our FC_STATE at 0x08
+is actually `I_SMB_SW3` — a to-SB bit the host must not acknowledge.
+
+Effects of the wrong definitions:
+- `brcmf_sdpcm_intr_rstatus` masks with 0xD8 instead of 0xF0
+- Bit 3 (to-SB mailbox) is included in the acknowledge write-back,
+  clearing a firmware-side interrupt bit
+- Bit 5 (real FC_CHANGE) is never seen, so FC change processing
+  never triggers
+- Flow-control state from intstatus is read from the wrong bit
+
+Fix: change definitions in sdpcm.c to match sdio.c / Linux:
+```c
+#define I_HMB_FC_STATE    0x000010
+#define I_HMB_FC_CHANGE   0x000020
+```
+
+### Why these bugs cause AUTH timeout
+
+Bugs 1+2 together mean the mailbox protocol is completely broken:
+
+1. Firmware boots, sends `HMB_DATA_FWREADY | HMB_DATA_DEVREADY` in
+   `tohostmailboxdata` (offset 0x04C)
+2. We read the wrong register (0x044) — never see FWREADY
+3. We write 0x020000 (reserved bit) to `tosbmailbox` — firmware
+   never sees our ACK
+4. Firmware's connection state machine stays in degraded/unready state
+
+This explains the entire symptom pattern:
+
+- **Scans work**: escan doesn't require full mailbox handshake
+- **Ioctls work**: BCDC control exchange operates at SDPCM level
+- **`join` returns BCME_NOTREADY (-14)**: firmware is literally
+  not ready — connection state machine never fully enabled
+- **`C_SET_SSID` accepted but AUTH times out**: firmware tries to
+  auth but can't complete the exchange in degraded state
+- **Same firmware works on Linux**: Linux writes correct ACK (0x02)
+  to correct register, firmware fully initializes
+
+The investigation notes say association worked once before the DPC
+thread was added (M-S6). Before M-S6, there was no mailbox processing
+— no reads, no acks. After M-S6, we added mailbox processing with
+wrong register and wrong value. Writing 0x020000 to a reserved
+tosbmailbox bit is actively worse than doing nothing — it may
+confuse the firmware into an unrecoverable state.
+
+Bug 3 is a secondary issue. It corrupts flow-control tracking and
+acknowledges to-SB mailbox bits, but doesn't directly block the
+auth exchange. Fix it together with bugs 1+2.
+
+### Verification reference
+
+Canonical Linux source in the tree:
+- `freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.h`
+  lines 199-250 (`struct sdpcmd_regs` with register offsets)
+- `freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.c`
+  lines 201-270 (I_SMB/I_HMB bit definitions, SMB_INT_ACK, HMB_DATA)
+
+---
+
+## 26 Mar 2026: DPC thread, struct alignment, SR init
+
+DPC thread implemented (T1-T4). Single kernel thread owns all SDIO I/O.
+Tested with interrupt processing at DPC top and without. No change to
+AUTH timeout.
+
+**Struct alignment fix**: `brcmf_join_params`, `brcmf_assoc_params_le`,
+`brcmf_join_scan_params`, `brcmf_ext_join_params` were `__packed`.
+Firmware expects natural alignment — 2 bytes padding after bssid[6]
+before chanspec_num. Without it, SET_SSID with chanspec returned EIO.
+Fixed: removed `__packed`, added explicit padding. SET_SSID with BSSID
++ chanspec now accepted (returns 0). AUTH still times out.
+
+Also added: SR init (WAKEUPCTRL, CARDCAP, CHIPCLKCSR), CCCR IENx
+interrupt enable. Neither changed AUTH behavior.
+
+Bus noise test: reduced DPC polling to 50ms, removed intstatus reads
+from recv path. No change — AUTH timeout is not caused by bus
+activity during join.
+
+AUTH timeout is intermittent — screenshot from 25 Mar shows TestAP
+connected once (`ssid TestAP channel 1, 2412 MHz`). Current code
+never succeeds. The working session was before the DPC thread was
+added.
+
+## 25 Mar 2026: AUTH timeout investigation — ruled-out causes
+
+After the sdio-auth-ref audit fixes (proptxstatus removed, TX credits
+enforced, attach ordering fixed, mailbox/FC processing added,
+iv_mgtsend cancelled), the AUTH timeout persists on TestAP (open,
+2.4GHz, channel 1). Every attempt: `C_SET_SSID` accepted, firmware
+reports AUTH timeout (code=3 status=2) ~3s later.
+
+Tested and ruled out:
+- BSSID/chanspec variants in SET_SSID fallback params
+- Escan abort timing (100ms, 500ms)
+- Shared RAM structure validity (flags=1, no trap)
+- wpaie iovar on CYW43455 (UNSUPPORTED, no state change)
+- C_SET_INFRA removal from per-connect path
+- Redundant bss_up in brcmf_parent
+
+The DPC loop is the only remaining major structural gap.
+
 ## 25 Mar 2026: sdio-auth-ref audit — root cause of AUTH timeout
 
 Systematic audit of `docs/sdio-auth-ref/` (authoritative Linux brcmfmac

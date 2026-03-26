@@ -477,14 +477,29 @@ Priority-ordered. Each item can be tested independently.
   before every `brcmf_sdpcm_send`. Control frames check
   `(max_seq - tx_seq) & 0x80`; data frames reserve 2 extra credits
   for control. Both ioctl paths (inline and worker-mode) retry with
-  interleaved RX drain when ENOBUFS. **This fixed the AUTH timeout.**
-  Firmware now completes 802.11 auth + assoc (code=3/0/1 status=0).
-  WPA handshake still fails (DISASSOC_IND ~4s after RUN).
-- [ ] **Build integrated DPC thread**: replace the 50ms poll callout +
-  separate control/data TX paths with a single thread that processes:
-  interrupt status -> mailbox (with content interpretation) -> RX ->
-  control TX (credit-gated) -> data TX (credit-gated). This eliminates
-  the `sdpcm_rx_busy` ad-hoc serialization.
+  interleaved RX drain when ENOBUFS. AUTH timeout persists on 2.4GHz
+  (TestAP); intermittent success on 5GHz (Kolabox) was observed once
+  but not reproducible. Credit enforcement is correct per spec but
+  not the sole cause of the AUTH timeout.
+- [ ] **Build integrated DPC thread**: replace the poll callout +
+  taskqueue + `sdpcm_rx_busy` model with a single kernel thread that
+  owns all SDIO F2 I/O. Five sub-tasks:
+  - [x] T1: DPC thread skeleton — tested 25 Mar. Thread created in
+    `start_poll` (not `init` — too early, hangs during attach).
+    Callout at 10ms wakes thread. Ioctl msleep wakes thread instead
+    of enqueueing `rx_task`. Boot ioctls pass, scans work.
+  - [x] T2: Ioctl via DPC — removed entire non-worker inline ioctl
+    path. All ioctls go through DPC thread. Tested: boot ioctls OK,
+    scans OK. AUTH timeout unchanged.
+  - [x] T3+T4: Data TX via DPC + interrupt at DPC top — tested 26 Mar.
+    `brcmf_sdpcm_tx` queues frame, wakes DPC. Interrupt/mailbox/FC
+    processing moved from `brcmf_sdpcm_recv` to DPC loop top. DPC
+    loop order: intstatus -> mailbox -> FC -> RX (up to 50) ->
+    control TX -> data TX. **AUTH timeout persists** — the DPC loop
+    is correct per spec but not the root cause.
+  - [ ] T5: Cleanup — remove callout, `sdpcm_rx_task`, `sdpcm_tq`,
+    `sdpcm_rx_busy`, `sdpcm_worker_mode`. Thread shutdown in
+    `brcmf_sdpcm_stop_poll`.
 - [x] **Interpret mailbox content**: `SMB_FW_HALT` in mailbox data now
   sets `fw_dead`. FC_CHANGE interrupt updates `sdpcm_flowctl` flag.
   Tested 25 Mar: module loads, firmware boots, scans/ioctls work,
@@ -496,6 +511,12 @@ Priority-ordered. Each item can be tested independently.
   `brcmf_sdpcm_start_poll` before `brcmf_cfg_attach`. The RX poll
   runtime is now active during dongle init ioctls. Worker mode set
   before `brcmf_sdio_bus_start` so all ioctls use the DPC path.
+- [x] **Cancel net80211 management frame timeout**: net80211's
+  `sta_newstate(AUTH)` sends its own 802.11 auth frame (silently
+  dropped by `raw_xmit`) and starts a 2s `iv_mgtsend` callout. The
+  callout fires and transitions AUTH→SCAN before the firmware
+  responds. Fixed: cancel `iv_mgtsend` after base newstate for AUTH
+  and ASSOC. AUTH state now survives until firmware events arrive.
 - [ ] **Add minimal BCDC `init_done`**: set `avoid_queueing=true` flag
   at the right attach point. On default SDIO this is nearly a no-op
   but matches Linux's protocol-layer lifecycle.
@@ -503,30 +524,73 @@ Priority-ordered. Each item can be tested independently.
   termination on F2 write failure, rxskip until NAK ack. May fix the
   chip-wedge pattern after repeated failed AUTH cycles.
 
-##### WPA handshake failure (under investigation)
+##### ROOT CAUSE FOUND (26 Mar): three SDIO core register bugs
 
-After the TX credit fix, 802.11 auth+assoc succeeds. The firmware
-reaches the AP, and SET_SSID completes (code=0 status=0). VAP
-transitions AUTH→RUN. EAPOL frame 2/4 is transmitted (121 bytes
-on bus, err=0), but the AP responds with DISASSOC_IND (reason=2,
-PREV_AUTH_NOT_VALID) ~4s later. AP retransmits frame 1/4 three
-times (replay counters 02, 03, 04) before DISASSOC.
+Full details in `docs/10-investigations.md` top entry.
 
-wpa_supplicant -dd analysis (25 Mar):
-- RSN IE in frame 2/4: capabilities `0x000c` — WMM IE injection
-  works, matches firmware expectations
-- `key_mgmt=0x2` (WPA-PSK), AKM `00:0f:ac:02` — correct
-- All EAPOL TX return err=0 with adequate TX credits (seq=57, max=96)
-- EAPOL frames arrive from both AP BSSIDs (bc:3b 2.4GHz, bc:3c 5GHz)
-  despite being associated only to bc:3b — suggests firmware delivers
-  data frames from both radios, or the AP's dual-radio setup confuses
-  the association
+Three bugs break the SDIO mailbox protocol so the firmware never
+receives a proper host acknowledgment after boot:
 
-The AP never sends frame 3/4, meaning it doesn't receive our frame
-2/4. The SDIO bus reports success, so the problem is either:
-- firmware fails to transmit the frame over the air
-- frame reaches the AP but is rejected (wrong BSSID, wrong key, etc.)
-- timing: the firmware's TX path isn't fully ready when EAPOL arrives
+1. **Wrong register offset**: `SD_REG_TOHOSTMAILBOXDATA` is 0x044
+   (the control register) — should be 0x04C (the data register).
+   We never read firmware's FWREADY/DEVREADY flags.
+
+2. **Wrong ACK value**: `I_SMB_INT_ACK` is 0x020000 (an intstatus
+   bit position) — should be 0x02 (tosbmailbox bit 1). Firmware
+   never sees our mailbox acknowledgment.
+
+3. **Wrong intstatus bits** in sdpcm.c: `I_HMB_FC_STATE` is 0x08
+   (bit 3, a to-SB bit) — should be 0x10 (bit 4). `I_HMB_FC_CHANGE`
+   is 0x10 — should be 0x20. Causes incorrect flow-control handling
+   and accidental clearing of firmware-side mailbox bits.
+
+Verified against canonical Linux source in
+`freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.h`
+(`struct sdpcmd_regs`) and `sdio.c` (bit definitions).
+
+- [ ] Fix SD_REG_TOHOSTMAILBOXDATA to 0x04C
+- [ ] Fix tosbmailbox ACK to use SMB_INT_ACK=0x02
+- [ ] Fix I_HMB_FC_STATE/I_HMB_FC_CHANGE in sdpcm.c
+- [ ] Test association
+
+##### Previous AUTH timeout investigation (now explained)
+
+TestAP (open, channel 1, 2.4GHz) consistently fails with firmware
+AUTH timeout (code=3 status=2). `C_SET_SSID` command accepted
+(returns 0), but the firmware can't complete 802.11 auth with the AP.
+Firmware is known-good (same files work on Linux).
+
+Tested and ruled out:
+- TX credit exhaustion (credits available, send succeeds)
+- BSSID/chanspec in SET_SSID params (broadcast BSSID matches Linux;
+  actual BSSID + chanspec_num=1 returns EIO; actual BSSID + no
+  chanspec accepted but still AUTH timeout)
+- Escan abort timing (500ms wait didn't help)
+- Shared RAM structure (read OK, flags=1, no trap, fwid matches)
+- Sending wpaie on CYW43455 (returns UNSUPPORTED, no state change)
+- Removing C_SET_INFRA from per-connect path (no change)
+- Removing redundant bss_up in brcmf_parent (no change)
+- C_SET_GLOM returns BCME_BADARG on CYW43455 (non-fatal)
+- Roam trigger/delta return BCME_RANGE on CYW43455 (non-fatal)
+
+The intermittent 5GHz success (Kolabox) was observed once but not
+reproducible. The AUTH timeout is the primary blocker.
+
+Tested and also ruled out (from Linux brcmfmac source review):
+- SaveRestore init (WAKEUPCTRL, CARDCAP, CHIPCLKCSR FORCE_HT) — added, no change
+- CCCR IENx interrupt enable (0x07 = master + F1 + F2) — added, no change
+- Integrated DPC loop (T1-T4 complete) — all I/O through single DPC thread, no change
+
+**Struct alignment fix (26 Mar)**: `brcmf_join_params`, `brcmf_assoc_params_le`,
+`brcmf_join_scan_params`, `brcmf_ext_join_params` were all `__packed`.
+The firmware expects natural alignment (2 bytes padding between bssid[6]
+and chanspec_num in assoc_params, 3 bytes after scan_type in scan_params).
+Without padding, the chanspec field was at the wrong offset and the
+firmware rejected SET_SSID with chanspec (returned EIO). Fixed: removed
+`__packed`, added explicit padding, matched Linux struct layout.
+SET_SSID with BSSID + chanspec now accepted (returns 0). AUTH still
+times out — under investigation.
+
 
 ##### Deferred (not blocking association)
 

@@ -235,7 +235,7 @@ The existing bounds check prevents reading past the event buffer.
 
 ### P3-1: Dead header file `pcie.h` — FIXED
 
-Deleted `src/pcie.h`. LinuxKPI leftover, never included, would not
+Deleted `src/pcie.h`. Stale leftover, never included, would not
 compile.
 
 ### P3-3: `ETHER_ADDR_LEN` redefined — FIXED
