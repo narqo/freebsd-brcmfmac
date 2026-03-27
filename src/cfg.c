@@ -271,6 +271,28 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	sc->join_chan = chan;
 	chanspec = brcmf_channel_to_chanspec(sc, chan);
 
+	/* Pre-join diagnostics */
+	{
+		uint32_t cur_chan = 0, cur_cs = 0, txpwr = 0;
+		struct { char abbrev[4]; uint32_t rev; char cc[4]; } cntry;
+		memset(&cntry, 0, sizeof(cntry));
+		brcmf_fil_cmd_data_get(sc, 29 /* C_GET_CHANNEL */,
+		    &cur_chan, sizeof(cur_chan));
+		brcmf_fil_iovar_data_get(sc, "chanspec",
+		    &cur_cs, sizeof(cur_cs));
+		brcmf_fil_iovar_data_get(sc, "qtxpower",
+		    &txpwr, sizeof(txpwr));
+		brcmf_fil_iovar_data_get(sc, "country",
+		    &cntry, sizeof(cntry));
+		device_printf(sc->dev,
+		    "pre-join: cur_chan=%u chanspec=0x%04x "
+		    "qtxpower=%u country=%.2s/%.2s rev=%u\n",
+		    le32toh(cur_chan),
+		    le16toh((uint16_t)le32toh(cur_cs)),
+		    le32toh(txpwr),
+		    cntry.cc, cntry.abbrev, le32toh(cntry.rev));
+	}
+
 	memset(&ejoin, 0, sizeof(ejoin));
 	ejoin.ssid_le.SSID_len = htole32(ni->ni_esslen);
 	memcpy(ejoin.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
@@ -289,9 +311,61 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
 	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
 
-	error = brcmf_fil_bsscfg_data_set(sc, "join", 0, &ejoin, sizeof(ejoin));
-	if (error == 0)
+	{
+		/* Match Linux's size calculation: base struct up to
+		 * chanspec_list, plus one chanspec entry. */
+		uint32_t join_sz =
+		    offsetof(struct brcmf_ext_join_params, assoc) +
+		    offsetof(struct brcmf_assoc_params_le, chanspec_list) +
+		    sizeof(uint16_t);
+
+		/* Dump the join params for debugging */
+		{
+			uint8_t *p = (uint8_t *)&ejoin;
+			device_printf(sc->dev,
+			    "join_sz=%u ssid@0 scan@%zu assoc@%zu\n",
+			    join_sz,
+			    offsetof(struct brcmf_ext_join_params, scan),
+			    offsetof(struct brcmf_ext_join_params, assoc));
+			device_printf(sc->dev,
+			    "join hex[0-35]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x\n",
+			    p[0],p[1],p[2],p[3],p[4],p[5],p[6],p[7],
+			    p[8],p[9],p[10],p[11],p[12],p[13],p[14],p[15],
+			    p[16],p[17],p[18],p[19],p[20],p[21],p[22],p[23],
+			    p[24],p[25],p[26],p[27],p[28],p[29],p[30],p[31],
+			    p[32],p[33],p[34],p[35]);
+			device_printf(sc->dev,
+			    "join hex[36-69]: "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x%02x%02x %02x%02x%02x%02x "
+			    "%02x%02x\n",
+			    p[36],p[37],p[38],p[39],p[40],p[41],p[42],p[43],
+			    p[44],p[45],p[46],p[47],p[48],p[49],p[50],p[51],
+			    p[52],p[53],p[54],p[55],p[56],p[57],p[58],p[59],
+			    p[60],p[61],p[62],p[63],p[64],p[65],p[66],p[67],
+			    p[68],p[69]);
+		}
+
+		error = brcmf_fil_bsscfg_data_set(sc, "join", 0, &ejoin,
+		    join_sz);
+	}
+	if (error == 0) {
+		uint32_t post_cs = 0;
+		pause_sbt("joinw", mstosbt(500), 0, 0);
+		brcmf_fil_iovar_data_get(sc, "chanspec",
+		    &post_cs, sizeof(post_cs));
+		device_printf(sc->dev,
+		    "post-join: chanspec=0x%04x\n",
+		    le16toh((uint16_t)le32toh(post_cs)));
 		return 0;
+	}
 
 	/* join iovar failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID.
 	 * Send SSID-only first (no assoc_params) to let firmware pick
@@ -634,13 +708,10 @@ brcmf_parent(struct ieee80211com *ic)
 		if (!sc->running) {
 			uint32_t val;
 
-			error = brcmf_fil_bss_up(sc);
-			BRCMF_DBG(sc, "parent: bss_up=%d\n", error);
-
-			val = htole32(1);
-			error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA,
-			    &val, sizeof(val));
-			BRCMF_DBG(sc, "parent: set_infra=%d\n", error);
+			/* C_UP and C_SET_INFRA already done in
+			 * brcmf_cfg_attach. Repeating C_UP here
+			 * triggers a redundant wl_open in the firmware
+			 * that re-runs PHY init with FIXME bt_coex. */
 
 			val = htole32(0);
 			error = brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_PM,
@@ -1044,6 +1115,19 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 
 	if (bootverbose)
 		ieee80211_announce(ic);
+
+	/* Set firmware msglevel at the very end, after all init commands
+	 * that might trigger wl_open and reset msglevel. */
+	{
+		uint32_t msl[2] = { 0, 0 };
+		if (brcmf_fil_iovar_data_get(sc, "msglevel",
+		    msl, sizeof(msl)) == 0) {
+			msl[0] = htole32(0xFFFFFFFF);
+			msl[1] = htole32(0xFFFFFFFF);
+			brcmf_fil_iovar_data_set(sc, "msglevel",
+			    msl, sizeof(msl));
+		}
+	}
 
 	sc->cfg_attached = 1;
 	return (0);

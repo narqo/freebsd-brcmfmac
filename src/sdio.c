@@ -666,6 +666,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			    sh_flags, sh_trap, sh_console, sh_fwid);
 
 			sc->sdpcm_shared_flags = sh_flags;
+			sc->shared.console_addr = sh_console;
 		}
 	}
 
@@ -786,10 +787,13 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		device_printf(sc->dev, "SR init done\n");
 	}
 
+
+
 	return (0);
 }
 
 static int brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS);
+static int brcmf_sdio_fwcon_sysctl(SYSCTL_HANDLER_ARGS);
 
 /*
  * Main SDIO bus attach — called from main.c after probe.
@@ -898,13 +902,18 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 		    "sdio_diag", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
 		    sc, 0, brcmf_sdio_diag_sysctl, "A",
 		    "SDIO diagnostic: read core state and F2");
+		SYSCTL_ADD_PROC(ctx, SYSCTL_CHILDREN(tree), OID_AUTO,
+		    "fwcon", CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE,
+		    sc, 0, brcmf_sdio_fwcon_sysctl, "A",
+		    "Firmware console log (last 1KB)");
 	}
 
 	return (0);
 }
 
 /*
- * Diagnostic sysctl: read SDIO core state and attempt F2 read.
+ * Diagnostic sysctl: read SDIO core state.
+ * Pauses DPC thread for exclusive SDIO bus access.
  */
 static int
 brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
@@ -919,10 +928,11 @@ brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
 		return SYSCTL_OUT(req, buf, len);
 	}
 
+	sx_xlock(&sc->sdio_lock);
+
 	intst = brcmf_sdio_bp_read32(sc,
 	    sc->sdiocore.base + SD_REG_INTSTATUS);
 
-	/* Read additional SDIO core registers */
 	{
 		uint32_t hostmask = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + 0x024);
@@ -940,7 +950,63 @@ brcmf_sdio_diag_sysctl(SYSCTL_HANDLER_ARGS)
 		    intst, hostmask, tohost, clkval, devctl, ioex, iordy);
 	}
 
+	sx_xunlock(&sc->sdio_lock);
 	return SYSCTL_OUT(req, buf, len);
+}
+
+/*
+ * Firmware console sysctl: read firmware log buffer.
+ *
+ * Must stop the DPC thread during access — concurrent SDIO bus
+ * access from two threads corrupts CAM queue state (camq_remove
+ * panic at out-of-bounds index).
+ */
+static int
+brcmf_sdio_fwcon_sysctl(SYSCTL_HANDLER_ARGS)
+{
+	struct brcmf_softc *sc = arg1;
+	uint32_t console_addr, buf_addr, bufsize, writeidx;
+	char out[2048];
+	int pos = 0;
+
+	console_addr = sc->shared.console_addr;
+	if (console_addr == 0)
+		return SYSCTL_OUT(req, "no console\n", 11);
+
+	sx_xlock(&sc->sdio_lock);
+
+	buf_addr = brcmf_sdio_bp_read32(sc, console_addr + 8);
+	bufsize = brcmf_sdio_bp_read32(sc, console_addr + 12);
+	writeidx = brcmf_sdio_bp_read32(sc, console_addr + 16);
+
+	pos = snprintf(out, sizeof(out),
+	    "console=0x%x buf=0x%x size=%u widx=%u\n",
+	    console_addr, buf_addr, bufsize, writeidx);
+	if (bufsize == 0 || bufsize > 0x100000 || buf_addr == 0)
+		goto done;
+
+	{
+		uint32_t readidx = 0;
+		while (readidx != writeidx && pos < (int)sizeof(out) - 2) {
+			int err;
+			brcmf_sdio_set_window(sc, buf_addr + readidx);
+			uint32_t off = ((buf_addr + readidx) & 0x7FFF) |
+			    0x8000;
+			char ch = sdio_read_1(sc->sdio_func1, off, &err);
+			if (err != 0)
+				break;
+			if (ch != '\0')
+				out[pos++] = ch;
+			readidx++;
+			if (readidx >= bufsize)
+				readidx = 0;
+		}
+	}
+
+done:
+	sx_xunlock(&sc->sdio_lock);
+	out[pos] = '\0';
+	return SYSCTL_OUT(req, out, pos);
 }
 
 /*

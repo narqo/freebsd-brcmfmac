@@ -203,22 +203,11 @@ struct brcmf_softc {
 	uint8_t sdpcm_ioctl_rx[BRCMF_SDPCM_CTL_BUFSZ];
 	uint8_t sdpcm_data_tx[2048];	/* BCDC+payload for brcmf_sdpcm_tx */
 	uint8_t sdpcm_poll_rx[BRCMF_SDPCM_CTL_BUFSZ]; /* RX poll buffer */
-	uint16_t sdpcm_ioctl_reqid;	/* outstanding control request ID */
-	uint16_t sdpcm_ioctl_tx_len;	/* pending control frame length */
-	int sdpcm_ioctl_waiting;	/* waiting for control response */
-	int sdpcm_ioctl_tx_pending;	/* rx_task must send control frame */
-	int sdpcm_worker_mode;	/* control responses delivered by rx_task */
-	volatile u_int sdpcm_rx_busy;	/* atomic: rx_task owns F2 */
 	int sdpcm_poll_started;		/* guard for stop_poll */
 	struct callout sdpcm_callout;	/* RX poll callout (50ms) */
 	struct task sdpcm_rx_task;	/* RX processing task */
 	struct taskqueue *sdpcm_tq;	/* dedicated taskqueue for rx_task */
-
-	/* DPC thread */
-	struct proc *sdpcm_dpc_proc;	/* DPC kernel thread */
-	int sdpcm_dpc_run;		/* thread keep-running flag */
-	uint16_t sdpcm_data_tx_len;	/* pending data frame length (0=none) */
-	uint32_t sdpcm_intstatus;	/* deferred interrupt bits */
+	struct sx sdio_lock;		/* serializes all F2 SDIO access (sleepable) */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */

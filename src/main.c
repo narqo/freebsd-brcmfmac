@@ -326,13 +326,12 @@ brcmf_sdio_bus_attach(device_t dev)
 
 	sc->bus_ops = &brcmf_sdio_bus_ops;
 	mtx_init(&sc->ioctl_mtx, "brcmfmac_ioctl", NULL, MTX_DEF);
+	brcmf_sdpcm_init(sc);
 
 	error = brcmf_sdio_attach(sc);
 	if (error != 0)
 		goto fail;
 
-	brcmf_sdpcm_init(sc);
-	sc->sdpcm_worker_mode = 1;
 	brcmf_sdpcm_start_poll(sc);
 
 	error = brcmf_sdio_bus_start(sc);

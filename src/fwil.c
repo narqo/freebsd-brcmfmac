@@ -78,32 +78,48 @@ brcmf_fil_iovar_data_set(struct brcmf_softc *sc, const char *name,
 
 /*
  * Set a bsscfg-indexed IOVAR.
- * Wire format: name + NUL + bsscfg_idx(le32) + data
+ *
+ * Linux behavior: bsscfg_idx == 0 sends a plain iovar (no prefix).
+ * Non-zero sends: "bsscfg:" + name + NUL + bsscfg_idx(le32) + data.
  */
 int
 brcmf_fil_bsscfg_data_set(struct brcmf_softc *sc, const char *name,
     int bsscfg_idx, const void *data, uint32_t len)
 {
-	char buf[512];
-	uint32_t namelen, idx_le;
-	int err;
+	if (bsscfg_idx == 0)
+		return brcmf_fil_iovar_data_set(sc, name, data, len);
 
-	namelen = strlen(name) + 1;
-	if (namelen + 4 + len > sizeof(buf))
-		return (EINVAL);
+	{
+		char buf[512];
+		static const char prefix[] = "bsscfg:";
+		uint32_t prefixlen = sizeof(prefix) - 1;
+		uint32_t namelen = strlen(name) + 1;
+		uint32_t iolen = prefixlen + namelen + 4 + len;
+		uint32_t idx_le;
+		char *p;
+		int err;
 
-	memcpy(buf, name, namelen);
-	idx_le = htole32(bsscfg_idx);
-	memcpy(buf + namelen, &idx_le, 4);
-	if (data != NULL && len > 0)
-		memcpy(buf + namelen + 4, data, len);
+		if (iolen > sizeof(buf))
+			return (EINVAL);
 
-	err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, 1, buf,
-	    namelen + 4 + len, NULL);
-	if (err != 0)
-		BRCMF_DBG(sc, "bsscfg_set '%s' idx=%d failed: %d\n",
-		    name, bsscfg_idx, err);
-	return err;
+		p = buf;
+		memcpy(p, prefix, prefixlen);
+		p += prefixlen;
+		memcpy(p, name, namelen);
+		p += namelen;
+		idx_le = htole32(bsscfg_idx);
+		memcpy(p, &idx_le, 4);
+		p += 4;
+		if (data != NULL && len > 0)
+			memcpy(p, data, len);
+
+		err = sc->bus_ops->ioctl(sc, BRCMF_C_SET_VAR, 1, buf,
+		    iolen, NULL);
+		if (err != 0)
+			BRCMF_DBG(sc, "bsscfg_set '%s' idx=%d failed: %d\n",
+			    name, bsscfg_idx, err);
+		return err;
+	}
 }
 
 /*
@@ -160,7 +176,9 @@ brcmf_fil_cmd_data_get(struct brcmf_softc *sc, uint32_t cmd,
 int
 brcmf_fil_bss_up(struct brcmf_softc *sc)
 {
-	return sc->bus_ops->ioctl(sc, BRCMF_C_UP, 1, NULL, 0, NULL);
+	uint32_t val = 0;
+
+	return brcmf_fil_cmd_data_set(sc, BRCMF_C_UP, &val, sizeof(val));
 }
 
 /*
@@ -169,5 +187,7 @@ brcmf_fil_bss_up(struct brcmf_softc *sc)
 int
 brcmf_fil_bss_down(struct brcmf_softc *sc)
 {
-	return sc->bus_ops->ioctl(sc, BRCMF_C_DOWN, 1, NULL, 0, NULL);
+	uint32_t val = htole32(1);
+
+	return brcmf_fil_cmd_data_set(sc, BRCMF_C_DOWN, &val, sizeof(val));
 }

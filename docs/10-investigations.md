@@ -1,5 +1,173 @@
 # Investigations
 
+## 27 Mar 2026: register fixes applied, bsscfg encoding bug, firmware console
+
+### Register fixes applied and tested
+
+All three register bugs from 26 Mar fixed and consolidated into
+`brcmfmac.h`. Boot mailbox now reads FWREADY + protocol version 4.
+Runtime ACK sends correct value (0x02). FC bits correct.
+
+AUTH timeout persists — register bugs were real but not sufficient.
+
+### Firmware console reader
+
+Added sysctl `dev.brcmfmac.0.fwcon` — reads CYW43455 internal log
+via F1 backplane byte reads. Console structure at `shared.console_addr`
+(stored during firmware boot from sdpcm_shared offset 20).
+
+Console revealed `join BCME -14 (Buffer too short)`, not BCME_NOTREADY
+as previously assumed. Error was masked because ioctl layer returns
+generic EIO for all firmware errors.
+
+### bsscfg encoding bug (FIXED)
+
+`brcmf_fil_bsscfg_data_set` always prepended a 4-byte bsscfg index.
+Linux's `brcmf_create_bsscfg` sends a plain iovar (no prefix, no
+index) when `bsscfgidx == 0`. Our code sent `"join\0" + le32(0) +
+ext_join_params`, which made the firmware parse the 4-byte index as
+the start of ssid_le, corrupting the entire join command.
+
+Fix: `bsscfg_idx == 0` now routes to `brcmf_fil_iovar_data_set`.
+Non-zero indices use the `"bsscfg:" + name + idx + data` encoding.
+Also matched Linux's `join_params_size` calculation.
+
+Result: `join` iovar now succeeds (firmware console confirms error
+gone). But AUTH still times out.
+
+### btc_mode=0 — no change
+
+Firmware logs `FIXME bt_coex` during radio init. `btc_mode=0` iovar
+did not resolve AUTH timeout.
+
+### Current status
+
+All known protocol/encoding bugs fixed. `join` iovar works. Firmware
+accepts join command. AP never sees auth frames — firmware is not
+transmitting. Root cause still unknown.
+
+### fwcon sysctl panic (FIXED)
+
+Reading the fwcon sysctl while the DPC thread was running caused
+`camq_remove: out-of-bounds index -3` — concurrent SDIO bus access
+from two threads corrupts CAM queue state. Fixed: both diag and
+fwcon sysctls now pause the DPC thread during bus access.
+
+### Firmware console reveals: "authentication failure, no ack"
+
+With msglevel enabled (8-byte GET+OR+SET), the firmware console
+shows during the join attempt:
+
+```
+JOIN: authentication failure, no ack
+JOIN: authentication failure, no ack
+JOIN: authentication failure, no ack
+```
+
+The firmware IS transmitting 802.11 auth frames. But the AP does
+not ACK them at the MAC layer. This is a PHY/radio-level issue,
+not a protocol/iovar issue.
+
+### join iovar vs SET_SSID: different failure modes
+
+With `join` iovar (now working): firmware scans, finds the AP,
+attempts auth → "authentication failure, no ack". Firmware IS
+transmitting on the correct channel (post-join chanspec=0x1001
+confirmed). TX power = 127 qdBm (31.75 dBm, max).
+
+With `SET_SSID` fallback (join skipped): firmware reports
+status=3 (NO_NETWORKS) — AP not in scan cache because escan
+was aborted before join.
+
+The `join` path is correct — it includes scan params so firmware
+finds the AP. The "no ack" means the AP's radio doesn't receive
+or acknowledge the auth frame. AP debug log confirms no frames
+received from our MAC.
+
+### msglevel behavior
+
+`msglevel` GET returns 0x00000001 (WL_ERROR only). SET to
+0xFFFFFFFF returns 0. But firmware doesn't produce verbose
+console output during join/auth — only error-level messages
+("no ack"). Production firmware (CYW 7.45.265) likely has most
+debug prints compiled out. The "JOIN: authentication failure,
+no ack" message is at WL_ERROR level and appears without
+msglevel changes.
+
+### wl_open count reduced from 3 to 1 — no change
+
+Removed redundant `bss_up` + `set_infra` from `brcmf_parent`.
+Now only one `wl_open` occurs (during `brcmf_cfg_attach` `bss_up`).
+AUTH timeout unchanged.
+
+### C_UP/C_DOWN payload fixed to match Linux
+
+Linux sends `C_UP` with 4-byte LE int payload (value 0), and `C_DOWN`
+with value 1. We were sending no payload at all. Fixed
+`brcmf_fil_bss_up`/`brcmf_fil_bss_down` to use
+`brcmf_fil_cmd_data_set` with the correct int payload. AUTH timeout
+unchanged, but the fix is correct per Linux behavior.
+
+### Country code removed — no change
+
+Without `country` iovar, firmware defaults to `US/US rev=0`.
+Same AUTH timeout. Country is not the cause.
+
+### msglevel persistence issue
+
+`msglevel` SET (8-byte, to 0xFFFFFFFF) succeeds (returns 0) but
+firmware console output only grows during some loads and not others.
+Likely the `wl_open` (triggered by `C_UP`) resets msglevel after
+we set it, OR the firmware join/auth path in this production build
+(CYW 7.45.265) has most debug prints compiled out. The "no ack"
+message was confirmed on one earlier run but is not consistently
+reproducible in the console.
+
+### Confirmed: firmware transmits auth frames
+
+The firmware console confirmed `JOIN: authentication failure, no ack`
+on an earlier run. The firmware IS transmitting auth frames on the
+correct channel (chanspec 0x1001 = ch1/2GHz confirmed post-join).
+But the AP doesn't ACK them. The AP's debug log confirms no frames
+received from our MAC.
+
+TX power is 127 qdBm (31.75 dBm, max). AP is at -60 dBm RSSI.
+Same firmware + NVRAM works on Linux RPi4.
+
+### btc_mode=0 — FALSE POSITIVE, not the fix (27 Mar 2026)
+
+**Initial test (kldunload/kldload without reboot):** Changed NVRAM
+`btc_mode=1` → `btc_mode=0`. Association succeeded once. Firmware
+showed `link up`. Concluded this was the fix.
+
+**After reboot:** Association **fails again** with AUTH timeout.
+Same `FIXME bt_coex` message, same E_AUTH status=2 pattern.
+
+**Conclusion:** The mid-session success was a **false positive**.
+The firmware wasn't fully reset between kldunload/kldload — residual
+state from the first load allowed the second load to work. After a
+clean reboot, `btc_mode=0` has no effect.
+
+The AUTH timeout root cause is **still unknown**.
+
+### Current status
+
+- AUTH timeout persists after reboot
+- `FIXME bt_coex` appears during every `wl_open`
+- Firmware console shows no "no ack" messages (widx unchanged)
+- `btc_mode=0` in NVRAM does NOT fix the problem
+
+### NVRAM modification (not effective)
+
+Changed `/boot/firmware/brcmfmac43455-sdio.txt`:
+```
+btc_mode=1  →  btc_mode=0  (two occurrences)
+```
+
+Backup at `/boot/firmware/brcmfmac43455-sdio.txt.bak`
+
+---
+
 ## 26 Mar 2026: ROOT CAUSE FOUND — three SDIO core register bugs
 
 **Priority: fix before any other work.**

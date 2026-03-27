@@ -8,14 +8,13 @@ Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
 
 **SDIO milestones M-S1 through M-S5 complete, M-S6 in progress.**
 BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs,
-and handles firmware ioctls/events, but association is not functional.
+but **association fails** with AUTH timeout.
 
-Root cause identified (25 Mar): systematic audit of `docs/sdio-auth-ref/`
-against source code found multiple SDIO transport/runtime deviations from
-Linux brcmfmac. The blocker is below net80211 — the SDPCM/BCDC runtime
-is incomplete. Key findings: TX credit window not enforced, no integrated
-DPC loop, `proptxstatus_mode=1` incorrectly enabled, no BCDC `init_done`,
-wrong attach ordering. M-S6 tracks the fixes.
+**AUTH timeout (27 Mar 2026):** Still under investigation. Earlier
+`btc_mode=0` fix was a **false positive** — worked only during a
+kldunload/kldload cycle without reboot. After reboot, AUTH timeout
+returns. The `FIXME bt_coex` during `wl_open` remains the prime suspect
+but the root cause is unknown.
 
 ## Milestones
 
@@ -417,7 +416,7 @@ Reference: `docs/03-sdio-reference.md`.
 
 #### M-S5: net80211 for BCM43455 (DONE)
 
-net80211 plumbing complete. Association blocked by SDIO transport issues (M-S6).
+net80211 plumbing complete. Association blocked by AUTH timeout (M-S6 in progress).
 
 - [x] CLM blob download (CYW 7.45.x requires it for scan)
 - [x] `brcmf_cfg_attach` (net80211 integration, chip-aware VHT/HT)
@@ -556,7 +555,14 @@ Verified against canonical Linux source in
 - [x] Tested: DPC runtime mailbox ACK sends 0x02 (correct)
 - [ ] AUTH timeout persists — register bugs were real but not the
   sole cause. Firmware still reports AUTH timeout (code=3 status=2).
-  Additional investigation needed.
+- [x] Added SDIO firmware console reader (sysctl `dev.brcmfmac.0.fwcon`)
+- [x] **New finding**: `join` iovar fails with BCME_BUFTOOSHORT (-14),
+  NOT BCME_NOTREADY. Our `brcmf_ext_join_params` struct is too small.
+  The firmware's join handler rejects the buffer. Error was masked
+  because our ioctl layer returns EIO for all firmware errors.
+  AP never sees any auth frames — firmware is not transmitting.
+- [ ] Compare `brcmf_ext_join_params` layout against Linux's struct.
+  Fix size mismatch — this may be the actual auth blocker.
 
 ##### Previous AUTH timeout investigation (now explained)
 
@@ -597,10 +603,27 @@ SET_SSID with BSSID + chanspec now accepted (returns 0). AUTH still
 times out — under investigation.
 
 
-##### Deferred (not blocking association)
+##### AUTH timeout — FALSE POSITIVE on btc_mode fix (27 Mar 2026)
+
+Earlier testing suggested `btc_mode=0` in NVRAM fixed AUTH timeout.
+This was a **false positive** — the success occurred during a
+kldunload/kldload cycle without reboot. After reboot, AUTH timeout
+returns with `btc_mode=0`.
+
+The `FIXME bt_coex` message during `wl_open` remains the prime suspect
+but the actual root cause is still unknown.
+
+Fixes applied during investigation (correct but don't resolve AUTH):
+- [x] C_UP/C_DOWN now send 4-byte int payload (matching Linux)
+- [x] Removed redundant bss_up from brcmf_parent
+- [x] Fixed bsscfg encoding: bsscfg_idx=0 sends plain iovar
+- [x] Fixed join iovar size calculation using offsetof()
+
+##### Deferred (blocked on AUTH timeout)
 
 - [ ] F2 block size 512 (requires re-testing Arasan SDHCI stability)
 - [ ] ROAM and PSK_SUP event registration
+- [ ] Investigate btc_mode=1 FEM issue (why does it fail on FreeBSD?)
 - [ ] Throughput testing
 
 ##### Background: previous investigation (24 Mar 2026)

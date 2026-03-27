@@ -101,6 +101,9 @@ struct brcmf_event {
 
 #define BRCM_OUI "\x00\x10\x18"
 
+/* Forward declarations */
+static void brcmf_sdpcm_poll(void *arg);
+
 /* BCDC command header */
 struct bcdc_dcmd {
 	uint32_t cmd;
@@ -116,17 +119,16 @@ struct bcdc_dcmd {
 static int
 brcmf_sdpcm_tx_ok(struct brcmf_softc *sc, uint8_t channel)
 {
-	uint8_t delta, avail, reserve;
+	uint8_t delta;
 
 	delta = (uint8_t)(sc->sdpcm_max_seq - sc->sdpcm_tx_seq);
-	if (channel == SDPCM_CONTROL_CHANNEL)
-		return (delta != 0 && (delta & 0x80) == 0);
 
-	reserve = sc->sdpcm_ioctl_tx_pending ? 2 : 0;
-	avail = (uint8_t)(delta - reserve);
-	if (avail == 0 || (avail & 0x80) != 0)
+	/* Need at least one credit available */
+	if (delta == 0 || (delta & 0x80) != 0)
 		return (0);
-	if (sc->sdpcm_flowctl)
+
+	/* For data channel, also check flow control */
+	if (channel == SDPCM_DATA_CHANNEL && sc->sdpcm_flowctl)
 		return (0);
 
 	return (1);
@@ -285,21 +287,6 @@ brcmf_sdpcm_recv(struct brcmf_softc *sc, uint8_t *buf, uint16_t bufsz,
 }
 
 static uint32_t
-brcmf_sdpcm_intr_rstatus(struct brcmf_softc *sc)
-{
-	uint32_t val;
-
-	val = brcmf_sdio_bp_read32(sc, sc->sdiocore.base + SD_REG_INTSTATUS);
-	val &= I_HMB_FC_STATE | I_HMB_FC_CHANGE | I_HMB_FRAME_IND |
-	    I_HMB_HOST_INT;
-	sc->sdpcm_flowctl = !!(val & I_HMB_FC_STATE);
-	if (val != 0)
-		brcmf_sdio_bp_write32(sc, sc->sdiocore.base + SD_REG_INTSTATUS,
-		    val);
-	return (val);
-}
-
-static uint32_t
 brcmf_sdpcm_hostmail(struct brcmf_softc *sc)
 {
 	uint32_t hmb_data, intstatus;
@@ -328,62 +315,30 @@ brcmf_sdpcm_hostmail(struct brcmf_softc *sc)
 	return (intstatus);
 }
 
-static void
-brcmf_sdpcm_process_control(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
-{
-	struct bcdc_dcmd *resp;
-	uint32_t rflags, rlen;
-	uint16_t rid;
-	int32_t fwstatus;
-
-	if (len < BCDC_DCMD_HDRLEN)
-		return;
-
-	resp = (struct bcdc_dcmd *)data;
-	rflags = le32toh(resp->flags);
-	rid = (rflags & BCDC_DCMD_ID_MASK) >> BCDC_DCMD_ID_SHIFT;
-	fwstatus = (int32_t)le32toh(resp->status);
-	rlen = le32toh(resp->len);
-	if (rlen > len - BCDC_DCMD_HDRLEN)
-		rlen = len - BCDC_DCMD_HDRLEN;
-
-	mtx_lock(&sc->ioctl_mtx);
-	if (!sc->sdpcm_ioctl_waiting || rid != sc->sdpcm_ioctl_reqid) {
-		mtx_unlock(&sc->ioctl_mtx);
-		return;
-	}
-
-	sc->ioctl_status = (rflags & BCDC_DCMD_ERROR) ? fwstatus : 0;
-	sc->ioctl_resp_len = rlen;
-	if (rlen > 0)
-		memcpy(sc->sdpcm_ioctl_rx, data + BCDC_DCMD_HDRLEN, rlen);
-	sc->ioctl_completed = 1;
-	sc->sdpcm_ioctl_waiting = 0;
-	wakeup(&sc->ioctl_completed);
-	mtx_unlock(&sc->ioctl_mtx);
-}
-
 /*
- * BCDC IOCTL: prepare control frame, wake DPC thread, wait for response.
- * The DPC thread owns all F2 I/O — it sends the control frame and
- * processes the response from the control channel.
+ * BCDC IOCTL: synchronous send + poll.
+ * Stops poll callout and drains rx_task for exclusive F2 access.
  */
 int
 brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
     void *buf, uint32_t len, uint32_t *resp_len)
 {
 	uint8_t *txbuf = sc->sdpcm_ioctl_tx;
+	uint8_t *rxbuf = sc->sdpcm_ioctl_rx;
 	struct bcdc_dcmd *dcmd;
 	uint16_t reqid;
 	uint32_t flags;
-	int error, timeout;
+	int error, i;
 
 	if (sc->fw_dead)
 		return (ENXIO);
 
-	mtx_lock(&sc->ioctl_mtx);
+	/* Serialize all F2 access */
+	sx_xlock(&sc->sdio_lock);
+
 	reqid = sc->sdpcm_reqid++;
 
+	/* Build BCDC command */
 	dcmd = (struct bcdc_dcmd *)txbuf;
 	dcmd->cmd = htole32(cmd);
 	dcmd->len = htole32(len);
@@ -399,49 +354,92 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 		memcpy(txbuf + BCDC_DCMD_HDRLEN, buf, len);
 	}
 
-	sc->sdpcm_ioctl_reqid = reqid;
-	sc->sdpcm_ioctl_waiting = 1;
-	sc->ioctl_completed = 0;
-	sc->ioctl_status = 0;
-	sc->ioctl_resp_len = 0;
-
-	sc->sdpcm_ioctl_tx_len = BCDC_DCMD_HDRLEN + len;
-	sc->sdpcm_ioctl_tx_pending = 1;
-
-	timeout = BRCMF_SDPCM_IOCTL_TIMEOUT_MS * hz / 1000;
-	while (!sc->ioctl_completed && !sc->fw_dead && !sc->detaching &&
-	    timeout > 0) {
-		wakeup(&sc->sdpcm_dpc_run);
-		error = msleep(&sc->ioctl_completed, &sc->ioctl_mtx, 0,
-		    "brcmio", hz / 20);
-		if (error != 0 && error != EWOULDBLOCK)
+	/* Send command — retry if no TX credits */
+	for (i = 0; i < 100; i++) {
+		error = brcmf_sdpcm_send(sc, SDPCM_CONTROL_CHANNEL,
+		    txbuf, BCDC_DCMD_HDRLEN + len);
+		if (error != ENOBUFS)
 			break;
-		timeout -= hz / 20;
+		/* Drain RX to get TX credits */
+		{
+			uint16_t chan, dlen;
+			uint8_t *payload;
+			brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
+			    &chan, &dlen, &payload);
+		}
+		pause_sbt("ioctx", mstosbt(10), 0, 0);
+	}
+	if (error != 0)
+		goto done;
+
+	/* Poll for response */
+	for (i = 0; i < 300; i++) {
+		uint16_t chan, dlen;
+		uint8_t *payload;
+
+		error = brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
+		    &chan, &dlen, &payload);
+		if (error == EAGAIN) {
+			pause_sbt("iocrx", mstosbt(10), 0, 0);
+			continue;
+		}
+		if (error != 0)
+			continue;
+
+		/* Process any frame we receive */
+		if (chan == SDPCM_EVENT_CHANNEL)
+			brcmf_sdpcm_process_event(sc, payload, dlen);
+		else if (chan == SDPCM_DATA_CHANNEL)
+			brcmf_sdpcm_process_rx(sc, payload, dlen);
+		else if (chan == SDPCM_CONTROL_CHANNEL) {
+			/* Check if this is our response */
+			struct bcdc_dcmd *resp = (struct bcdc_dcmd *)payload;
+			uint32_t rflags, rlen;
+			uint16_t rid;
+			int32_t fwstatus;
+
+			if (dlen < BCDC_DCMD_HDRLEN)
+				continue;
+
+			rflags = le32toh(resp->flags);
+			rid = (rflags & BCDC_DCMD_ID_MASK) >> BCDC_DCMD_ID_SHIFT;
+
+			if (rid != reqid)
+				continue;
+
+			/* Got our response */
+			fwstatus = (int32_t)le32toh(resp->status);
+			rlen = le32toh(resp->len);
+			if (rlen > dlen - BCDC_DCMD_HDRLEN)
+				rlen = dlen - BCDC_DCMD_HDRLEN;
+
+			if (resp_len != NULL)
+				*resp_len = rlen;
+
+			if (rflags & BCDC_DCMD_ERROR) {
+				BRCMF_DBG(sc, "ioctl cmd=0x%x fwerr=%d\n",
+				    cmd, fwstatus);
+				error = EIO;
+				goto done;
+			}
+
+			if (buf != NULL && rlen > 0) {
+				uint32_t copylen = rlen;
+				if (copylen > len)
+					copylen = len;
+				memcpy(buf, payload + BCDC_DCMD_HDRLEN, copylen);
+			}
+			error = 0;
+			goto done;
+		}
 	}
 
-	if (!sc->ioctl_completed) {
-		device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
-		sc->sdpcm_ioctl_waiting = 0;
-		sc->sdpcm_ioctl_tx_pending = 0;
-		mtx_unlock(&sc->ioctl_mtx);
-		return (ETIMEDOUT);
-	}
+	device_printf(sc->dev, "IOCTL timeout cmd=0x%x\n", cmd);
+	error = ETIMEDOUT;
 
-	if (resp_len != NULL)
-		*resp_len = sc->ioctl_resp_len;
-	if (sc->ioctl_status != 0) {
-		BRCMF_DBG(sc, "ioctl cmd=0x%x fwerr=%d\n", cmd, sc->ioctl_status);
-		mtx_unlock(&sc->ioctl_mtx);
-		return (EIO);
-	}
-	if (buf != NULL && sc->ioctl_resp_len > 0) {
-		uint32_t copylen = sc->ioctl_resp_len;
-		if (copylen > len)
-			copylen = len;
-		memcpy(buf, sc->sdpcm_ioctl_rx, copylen);
-	}
-	mtx_unlock(&sc->ioctl_mtx);
-	return (0);
+done:
+	sx_xunlock(&sc->sdio_lock);
+	return (error);
 }
 
 /*
@@ -553,13 +551,14 @@ brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 
 /*
  * TX data frame via SDPCM. Implements bus_ops->tx.
- * Prepares the frame and wakes the DPC thread to send it.
+ * Synchronous: send immediately.
  */
 int
 brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 {
 	uint8_t *frame = sc->sdpcm_data_tx;
 	uint16_t pktlen;
+	int error, i;
 
 	if (sc->fw_dead || sc->sdio_func2 == NULL) {
 		m_freem(m);
@@ -572,12 +571,7 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 		return (EMSGSIZE);
 	}
 
-	/* Drop if a data frame is already pending */
-	if (sc->sdpcm_data_tx_len != 0) {
-		m_freem(m);
-		return (ENOBUFS);
-	}
-
+	/* BCDC header */
 	frame[0] = BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT;
 	frame[1] = 0;
 	frame[2] = 0;
@@ -586,15 +580,31 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 	m_copydata(m, 0, pktlen, frame + BCDC_HEADER_LEN);
 	m_freem(m);
 
-	sc->sdpcm_data_tx_len = BCDC_HEADER_LEN + pktlen;
-	wakeup(&sc->sdpcm_dpc_run);
+	sx_xlock(&sc->sdio_lock);
 
-	return (0);
+	/* Send — retry if no TX credits */
+	for (i = 0; i < 50; i++) {
+		error = brcmf_sdpcm_send(sc, SDPCM_DATA_CHANNEL,
+		    frame, BCDC_HEADER_LEN + pktlen);
+		if (error != ENOBUFS)
+			break;
+		/* Drain RX to get TX credits */
+		{
+			uint16_t chan, dlen;
+			uint8_t *payload;
+			brcmf_sdpcm_recv(sc, sc->sdpcm_poll_rx,
+			    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+		}
+		DELAY(1000);
+	}
+
+	sx_xunlock(&sc->sdio_lock);
+	return (error);
 }
 
 /*
- * RX poll task — runs on taskqueue_thread so SDIO I/O can sleep.
- * Drains all pending frames from the F2 FIFO.
+ * RX poll task — runs on taskqueue so SDIO I/O can sleep.
+ * Drains pending frames and processes events.
  */
 static void
 brcmf_sdpcm_rx_task(void *arg, int pending)
@@ -608,176 +618,32 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	if (sc->fw_dead || sc->detaching)
 		return;
 
-	if (!atomic_cmpset_int(&sc->sdpcm_rx_busy, 0, 1))
+	/* Try to acquire F2 lock; skip if busy (ioctl in progress) */
+	if (sx_try_xlock(&sc->sdio_lock) == 0)
 		return;
 
-	if (sc->sdpcm_worker_mode) {
-		uint16_t txlen = 0;
+	/* Check mailbox for firmware messages */
+	brcmf_sdpcm_hostmail(sc);
 
-		mtx_lock(&sc->ioctl_mtx);
-		if (sc->sdpcm_ioctl_tx_pending) {
-			txlen = sc->sdpcm_ioctl_tx_len;
-			sc->sdpcm_ioctl_tx_pending = 0;
-		}
-		mtx_unlock(&sc->ioctl_mtx);
-
-		if (txlen != 0) {
-			int error, retries;
-			/* Drain pending RX first to refresh TX credits */
-			for (retries = 0; retries < 50; retries++) {
-				error = brcmf_sdpcm_send(sc,
-				    SDPCM_CONTROL_CHANNEL,
-				    sc->sdpcm_ioctl_tx, txlen);
-				if (error != ENOBUFS)
-					break;
-				brcmf_sdpcm_recv(sc, rxbuf,
-				    BRCMF_SDPCM_CTL_BUFSZ,
-				    &chan, &dlen, &payload);
-				pause_sbt("brcmtx", mstosbt(10), 0, 0);
-			}
-			BRCMF_DBG(sc, "rx_task: TX ioctl len=%u err=%d\n", txlen, error);
-			if (error != 0) {
-				mtx_lock(&sc->ioctl_mtx);
-				sc->ioctl_status = error;
-				sc->ioctl_completed = 1;
-				sc->sdpcm_ioctl_waiting = 0;
-				wakeup(&sc->ioctl_completed);
-				mtx_unlock(&sc->ioctl_mtx);
-				atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
-				return;
-			}
-		}
-	}
-
-	for (i = 0; i < 16; i++) {
+	/* Drain RX FIFO */
+	for (i = 0; i < 50; i++) {
 		int error = brcmf_sdpcm_recv(sc, rxbuf,
 		    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
-		if (error != 0) {
-			if (i == 0 && error != EAGAIN)
-				BRCMF_DBG(sc,
-				    "rx_task: recv err=%d\n", error);
+		if (error != 0)
 			break;
-		}
 
-		BRCMF_DBG(sc, "rx_task: ch=%u dlen=%u\n", chan, dlen);
-		if (chan == SDPCM_CONTROL_CHANNEL)
-			brcmf_sdpcm_process_control(sc, payload, dlen);
-		else if (chan == SDPCM_EVENT_CHANNEL)
+		if (chan == SDPCM_EVENT_CHANNEL)
 			brcmf_sdpcm_process_event(sc, payload, dlen);
 		else if (chan == SDPCM_DATA_CHANNEL)
 			brcmf_sdpcm_process_rx(sc, payload, dlen);
+		/* Control channel responses handled inline in ioctl */
 	}
-	atomic_store_rel_int(&sc->sdpcm_rx_busy, 0);
+
+	sx_xunlock(&sc->sdio_lock);
 }
 
 /*
- * DPC thread — central SDIO runtime engine.
- * Single thread owns all F2 I/O. Matches Linux's DPC loop order:
- * interrupt status -> mailbox -> FC -> RX -> control TX -> data TX.
- */
-static void
-brcmf_sdpcm_dpc_thread(void *arg)
-{
-	struct brcmf_softc *sc = arg;
-	uint8_t *rxbuf = sc->sdpcm_poll_rx;
-	uint16_t chan, dlen;
-	uint8_t *payload;
-	uint32_t intstatus, newstatus;
-	int i, more_work;
-
-	while (sc->sdpcm_dpc_run) {
-		if (sc->fw_dead || sc->detaching)
-			break;
-
-		more_work = 0;
-
-		intstatus = brcmf_sdpcm_intr_rstatus(sc);
-		if (intstatus & I_HMB_FC_CHANGE) {
-			newstatus = brcmf_sdio_bp_read32(sc,
-			    sc->sdiocore.base + SD_REG_INTSTATUS);
-			sc->sdpcm_flowctl = !!(newstatus &
-			    (I_HMB_FC_STATE | I_HMB_FC_CHANGE));
-			intstatus |= newstatus & (I_HMB_FC_STATE | I_HMB_FC_CHANGE |
-			    I_HMB_FRAME_IND | I_HMB_HOST_INT);
-		}
-		if (intstatus & I_HMB_HOST_INT)
-			intstatus |= brcmf_sdpcm_hostmail(sc);
-		if (intstatus != 0)
-			more_work = 1;
-
-		/* --- RX --- */
-		for (i = 0; i < 50; i++) {
-			int error = brcmf_sdpcm_recv(sc, rxbuf,
-			    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
-			if (error != 0)
-				break;
-
-			if (chan == SDPCM_CONTROL_CHANNEL)
-				brcmf_sdpcm_process_control(sc, payload, dlen);
-			else if (chan == SDPCM_EVENT_CHANNEL)
-				brcmf_sdpcm_process_event(sc, payload, dlen);
-			else if (chan == SDPCM_DATA_CHANNEL)
-				brcmf_sdpcm_process_rx(sc, payload, dlen);
-
-			if (i == 49)
-				more_work = 1;
-		}
-
-		/* --- 5. Control TX --- */
-		{
-			uint16_t txlen = 0;
-
-			mtx_lock(&sc->ioctl_mtx);
-			if (sc->sdpcm_ioctl_tx_pending) {
-				txlen = sc->sdpcm_ioctl_tx_len;
-				sc->sdpcm_ioctl_tx_pending = 0;
-			}
-			mtx_unlock(&sc->ioctl_mtx);
-
-			if (txlen != 0) {
-				int error, retries;
-				for (retries = 0; retries < 50; retries++) {
-					error = brcmf_sdpcm_send(sc,
-					    SDPCM_CONTROL_CHANNEL,
-					    sc->sdpcm_ioctl_tx, txlen);
-					if (error != ENOBUFS)
-						break;
-					brcmf_sdpcm_recv(sc, rxbuf,
-					    BRCMF_SDPCM_CTL_BUFSZ,
-					    &chan, &dlen, &payload);
-					DELAY(1000);
-				}
-				if (error != 0) {
-					mtx_lock(&sc->ioctl_mtx);
-					sc->ioctl_status = error;
-					sc->ioctl_completed = 1;
-					sc->sdpcm_ioctl_waiting = 0;
-					wakeup(&sc->ioctl_completed);
-					mtx_unlock(&sc->ioctl_mtx);
-				}
-				more_work = 1;
-			}
-		}
-
-		/* --- 6. Data TX --- */
-		if (sc->sdpcm_data_tx_len != 0 &&
-		    brcmf_sdpcm_tx_ok(sc, SDPCM_DATA_CHANNEL)) {
-			brcmf_sdpcm_send(sc, SDPCM_DATA_CHANNEL,
-			    sc->sdpcm_data_tx, sc->sdpcm_data_tx_len);
-			sc->sdpcm_data_tx_len = 0;
-		}
-
-		if (more_work)
-			continue;
-
-		tsleep(&sc->sdpcm_dpc_run, 0, "brcmdpc", hz / 20);
-	}
-
-	kproc_exit(0);
-}
-
-/*
- * Callout handler — wakes DPC thread periodically.
+ * Callout handler — enqueues RX poll task.
  */
 static void
 brcmf_sdpcm_poll(void *arg)
@@ -787,13 +653,14 @@ brcmf_sdpcm_poll(void *arg)
 	if (sc->fw_dead || sc->detaching)
 		return;
 
-	wakeup(&sc->sdpcm_dpc_run);
+	taskqueue_enqueue(sc->sdpcm_tq, &sc->sdpcm_rx_task);
 	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
 
 void
 brcmf_sdpcm_init(struct brcmf_softc *sc)
 {
+	sx_init(&sc->sdio_lock, "brcmfmac_sdio");
 	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
 	callout_init(&sc->sdpcm_callout, 1);
 
@@ -802,31 +669,15 @@ brcmf_sdpcm_init(struct brcmf_softc *sc)
 	taskqueue_start_threads(&sc->sdpcm_tq, 1, PI_NET, "brcmfmac_sdpcm");
 }
 
-/*
- * Start the DPC polling callout.
- */
 void
 brcmf_sdpcm_start_poll(struct brcmf_softc *sc)
 {
 	if (sc->sdpcm_poll_started)
 		return;
 	sc->sdpcm_poll_started = 1;
-
-	sc->sdpcm_dpc_run = 1;
-	{
-		int err = kproc_create(brcmf_sdpcm_dpc_thread, sc,
-		    &sc->sdpcm_dpc_proc, 0, 0, "brcmfmac_dpc");
-		if (err != 0)
-			device_printf(sc->dev,
-			    "DPC thread creation failed: %d\n", err);
-	}
-
 	callout_reset(&sc->sdpcm_callout, hz / 20, brcmf_sdpcm_poll, sc);
 }
 
-/*
- * Stop polling and drain.
- */
 void
 brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 {
@@ -834,14 +685,6 @@ brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 		return;
 	sc->sdpcm_poll_started = 0;
 	callout_drain(&sc->sdpcm_callout);
-
-	/* Stop DPC thread */
-	if (sc->sdpcm_dpc_proc != NULL) {
-		sc->sdpcm_dpc_run = 0;
-		wakeup(&sc->sdpcm_dpc_run);
-		tsleep(&sc->sdpcm_dpc_proc, 0, "brcmwt", hz * 2);
-		sc->sdpcm_dpc_proc = NULL;
-	}
 
 	if (sc->sdpcm_tq != NULL)
 		taskqueue_drain(sc->sdpcm_tq, &sc->sdpcm_rx_task);

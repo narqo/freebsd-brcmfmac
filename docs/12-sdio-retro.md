@@ -1,10 +1,107 @@
-# SDIO Bring-up Retrospective (20-21 Mar 2026)
+# SDIO Bring-up Retrospective
 
-Historical bring-up notes for the early BCM43455 SDIO work.
+Historical bring-up notes for the BCM43455 SDIO work.
 This file is not the current status tracker; see docs/00-progress.md.
-For static hardware and host reference, see docs/03-sdio-reference.md.
 
-## Problems and resolutions
+---
+
+## Retrospective 2: AUTH Timeout (26-27 Mar 2026)
+
+### The problem
+
+After SDIO F2 transfers worked and the firmware booted, association
+failed with AUTH timeout. The firmware accepted `join` and `SET_SSID`
+commands but 802.11 authentication never completed. The AP (1 meter
+away, -60 dBm RSSI) never received any frames from the RPi4.
+
+Timeline: ~2 days of investigation across multiple sessions.
+
+### Root cause
+
+**STILL UNKNOWN** as of end of 27 Mar session.
+
+### What we thought was the fix (FALSE POSITIVE)
+
+Mid-session, changed NVRAM `btc_mode=1` → `btc_mode=0`. On the next
+kldunload/kldload cycle (without reboot), association succeeded once.
+Firmware showed `link up`. We concluded this was the fix and documented
+it as such.
+
+**After reboot:** AUTH timeout returned. The `btc_mode=0` change had
+no effect. The mid-session success was due to residual firmware state
+from the previous load — the firmware wasn't fully reset between
+kldunload/kldload.
+
+**Lesson: Always verify fixes across a full reboot before concluding
+root cause is found.**
+
+### What helped during investigation
+
+1. **Firmware console reader.** Added sysctl `dev.brcmfmac.0.fwcon`
+   to read the firmware's internal log buffer. Revealed
+   `JOIN: authentication failure, no ack` on one run — confirmed
+   firmware was attempting TX but AP didn't ACK.
+
+2. **AP-side monitoring.** Running wpa_supplicant with `-dd` on the
+   AP showed no auth frames received. Confirmed zero frames reaching
+   AP — physical layer issue.
+
+3. **The `FIXME bt_coex` message.** Appears during every `wl_open`.
+   Still the prime suspect but `btc_mode=0` doesn't fix it.
+
+### What went wrong
+
+1. **Declared victory too early.** One successful association during
+   a kldunload/kldload cycle was treated as confirmation. Should have
+   rebooted and re-tested before updating docs.
+
+2. **Didn't understand kldunload/kldload vs reboot difference.** The
+   firmware isn't fully reset on kldunload — some state persists in
+   the chip. A reboot power-cycles the chip via the power sequencer
+   and gives a clean slate.
+
+3. **Updated docs with "ROOT CAUSE FOUND" prematurely.** Created
+   confusion when the fix didn't survive reboot. Progress docs,
+   investigation notes, and retro all had to be corrected.
+
+4. **Spent time on fixes that were correct but irrelevant:**
+   - SDIO register offset bugs (real bugs, didn't cause AUTH timeout)
+   - C_UP/C_DOWN payload format (matches Linux now, didn't help)
+   - bsscfg encoding fix (correct, didn't help AUTH)
+   - Removing redundant bss_up (correct, didn't help AUTH)
+
+### Lessons for future agents
+
+1. **Verify fixes survive reboot.** A kldunload/kldload cycle is not
+   a clean test. The chip retains state. Always reboot before
+   declaring a hardware/firmware issue fixed.
+
+2. **Be skeptical of single successes.** One working test after many
+   failures could be a fluke, residual state, or timing luck. Repeat
+   the test, ideally with reboot.
+
+3. **Firmware console is valuable but not conclusive.** The "no ack"
+   message appeared on one run but not others. The console buffer is
+   small (1024 bytes) and wraps. Absence of a message doesn't mean
+   the condition didn't occur.
+
+4. **Don't update "ROOT CAUSE FOUND" until verified.** Use tentative
+   language ("appears to fix", "testing") until reboot confirms.
+
+### Current status (end of 27 Mar)
+
+- AUTH timeout persists after reboot
+- `FIXME bt_coex` appears during every `wl_open`
+- `btc_mode=0` in NVRAM does NOT fix it
+- Root cause unknown
+- Firmware console shows no activity after boot (widx unchanged)
+- Investigation continues
+
+---
+
+## Retrospective 1: F2 Transfers (20-21 Mar 2026)
+
+### Problems and resolutions
 
 ### 1. IORdy poll hang (days of investigation)
 
@@ -105,7 +202,7 @@ kernel with SDIO support. The sdiob F0 timeout=0 issue does
 not affect the driver because the SDHCI uses its own 10-second
 timeout callout independent of the CAM CCB timeout.
 
-## Driver code changes
+## Driver code changes for F2
 
 - F2 frame port address: 0x8000 (constant), fixed address mode
 - F2 block size: 64 bytes (small PIO bursts via block-mode CMD53)

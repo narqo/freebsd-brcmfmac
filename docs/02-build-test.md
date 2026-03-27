@@ -189,6 +189,55 @@ output. Use `bootverbose` when you need attach-time diagnostics
 (flowring creation, scan skips, TX completion errors) without
 rebooting.
 
+## Firmware console (SDIO only)
+
+The CYW43455 firmware has an internal log buffer in RAM. The driver
+exposes it via sysctl after module load:
+
+```sh
+sysctl -n dev.brcmfmac.0.fwcon
+```
+
+Output includes firmware boot messages, iovar errors, and radio
+diagnostics. Example:
+
+```
+console=0x25debc buf=0x25dab4 size=1024 widx=634
+wl0: Broadcom BCM4345 802.11 Wireless Controller 7.45.265 (28bca26 CY)
+TCAM: 256 used: 255 exceed:0
+reclaim section 1: Returned 117764 bytes to the heap
+wl0: wl_open
+wl0: wlc_phy_set_regtbl_on_femctrl: FIXME bt_coex
+```
+
+The first line is metadata: console struct address, buffer address,
+buffer size, and write index. A growing `widx` between reads means
+the firmware is writing new log entries.
+
+### Enabling verbose firmware logging
+
+By default the firmware only logs errors and boot messages. To
+enable verbose output (join, auth, assoc diagnostics), set the
+firmware's `msglevel` iovar. This requires a read-modify-write
+because the iovar uses a bitmask. The driver sets it during init
+in `brcmf_cfg_attach`.
+
+If `msglevel` returns `BCME_BUFTOOSHORT (-14)`, the firmware
+rejects a blind SET — it needs a GET first to determine the
+bitmask width.
+
+### How it works
+
+The console buffer address comes from the `sdpcm_shared` structure
+the firmware writes to the last 4 bytes of RAM at boot. The driver
+reads the console struct fields (buffer pointer, size, write index)
+via F1 backplane reads and then reads individual bytes from the
+log buffer.
+
+The buffer is a 1024-byte ring. When `widx` wraps, older entries
+are overwritten. Read the sysctl promptly after the event of
+interest.
+
 ## WiFi association test
 
 ```sh
