@@ -2,678 +2,131 @@
 
 ## Current Status (2026-03-27)
 
-**SDIO (RPi4 BCM43455) — FULLY WORKING:**
-- Module loads, firmware boots, scanning works
-- 5GHz WPA2 AP: **Full connection established and stable!**
-  - Association succeeds
-  - EAPOL 4-way handshake completes
-  - PTK and GTK keys installed
-  - DHCP works, internet connectivity verified
-  - Ping to gateway and 8.8.8.8 successful
-- 2.4GHz open AP: AUTH timeout — firmware reports "no ack". Separate issue, possibly FEM/BT coex.
+**PCIe (BCM4350, MacBook Pro 2016) — WORKING:**
+- WPA2-PSK association, DHCP, internet connectivity
+- 5GHz and 2.4GHz, HT40/VHT80 rates
+- Flood ping 1000/1000, 0% loss
+- Clean kldload/kldunload, interface cycling
+- DHCP works, internet connectivity verified
+- Ping to gateway and 8.8.8.8 successful
 
-**Key fixes this session:**
-1. wlan_ccmp kernel module was missing — rebuilt kernel with CCMP built-in
-2. RX path was calling `if_input()` while holding `sdio_lock` — fixed by queuing mbufs and delivering after unlock
-3. TX path was sleeping (SDIO/CAM) while called from TCP output holding `tcpinp` lock — fixed by queuing TX mbufs and sending from taskqueue 
+**SDIO (BCM43455, Raspberry Pi 4) — WORKING:**
+- WPA2-PSK association on 5GHz
+- EAPOL 4-way handshake completes
+- PTK and GTK keys installed
+- DHCP works, internet connectivity verified
+- Ping to gateway and 8.8.8.8 successful
 
-## Current status
-
-**PCIe milestones 1-17 complete.** BCM4350 driver connects to WPA2 APs
-on 2.4GHz and 5GHz, handles link loss recovery, interface cycling.
-Internet ping over WiFi verified. Flood ping 1000/1000, 0% loss.
-
-**SDIO milestones M-S1 through M-S5 complete, M-S6 in progress.**
-BCM43455 (RPi4) boots firmware, loads CLM blob, scans APs with IEs,
-but **association fails** with AUTH timeout.
-
-**AUTH timeout (27 Mar 2026):** Still under investigation. Earlier
-`btc_mode=0` fix was a **false positive** — worked only during a
-kldunload/kldload cycle without reboot. After reboot, AUTH timeout
-returns. The `FIXME bt_coex` during `wl_open` remains the prime suspect
-but the root cause is unknown.
+**Remaining issues:**
+- 2.4GHz open AP: AUTH timeout — firmware reports "no ack". Possibly FEM/BT coex related.
+- Rapid interface cycling with wpa_supplicant can deadlock (known issue, not fixed).
 
 ## Milestones
 
-### Milestone 1-7: DONE
-
-### Milestone 8: Data path (COMPLETE)
-
-- [x] Flow ring creation and TX submission
-- [x] TX completions received (TX_STATUS status=0)
-- [x] RX completions received (firmware delivers both broadcast and unicast frames)
-- [x] Bidirectional ping works (14-116ms RTT)
-- [x] ARP resolution works (broadcast and unicast)
-- [x] VAP-level transmit bypass (no net80211 802.11 encapsulation for FullMAC)
-- [x] kldunload works cleanly
-- [x] scan_curchan crash fix (set ss_vap before enqueue)
-- [x] No re-join when already associated (link_up guard)
-
-### Milestone 9: Debug cleanup (COMPLETE)
-
-### Milestone 10: WPA2 support (COMPLETE)
-
-- [x] Set wsec (wireless security mode) - detected from capability field
-- [x] Set wpa_auth (WPA authentication type) - WPA2_AUTH_PSK
-- [x] Add iv_key_set/iv_key_delete callbacks for key installation
-- [x] Add wsec_key IOVAR support
-- [x] Fix scan result BSSID matching (handle zero BSSID as "any")
-- [x] Fix IE offset parsing (128-byte offset for ie_length=0 entries)
-- [x] Fix ieee80211_add_scan crash (NULL sp->tstamp pointer)
-- [x] Scan cache populated with RSN IEs (`ifconfig wlan0 list scan` works)
-- [x] Set wsec/wpa_auth from VAP flags in brcmf_newstate(AUTH)
-- [x] Fix WME crash (NULL `ic_wme.wme_update` callback)
-- [x] Fix BSSID bug (`sc->join_bssid` not set in MLME association path)
-- [x] Work around net80211 deferred state transition race (restart_task)
-- [x] Fix scan_curchan_task crash (drain scan tasks in VAP teardown)
-- [x] Skip direct-join when iv_roaming == IEEE80211_ROAMING_MANUAL
-- [x] Fix scan race: don't clear scan_active in scan_end
-- [x] BSSID dedup in scan results (don't overwrite entries with IEs)
-- [x] Flowring delete/recreate on each association
-- [x] Set sup_wpa=0 for host-managed WPA
-- [x] Set infra mode and open system auth before join
-- [x] wpa_supplicant associates, EAPOL frames flow bidirectionally
-- [x] RSN IE mismatch resolved (WMM IE injection — see below)
-- [x] 4-way handshake completes (all 4 frames exchanged)
-- [x] Pairwise and group keys install (AES-CCM)
-- [x] WPA2-PSK-SHA256 works (firmware auto-negotiates AKM type 6)
-- [x] End-to-end ping over WPA2 (~7ms steady-state RTT)
-- [x] DHCP works (dhclient obtains lease from AP)
-- [x] DEAUTH on disconnect (prevents AP auth timeout on reconnect)
-- [x] Dead code removed (vndr_ie, bsscfg, enable_supplicant)
-
-#### Lifecycle tests (all passing)
-
-| Test | Result |
-|------|--------|
-| WPA2-PSK association + ping | ✓ |
-| WPA2-PSK-SHA256 association + ping | ✓ |
-| DHCP lease acquisition | ✓ |
-| `ifconfig wlan0 down` / `up` | ✓ reconnects |
-| VAP destroy / recreate | ✓ clean reconnect |
-| kldunload while associated | ✓ clean unload |
-| Reconnect without AP restart | ✓ deauth clears AP state |
-
-#### RSN IE mismatch (RESOLVED)
-
-The firmware's RSN IE in the association request had capabilities `0x000c`
-(16 PTKSA replay counters) while wpa_supplicant sent `0x0000`. The two
-bytes differ because the firmware always uses WMM-style replay counters.
-
-wpa_supplicant sets the replay counter bits only when `sm->wmm_enabled`
-is true (`rsn_supp_capab()` in `wpa_ie.c`). This flag is set when the
-BSS has a WMM vendor IE (OUI 00:50:f2 type 2).
-
-**Fix**: Inject a synthetic WMM IE into scan results when the AP has RSN
-but doesn't advertise WMM. This makes wpa_supplicant set `wmm_enabled=1`
-and produce RSN capabilities `0x000c`, matching the firmware.
-
-**Approaches that did NOT work**:
-- `wpaie` iovar (any format) — causes `SET_SSID failed, status=1`
-- `vndr_ie` iovar with RSN IE — firmware ignores it, still uses `0x000c`
-- `bsscfg:wpaie` — same failure as `wpaie`
-
-### Milestone 11: Latency optimization (COMPLETE)
-
-- [x] PM=0 (power management off) — already set in brcmf_parent
-- [x] mpc=0 (minimum power consumption off) — keeps radio on during idle
-- [x] roam_off=1 (disable firmware roaming) — eliminates background scans
-- [x] HT rates: ic_htcaps, 11ng/11na modes, HT20 channel selection
-- [x] BSS node HT flags and MCS rate set (MCS 0-7, nominal MCS 7 = 72 Mbps)
-- [x] Fixed ieee80211_find_channel to use frequency (was passing channel number)
-
-#### Latency results
-
-| Metric | Before | After |
-|--------|--------|-------|
-| Steady-state ping | ~7ms | ~4.6ms |
-| After 30s idle | ~7ms (sleep) | ~4.6ms (no penalty) |
-| Flood ping (100x, 10ms interval) | — | avg 1.8ms, min 1.3ms |
-| Jitter (stddev) | — | 1.4ms |
-
-#### Rate negotiation
-
-| Metric | Before | After |
-|--------|--------|-------|
-| ifconfig mode | 11b / DS / 1Mbps | 11ng / MCS / 72M |
-| HT caps | none | SGI20, SGI40, DSSSCCK40, SMPS_OFF |
-| Channel | 2412 MHz 11b | 2412 MHz 11g ht/20 |
-
-### Milestone 12: Robustness (COMPLETE)
-
-- [x] Link loss recovery (AP restart while connected)
-  - LINK event with link=0 triggers SCAN transition
-  - Driver re-scans, re-associates automatically
-- [x] DISASSOC on interface down (synchronous in `brcmf_parent`)
-  - Sends DEAUTH_LEAVING before `ifconfig down` returns
-  - Prevents stale AP session from blocking next association
-- [x] Security state cleanup on interface down
-  - Clear `wsec=0` and `wpa_auth=0` so stale encryption keys
-    don't corrupt the next EAPOL handshake
-- [x] Skip direct-join for WPA networks
-  - `brcmf_join_bss_direct` returns EINVAL when `wpa_auth != 0`
-  - Prevents supplicant-less WPA association from scan-complete path
-
-#### Interface cycling test results
-
-| Scenario | Result |
-|----------|--------|
-| AP restart while connected | ✓ auto-recovers |
-| Single down/up cycle | ✓ reliable |
-| Reconnect after >5s gap | ✓ reliable |
-| 5x rapid cycling (2s gap) | ~3/5 pass (known issue) |
-| 5x cycling (5s gap, DFS ch116) | ✓ 5/5 (post-M16 fix) |
-
-### Milestone 13: ifconfig scan support (COMPLETE)
-
-- [x] Populate ieee80211_scan_entry from brcmf_scan_result
-- [x] Feed results into net80211 scan cache via ieee80211_add_scan
-- [x] Support `ifconfig wlan0 list scan`
-- [x] Fix sp->tstamp NULL crash in sta_add
-- [x] IE offset (128-byte fallback when ie_offset=0 and ie_length=0)
-- [x] RSN/WPA IEs correctly parsed and visible in scan output
-
-### Milestone 14: 5GHz and HT40 (COMPLETE)
-
-- [x] Fixed brcmf_bss_info_le struct alignment (removed __packed, sizeof=128)
-- [x] Fixed scan result channel→frequency conversion in brcmf_add_scan_result
-- [x] HT40 channel support (CHWIDTH40 htcap, HT40U/HT40D channels)
-- [x] VHT capability advertisement (2SS MCS 0-9, SGI80, RXLDPC)
-- [x] D11AC chanspec decoding for 5GHz/HT40/VHT80 in scan results
-- [x] 5GHz default rates IE for scan results
-- [x] Firmware country code (DE) via "country" iovar
-- [x] SKU_DEBUG regdomain to bypass channel filtering
-- [x] All 5GHz channels including DFS (36-165)
-- [x] RSSI display fixed (dBm relative to noise floor)
-- [x] link_task selects VHT/HT40/HT20 channel based on firmware chanspec
-- [x] VHT node flags on 5GHz association
-- [x] 5GHz WPA2 association + ping (Kolabox, channel 60, HT40+)
-- [x] 2.4GHz regression passes (TestAP, channel 1)
-- [x] DEAUTH/DISASSOC event handling (E_DEAUTH, E_DEAUTH_IND, E_DISASSOC, E_DISASSOC_IND)
-- [x] Fixed brcmf_assoc_params_le (removed spurious bssid_cnt field)
-- [x] Guard link_task state transition (skip SCAN if VAP already in INIT)
-- [x] 5GHz→2.4GHz→5GHz cycling passes without crash
-
-#### 5GHz test results (Kolabox, channel 60 VHT80)
-
-| Metric | Value |
-|--------|-------|
-| Association | ✓ channel 60, 5300 MHz, 11a ht/40+ |
-| WPA2 handshake | ✓ AES-CCM keys installed |
-| DHCP | ✓ lease from 192.168.188.1 |
-| Gateway ping (100x, 10ms interval) | avg 1.8ms, 0% loss |
-| Jitter (stddev) | 0.5ms |
-
-### Milestone 15: Throughput and real-world testing (COMPLETE)
-
-- [x] Ping flood: 1000 packets 0% loss, avg 1.15ms (5GHz gateway)
-- [x] Internet download via fetch: 13 Mbps (ISP-limited, not WiFi)
-- [x] 5GHz→2.4GHz→5GHz cycling: passes
-- [x] Large fetch: 3×10MB over WiFi, no crash (ISP-limited ~19 Mbps)
-- [x] Throughput: ~14 Mbps download (ISP-limited), 10MB transfers stable
-- [x] ~~Open network / multi-AP testing~~ (dropped; single-AP lab)
-- [x] Internet ping over WiFi verified: wlan0 as default route, 5/5 to 8.8.8.8, avg 17ms
-
-#### Findings
-
-- **Firmware bw_cap(5G)=0x1 (20MHz only)**: firmware negotiates HT40
-  despite advertising VHT in scan. The `bw_cap` iovar requires interface
-  down, but the firmware auto-ups at boot; `BRCMF_C_DOWN` returns
-  NOTDOWN. Root cause unclear — may be NVRAM/firmware default or
-  DFS channel limitation. Net80211 reports `11a ht/40+`.
-- **Kernel crash under heavy RX traffic (core.txt.3, FIXED)**: iperf3
-  download caused page fault in `sbcut_internal` at `fault_addr=0x8`
-  (NULL mbuf deref). Socket buffer accounting (`sb_ccc`) was corrupt.
-  Root cause: concurrent D2H ring processing from two contexts — the
-  hard-IRQ filter handler and the ioctl polling loop — with no locking.
-  Same RX completion could be processed twice, corrupting mbuf chains.
-  Fixed by moving all D2H processing to a dedicated ISR taskqueue and
-  removing D2H polling from wait loops. Verified: sustained downloads
-  no longer crash.
-- **Crash in detach on failed attach (core.txt.5/6, FIXED)**: When
-  `brcmf_cfg_attach` fails early (firmware ioctl timeout),
-  `brcmf_cfg_detach` called `sysctl_ctx_free` on uninitialized context
-  and `ieee80211_ifdetach` on unattached ic. Fixed with `cfg_attached`
-  guard.
-- **COM/node lock panic (core.txt.1/2/7, FIXED)**: Thread held COM +
-  node lock in `sta_newstate` → `ieee80211_sta_leave` →
-  `brcmf_key_delete` → `brcmf_msgbuf_ioctl` (`tsleep`). Fixed:
-  `brcmf_key_set`/`brcmf_key_delete` drop both COM and node locks
-  around firmware ioctl. Verified: interface cycling no longer panics.
-- **Chip stuck after crash**: After kernel panic, PCI device returns
-  0xffffffff on BAR0 MMIO reads. D3→D0 power cycle doesn't help.
-  Physical host power cycle required (QEMU PCI passthrough limitation).
-- **`brcmf_fil_bss_down` was passing val=1 (FIXED)**: Linux driver
-  passes 0 for `BRCMF_C_DOWN`.
-
-### Milestone 16: Production hardening (DONE)
-
-- [x] Move D2H processing from filter handler to ISR taskqueue
-- [x] Remove concurrent D2H polling from ioctl/flowring wait loops
-- [x] Guard `brcmf_cfg_detach` against partial attach (`cfg_attached`)
-- [x] Fix `brcmf_fil_bss_down` to pass val=0
-- [x] Fix COM lock deadlock (drop COM in `brcmf_key_set`/`brcmf_key_delete`)
-- [x] Watchdog: `fw_dead` flag, BAR0 liveness callout, fast ioctl bail-out
-- [x] Memory leak fix (flowring struct freed in cleanup path)
-- [x] Error path review (TX DMA tag/map cleanup, callout_init ordering)
-- [x] Locking audit (ioctl_mtx serialization, removed unused scan_mtx)
-- [x] sysctl tuning interface (dev.brcmfmac.0.pm, debug, psk)
-
-### Milestone 16.5: Post-M16 stability fixes (DONE)
-
-Found during testing after M16. No new features; all fixes to stability
-and correctness issues surfaced by more thorough cycling and unload tests.
-
-- [x] Remove `ioctl_timeouts→fw_dead` escalation from `brcmf_msgbuf_ioctl`;
-  `fw_dead` is now only set by the watchdog (BAR0 = 0xffffffff). Individual
-  IOCTL timeouts during DFS teardown are expected and should not permanently
-  kill the driver.
-- [x] Skip `wsec_key` delete ioctl in `brcmf_key_delete` when `!sc->running`;
-  net80211 flushes keys on every interface down, and on DFS channels the
-  firmware is unresponsive for several seconds post-DISASSOC.
-- [x] `sc->detaching` flag set at top of `brcmf_pcie_detach`; gates
-  `brcmf_newstate`, `brcmf_parent`, and `brcmf_link_task` from issuing
-  firmware ioctls during module unload.
-- [x] Drain `link_task` and `restart_task` before `ieee80211_ifdetach`
-  in `brcmf_cfg_detach`.
-- [x] Verified: `kldunload` after 5s-gap cycling with wpa_supplicant is clean.
-- [x] Verified: internet ping over WiFi (wlan0 as default route, 5/5 to
-  8.8.8.8, avg 17ms via AP NAT).
-
-#### Open: 2s-gap cycling deadlock with wpa_supplicant
-
-Rapid down/up cycles (<3s) with wpa_supplicant running deadlock the kernel,
-requiring a VM reset. Suspected lock ordering issue in the net80211 state
-machine. Without wpa_supplicant, 8 rapid cycles complete cleanly. Not yet
-diagnosed; tracked as a known issue.
-
-### Milestone 16.6: D2H ring processing reliability (DONE)
-
-Discovered 26 Feb 2026. The D2H completion ring processing had multiple
-bugs causing missed completions — IOCTL timeouts, TX stalls, and
-eventual 100% packet loss.
-
-#### Root cause
-
-`brcmf_msgbuf_process_d2h` had three defects:
-
-1. **Missing DMA sync on ctrl/tx complete rings.** Only the RX complete
-   ring got `bus_dmamap_sync(POSTREAD)`. Firmware writes to ctrl and TX
-   complete rings were invisible to the host on non-coherent DMA.
-
-2. **Loop exit checked only RX ring.** The multi-pass "more work" loop
-   exited when `rx_ring->w_ptr == rx_ring->r_ptr`, ignoring pending
-   work in the ctrl or TX complete rings.
-
-3. **No D2H polling in IOCTL wait loop.** M16 removed concurrent D2H
-   polling to fix a double-processing crash, but left no fallback for
-   missed interrupts. If the ISR task ran just before firmware wrote
-   the IOCTL completion, nobody re-processed the ring.
-
-#### Diagnostic evidence
-
-```
-diag: chipid=0x00000396 mboxint=0x00010000 isr_filter=128 isr_task=116
-diag: h2d_ctrl w=54 r=53 fw_rptr=54 | d2h_ctrl w=27 r=27 fw_wptr=49
-```
-
-Firmware wrote 49 completions, host saw 27. Chip alive, interrupts
-working (128 filter, 116 task), but 22 completions lost.
-
-#### Fixes
-
-- [x] DMA sync all three D2H rings in `brcmf_msgbuf_process_d2h`
-- [x] Check all three rings in the multi-pass exit condition
-- [x] Re-add D2H poll in `brcmf_msgbuf_ioctl` wait loop
-- [x] Added sysctl counters: tx_count, tx_drops, tx_complete,
-  isr_filter, isr_task
-- [x] Enabled firmware console reader for diagnostics
-
-#### Additional fix: scan_active stuck after link loss
-
-`sc->scan_active` stayed set if link dropped mid-escan, blocking all
-future scans. Fixed by clearing `scan_active` and `scan_complete` in
-`brcmf_link_event` on link-down events.
-
-#### Additional fix: D2H poll callout (replaces 5s watchdog)
-
-The ISR taskqueue thread stops executing under bhyve after ~10-15min.
-Converted the 5s watchdog to a 10ms callout that polls all three D2H
-rings on every tick. Also re-enables interrupts if stuck disabled,
-and checks chip liveness / firmware stalls every ~5s. Latency with
-poll-only: ~3ms gateway, ~15ms internet.
-
-#### Test results
-
-| Test | Result |
-|------|--------|
-| 10x gateway ping (0.5s interval) | 10/10 0% loss |
-| 100x flood ping (50ms interval) | 100/100 0% loss |
-| 1000x flood ping (10ms interval) | 1000/1000 0% loss, avg 2.5ms |
-| Internet ping via wlan0 (8.8.8.8) | 5/5 0% loss, avg 15ms |
-| HTTPS fetch freebsd.org via wlan0 | 15 kB, success |
-| TX counters after 1000x flood | tx=1122 complete=1122 drops=0 |
-
-### Milestone 16.7: Download stall investigation (DONE)
-
-Investigated "long downloads stall on DFS channels" known issue.
-
-Added diagnostic sysctl counters: `rx_complete`, `rx_deliver_fail`,
-`rx_repost_fail`.
-
-Findings (ch116, sustained nc download from build host):
-- rx_repost_fail=0, rx_deliver_fail=0 across all runs
-- Apparent stalls always at ~27s = when fixed-size (200MB) server file finished
-- Ping to AP gateway unaffected during stalls: 5/5, ~10ms RTT
-- TCP netstat shows empty receive queue during "stall" — no buffer overflow
-- Continuous `/dev/zero` stream: 100s clean, 0 stalls, 0 drop counters
-
-Root cause: test artifact. Fixed-size file completion closes the TCP connection;
-nc client stays in half-close, reporting zero throughput. Not a driver bug.
-
-### Milestone 17: Spec alignment (DONE)
-
-Gaps found during spec review (14 Mar 2026). See
-`docs/04-code-review.md` section "Spec review" for details.
-
-- [x] SR-1: Add missing init commands (scan times, bcn_timeout)
-- [x] SR-2: Document MPC=0 as intentional deviation (comments already in pcie.c, cfg.c)
-- [x] SR-6: Fix `brcmf_assoc_params_le` to use flexible array; inline into `brcmf_join_params`
-- [x] SR-9: Send C_DOWN before dongle init configuration, then C_UP after country
-- [x] SR-11: RX data_offset fallback to global rx_dataoffset when zero
-- [x] SR-13: Verify BAR0 window write and retry on mismatch
-- [x] SR-17: C_UP/C_DOWN: send no payload (spec says "none")
-- [x] SR-18: wsec_key struct: use natural alignment (164 bytes) instead of __packed
-- [x] SR-20: DISASSOC (11) registered in event mask; harmless if firmware never sends it
-
-#### Additional items resolved
-
-- [x] SR-1: FAKEFRAG, join_pref added to dongle init
-- [x] SR-3: "join" bsscfg iovar tested — firmware v7.35.180.133 does not
-  support it (silently succeeds but no association). Keeping SET_SSID.
-- [x] SR-7: Runtime D11N/D11AC chanspec via C_GET_VERSION; both encode/decode
-  paths implemented
-- [x] SR-12: Event buffer data offset by rx_dataoffset before parsing
-- [ ] SR-14: Core disable REJECT handshake (requires slave wrapper port registers)
-- [x] SR-15: Feature detection via `cap` iovar; probes `sup_wpa` and `mfp`
-- [x] SR-16: Roam trigger (-75 dBm) and roam delta (20 dB) set during init
-- [x] SR-19: event_msgs pushed to firmware before init commands (after C_UP)
-
-- [x] SR-10: Split IOCTL buffer: 1518-byte DMA for request, 8192-byte malloc
-  for response staging
-
-#### Remaining deferred
-
-- [ ] SR-1: CLM blob and txcap blob download (chunked download impl)
-- [ ] SR-1: txbf iovar (TX beamforming; firmware may not support)
-- [ ] SR-4: Multi-flow ring support (per-TID per-peer; needed for AP mode)
-- [ ] SR-5: AMPDU RX reorder (firmware handles it for FullMAC)
-- [ ] SR-8: Power management (D3/D0 transitions, deep sleep; laptop-only)
-
-#### Test results (14 Mar 2026)
-
-| Test | Result |
-|------|--------|
-| kldload + firmware boot | OK, no errors |
-| WPA2-PSK association (Kolabox) | COMPLETED |
-| DHCP lease | 192.168.188.103 |
-| Gateway ping 5x | 5/5, avg 4.6ms |
-| Flood ping 100x (10ms interval) | 100/100 0% loss, avg 2.7ms |
-| Interface down/up cycle (5s gap) | reconnects, COMPLETED |
-| kldunload | clean |
-
-### SDIO Milestones (BCM43455, Raspberry Pi 4)
-
-Reference: `docs/03-sdio-reference.md`.
-
-#### M-S1: Bus ops abstraction (DONE)
-#### M-S2: SDIO bus layer (DONE)
-#### M-S3: SDPCM + BCDC protocol (DONE)
-#### M-S4: SDIO probe/attach (DONE)
-
-#### M-S5: net80211 for BCM43455 (DONE)
-
-net80211 plumbing complete. Association blocked by AUTH timeout (M-S6 in progress).
-
-- [x] CLM blob download (CYW 7.45.x requires it for scan)
-- [x] `brcmf_cfg_attach` (net80211 integration, chip-aware VHT/HT)
-- [x] RX poll callout (50ms, 16 frames/tick, atomic busy guard)
-- [x] BCDC header stripping for SDIO event frames
-- [x] Scan with IEs: SSID-based IE offset detection (512-byte firmware header)
-- [x] Immediate scan result delivery (swscan timing workaround)
-- [x] Clean kldunload (~35-45s)
-- [x] Join flow: try "join" iovar, fall back to SET_SSID
-- [x] Event reason logging for DEAUTH/DISASSOC
-- [x] CYW43455-specific guards for unsupported `wpaie` / `sup_wpa`
-- [x] EAPOL TX passthrough before RUN
-- [x] link_task uses saved join channel instead of firmware chanspec ioctl
-- [x] Taskqueue contention fix (dedicated `sdpcm_tq` for `sdpcm_rx_task`)
-- [x] F2 serialization (`sdpcm_rx_busy` atomic guard)
-- [x] Multi-block F2 read fix (64-byte reads only)
-- [x] Worker-mode concurrent access fix
-
-#### M-S6: SDIO transport/runtime (IN PROGRESS)
-
-Systematic audit (25 Mar 2026) of `docs/sdio-auth-ref/` against source
-code identified the root cause of the association blocker. The SDPCM/BCDC
-runtime is incomplete — the issue is below net80211 and below WPA logic.
-
-Reference: `docs/sdio-auth-ref/01-sdio-bus-and-runtime.md`,
-`docs/sdio-auth-ref/02-bcdc-fws-and-association.md`.
-
-##### Audit findings (25 Mar 2026)
-
-Deviations found, ordered by likely impact on the AUTH timeout blocker:
-
-| # | Finding | Severity | Ref doc section |
-|---|---------|----------|-----------------|
-| 1 | `proptxstatus_mode=1` sent — Linux does NOT enable this on default SDIO | Critical | 02 section 4 |
-| 2 | SDPCM TX credit window (`tx_max`) not enforced before send | Critical | 01 "Transmit sequence window" |
-| 3 | No integrated DPC loop — separate poll/task/inline paths | Critical | 01 "DPC runtime loop" |
-| 4 | No BCDC `init_done` / `fws_attach` (even reduced mode) | High | 02 "Why init_done matters" |
-| 5 | Attach ordering wrong: no bus-state-UP, no preinit, poll starts after cfg_attach | High | 02 "Protocol attach ordering" |
-| 6 | `tlv=0` sent unnecessarily (Linux doesn't send it at all on default SDIO) | Low | 02 section 4 |
-| 7 | Flow-control bitmap (SDPCM header byte 8) never read | Medium | 01 "SDPCM frame format" |
-| 8 | Mailbox content not interpreted (read+acked, but firmware-ready/NAK/halt bits ignored) | Medium | 01 "Mailbox and interrupt model" |
-| 9 | No error recovery (frame abort, NAK, rxskip, write-terminate) | Medium | 01 "Error handling" |
-| 10 | F2 block size 64 vs Linux's 512 for BCM43455 | Medium | 01 "SDIO functions and block sizes" |
-| 11 | Extra AUTH event registered (Linux doesn't) | Low | 02 "Events registered" |
-| 12 | Missing ROAM, PSK_SUP event registration | Low | 02 "Events registered" |
-
-##### Fix plan
-
-Priority-ordered. Each item can be tested independently.
-
-- [x] **Remove `proptxstatus_mode=1` and `tlv=0`**: removed all three
-  iovars (`proptxstatus_mode=1`, `tlv=0`, `ampdu_hostreorder=1`) from
-  the SDIO init block in `cfg.c`. Tested: module loads and scans, but
-  AUTH still times out. Expected — this was one of several independent
-  issues.
-- [x] **Enforce SDPCM TX credits**: added `brcmf_sdpcm_tx_ok()` check
-  before every `brcmf_sdpcm_send`. Control frames check
-  `(max_seq - tx_seq) & 0x80`; data frames reserve 2 extra credits
-  for control. Both ioctl paths (inline and worker-mode) retry with
-  interleaved RX drain when ENOBUFS. AUTH timeout persists on 2.4GHz
-  (TestAP); intermittent success on 5GHz (Kolabox) was observed once
-  but not reproducible. Credit enforcement is correct per spec but
-  not the sole cause of the AUTH timeout.
-- [ ] **Build integrated DPC thread**: replace the poll callout +
-  taskqueue + `sdpcm_rx_busy` model with a single kernel thread that
-  owns all SDIO F2 I/O. Five sub-tasks:
-  - [x] T1: DPC thread skeleton — tested 25 Mar. Thread created in
-    `start_poll` (not `init` — too early, hangs during attach).
-    Callout at 10ms wakes thread. Ioctl msleep wakes thread instead
-    of enqueueing `rx_task`. Boot ioctls pass, scans work.
-  - [x] T2: Ioctl via DPC — removed entire non-worker inline ioctl
-    path. All ioctls go through DPC thread. Tested: boot ioctls OK,
-    scans OK. AUTH timeout unchanged.
-  - [x] T3+T4: Data TX via DPC + interrupt at DPC top — tested 26 Mar.
-    `brcmf_sdpcm_tx` queues frame, wakes DPC. Interrupt/mailbox/FC
-    processing moved from `brcmf_sdpcm_recv` to DPC loop top. DPC
-    loop order: intstatus -> mailbox -> FC -> RX (up to 50) ->
-    control TX -> data TX. **AUTH timeout persists** — the DPC loop
-    is correct per spec but not the root cause.
-  - [ ] T5: Cleanup — remove callout, `sdpcm_rx_task`, `sdpcm_tq`,
-    `sdpcm_rx_busy`, `sdpcm_worker_mode`. Thread shutdown in
-    `brcmf_sdpcm_stop_poll`.
-- [x] **Interpret mailbox content**: `SMB_FW_HALT` in mailbox data now
-  sets `fw_dead`. FC_CHANGE interrupt updates `sdpcm_flowctl` flag.
-  Tested 25 Mar: module loads, firmware boots, scans/ioctls work,
-  no regressions.
-- [x] **Read flow-control bitmap**: SDPCM header byte 8 stored in
-  `sdpcm_fcmask` on every RX. `brcmf_sdpcm_tx_ok` blocks data TX
-  when firmware flow-control is asserted. Tested with above build.
-- [x] **Fix attach ordering**: moved `brcmf_sdpcm_init` and
-  `brcmf_sdpcm_start_poll` before `brcmf_cfg_attach`. The RX poll
-  runtime is now active during dongle init ioctls. Worker mode set
-  before `brcmf_sdio_bus_start` so all ioctls use the DPC path.
-- [x] **Cancel net80211 management frame timeout**: net80211's
-  `sta_newstate(AUTH)` sends its own 802.11 auth frame (silently
-  dropped by `raw_xmit`) and starts a 2s `iv_mgtsend` callout. The
-  callout fires and transitions AUTH→SCAN before the firmware
-  responds. Fixed: cancel `iv_mgtsend` after base newstate for AUTH
-  and ASSOC. AUTH state now survives until firmware events arrive.
-- [ ] **Add minimal BCDC `init_done`**: set `avoid_queueing=true` flag
-  at the right attach point. On default SDIO this is nearly a no-op
-  but matches Linux's protocol-layer lifecycle.
-- [ ] **Add error recovery**: frame abort on F2 read failure, write
-  termination on F2 write failure, rxskip until NAK ack. May fix the
-  chip-wedge pattern after repeated failed AUTH cycles.
-
-##### ROOT CAUSE FOUND (26 Mar): three SDIO core register bugs
-
-Full details in `docs/10-investigations.md` top entry.
-
-Three bugs break the SDIO mailbox protocol so the firmware never
-receives a proper host acknowledgment after boot:
-
-1. **Wrong register offset**: `SD_REG_TOHOSTMAILBOXDATA` is 0x044
-   (the control register) — should be 0x04C (the data register).
-   We never read firmware's FWREADY/DEVREADY flags.
-
-2. **Wrong ACK value**: `I_SMB_INT_ACK` is 0x020000 (an intstatus
-   bit position) — should be 0x02 (tosbmailbox bit 1). Firmware
-   never sees our mailbox acknowledgment.
-
-3. **Wrong intstatus bits** in sdpcm.c: `I_HMB_FC_STATE` is 0x08
-   (bit 3, a to-SB bit) — should be 0x10 (bit 4). `I_HMB_FC_CHANGE`
-   is 0x10 — should be 0x20. Causes incorrect flow-control handling
-   and accidental clearing of firmware-side mailbox bits.
-
-Verified against canonical Linux source in
-`freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.h`
-(`struct sdpcmd_regs`) and `sdio.c` (bit definitions).
-
-- [x] Fix SD_REG_TOHOSTMAILBOXDATA to 0x04C
-- [x] Fix tosbmailbox ACK to use SMB_INT_ACK=0x02
-- [x] Fix I_HMB_FC_STATE/I_HMB_FC_CHANGE in sdpcm.c
-- [x] Consolidate all SDIO core register defs into brcmfmac.h
-- [x] Tested: boot mailbox now reads correct data (FWREADY + version 4)
-- [x] Tested: DPC runtime mailbox ACK sends 0x02 (correct)
-- [ ] AUTH timeout persists — register bugs were real but not the
-  sole cause. Firmware still reports AUTH timeout (code=3 status=2).
-- [x] Added SDIO firmware console reader (sysctl `dev.brcmfmac.0.fwcon`)
-- [x] **New finding**: `join` iovar fails with BCME_BUFTOOSHORT (-14),
-  NOT BCME_NOTREADY. Our `brcmf_ext_join_params` struct is too small.
-  The firmware's join handler rejects the buffer. Error was masked
-  because our ioctl layer returns EIO for all firmware errors.
-  AP never sees any auth frames — firmware is not transmitting.
-- [ ] Compare `brcmf_ext_join_params` layout against Linux's struct.
-  Fix size mismatch — this may be the actual auth blocker.
-
-##### Previous AUTH timeout investigation (now explained)
-
-TestAP (open, channel 1, 2.4GHz) consistently fails with firmware
-AUTH timeout (code=3 status=2). `C_SET_SSID` command accepted
-(returns 0), but the firmware can't complete 802.11 auth with the AP.
-Firmware is known-good (same files work on Linux).
-
-Tested and ruled out:
-- TX credit exhaustion (credits available, send succeeds)
-- BSSID/chanspec in SET_SSID params (broadcast BSSID matches Linux;
-  actual BSSID + chanspec_num=1 returns EIO; actual BSSID + no
-  chanspec accepted but still AUTH timeout)
-- Escan abort timing (500ms wait didn't help)
-- Shared RAM structure (read OK, flags=1, no trap, fwid matches)
-- Sending wpaie on CYW43455 (returns UNSUPPORTED, no state change)
-- Removing C_SET_INFRA from per-connect path (no change)
-- Removing redundant bss_up in brcmf_parent (no change)
-- C_SET_GLOM returns BCME_BADARG on CYW43455 (non-fatal)
-- Roam trigger/delta return BCME_RANGE on CYW43455 (non-fatal)
-
-The intermittent 5GHz success (Kolabox) was observed once but not
-reproducible. The AUTH timeout is the primary blocker.
-
-Tested and also ruled out (from Linux brcmfmac source review):
-- SaveRestore init (WAKEUPCTRL, CARDCAP, CHIPCLKCSR FORCE_HT) — added, no change
-- CCCR IENx interrupt enable (0x07 = master + F1 + F2) — added, no change
-- Integrated DPC loop (T1-T4 complete) — all I/O through single DPC thread, no change
-
-**Struct alignment fix (26 Mar)**: `brcmf_join_params`, `brcmf_assoc_params_le`,
-`brcmf_join_scan_params`, `brcmf_ext_join_params` were all `__packed`.
-The firmware expects natural alignment (2 bytes padding between bssid[6]
-and chanspec_num in assoc_params, 3 bytes after scan_type in scan_params).
-Without padding, the chanspec field was at the wrong offset and the
-firmware rejected SET_SSID with chanspec (returned EIO). Fixed: removed
-`__packed`, added explicit padding, matched Linux struct layout.
-SET_SSID with BSSID + chanspec now accepted (returns 0). AUTH still
-times out — under investigation.
-
-
-##### AUTH timeout — FALSE POSITIVE on btc_mode fix (27 Mar 2026)
-
-Earlier testing suggested `btc_mode=0` in NVRAM fixed AUTH timeout.
-This was a **false positive** — the success occurred during a
-kldunload/kldload cycle without reboot. After reboot, AUTH timeout
-returns with `btc_mode=0`.
-
-The `FIXME bt_coex` message during `wl_open` remains the prime suspect
-but the actual root cause is still unknown.
-
-Fixes applied during investigation (correct but don't resolve AUTH):
-- [x] C_UP/C_DOWN now send 4-byte int payload (matching Linux)
-- [x] Removed redundant bss_up from brcmf_parent
-- [x] Fixed bsscfg encoding: bsscfg_idx=0 sends plain iovar
-- [x] Fixed join iovar size calculation using offsetof()
-
-##### Deferred (blocked on AUTH timeout)
-
-- [ ] F2 block size 512 (requires re-testing Arasan SDHCI stability)
-- [ ] ROAM and PSK_SUP event registration
-- [ ] Investigate btc_mode=1 FEM issue (why does it fail on FreeBSD?)
-- [ ] Throughput testing
-
-##### Background: previous investigation (24 Mar 2026)
-
-Taskqueue contention fix: `scan_task` and `sdpcm_rx_task` shared
-`taskqueue_thread`. Created dedicated `sdpcm_tq` taskqueue. Security
-ioctls now complete on first AUTH attempt.
-
-AUTH timeout pattern after the taskqueue fix:
-- `join` iovar returns `BCME_NOTREADY (-14)` — normal per ref doc
-- `C_SET_SSID` accepted, firmware reports AUTH timeout ~2s later
-- Chip wedges after repeated failed cycles (F2 err=5, clock timeout)
-
-Channel investigations (channel set commands ignored, firmware stays on
-5GHz) were a red herring — the ref doc confirms explicit channel set
-before join is not required.
-
-The 25 Mar audit shifted focus from net80211/WPA to the SDPCM/BCDC
-transport layer, where the actual deviations from Linux are.
-
-### Milestone X: Automated testing (TODO)
-
-### Milestone X: Packaging (TODO)
-
-- [ ] FreeBSD port/package
-- [ ] man page
-- [ ] Firmware crash recovery (re-download and reinit without kldunload)
-
-## Known issues
-
-Issue tracking is maintained in `docs/03-known-issues.md`. This file is focused
-on milestone status and outcomes.
-
-## Code structure
-
-See src/
+### PCIe Milestones 1-17: COMPLETE
+
+Full FullMAC driver for BCM4350:
+- Firmware download, msgbuf protocol, flow rings
+- WPA2-PSK with host supplicant
+- 5GHz/HT40/VHT80, latency optimization
+- Link loss recovery, interface cycling
+- Production hardening, D2H reliability
+
+See git history for detailed milestone notes.
+
+### SDIO Milestones M-S1 through M-S6: COMPLETE
+
+Full FullMAC driver for BCM43455:
+- SDIO bus layer, SDPCM/BCDC protocol
+- CLM blob download, net80211 integration
+- WPA2-PSK with host supplicant
+- 5GHz association and data path
+
+#### Key fixes (27 Mar 2026 session):
+
+1. **wlan_ccmp kernel module missing** — test host kernel rebuilt with CCMP built-in
+
+2. **RX path lock issue** — `if_input()` was called while holding `sdio_lock`. TCP processing triggered TX callback which needed the same lock. Fixed by queuing RX mbufs and delivering after releasing the lock.
+
+3. **TX path sleeping** — `brcmf_sdpcm_tx` was called from TCP output path (holding `tcpinp` lock) and slept in SDIO/CAM. Fixed by queuing TX mbufs and sending from a taskqueue.
+
+#### Earlier SDIO fixes (25-26 Mar 2026):
+
+- Fixed SDIO core register offsets (SD_REG_TOHOSTMAILBOXDATA, SMB_INT_ACK, I_HMB_FC bits)
+- Fixed join iovar struct alignment and size
+- Fixed bsscfg encoding for idx=0
+- Added firmware console reader (sysctl `dev.brcmfmac.0.fwcon`)
+- Simplified SDPCM to synchronous with sx_lock serialization
+
+### Milestone M-S7: 2.4GHz AUTH timeout (TODO)
+
+5GHz works, 2.4GHz fails with "authentication failure, no ack".
+
+Investigation steps:
+- [ ] Compare Linux brcmfmac 2.4GHz init sequence vs FreeBSD
+- [ ] Check NVRAM differences (txchain, rxchain, FEM config)
+- [ ] Investigate `FIXME bt_coex` message during `wl_open`
+- [ ] Test with `btc_mode` iovar variations at runtime (not NVRAM)
+- [ ] Check if 2.4GHz TX power is configured correctly
+- [ ] Packet capture on AP side to confirm frames not received
+
+References:
+- `docs/03-known-issues.md` — 2.4GHz AUTH timeout entry
+- Linux `brcmfmac/cfg80211.c` — `brcmf_cfg80211_connect` for init sequence
+- Firmware console (`dev.brcmfmac.0.fwcon`) for runtime diagnostics
+
+### Milestone M-S8: Country code configuration (TODO)
+
+- [ ] Add sysctl `dev.brcmfmac.X.country` (read/write)
+- [ ] Add loader tunable `hw.brcmfmac.country`
+- [ ] Remove hardcoded "DE" from `brcmf_cfg_attach`
+
+### Milestone M-S9: Debug cleanup (TODO)
+
+- [ ] Remove `device_printf` spam (`rx_data`, `tx_data`, `vap_transmit`, `key_set`)
+- [ ] Convert to `BRCMF_DBG` macro with sysctl-controlled verbosity
+- [ ] Keep error paths with `device_printf`
+
+### Milestone M-S10: Clean kldunload (TODO)
+
+- [ ] Verify kldunload while associated (5GHz WPA2)
+- [ ] Verify kldunload after disassociation
+- [ ] Check for resource leaks (memory, tasks, callouts)
+- [ ] Ensure no panics or hangs
+
+### Milestone M-S11: Stability testing (TODO)
+
+- [ ] Sustained iperf3 download (10+ minutes)
+- [ ] Sustained iperf3 upload (10+ minutes)
+- [ ] Large file transfer (100MB+)
+- [ ] Interface cycling under load
+- [ ] Verify no rx_repost_fail, rx_deliver_fail counters
+
+### Milestone M-S12: Firmware crash recovery (TODO)
+
+- [ ] Detect firmware crash (trap in shared RAM, fw_dead flag)
+- [ ] Re-download firmware without kldunload
+- [ ] Reinitialize net80211 state
+- [ ] Automatic reconnection after recovery
+
+### Milestone M-S13: Automated testing (TODO)
+
+- [ ] Test harness for kldload/kldunload cycles
+- [ ] Association/disassociation stress test
+- [ ] Throughput regression tests
+- [ ] CI integration
+
+### Milestone M-S14: FreeBSD port/package (TODO)
+
+- [ ] Create FreeBSD port (ports tree structure)
+- [ ] Firmware file handling (linux-firmware integration)
+- [ ] Man page (brcmfmac.4)
+- [ ] Installation documentation
+
+## Code Structure
+
+See `src/` directory.
+
+## Known Issues
+
+See `docs/03-known-issues.md` for issue tracking.
