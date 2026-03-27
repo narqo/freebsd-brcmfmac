@@ -64,32 +64,6 @@
 /* IOCTL timeout */
 #define BRCMF_SDPCM_IOCTL_TIMEOUT_MS	3000
 
-/* SDIO core interrupt bits */
-#define I_HMB_FC_STATE		0x000008
-#define I_HMB_FC_CHANGE		0x000010
-#define I_HMB_FRAME_IND		0x000040
-#define I_HMB_HOST_INT		0x000080
-#define I_SMB_NAK		0x010000
-#define I_SMB_INT_ACK		0x020000
-#define I_SMB_USE_OOB		0x200000
-#define I_SMB_DEV_INT		0x400000
-
-/* SDIO core register offsets */
-#define SD_REG_INTSTATUS	0x020
-#define SD_REG_HOSTINTMASK	0x024
-#define SD_REG_TOSBMAILBOX	0x040
-#define SD_REG_TOHOSTMAILBOXDATA 0x044
-
-/* To-host mailbox data bits */
-#define HMB_DATA_NAKHANDLED	0x0001
-#define HMB_DATA_DEVREADY	0x0002
-#define HMB_DATA_FC		0x0004
-#define HMB_DATA_FWREADY	0x0008
-#define HMB_DATA_FWHALT		0x0010
-#define HMB_DATA_VERSION_MASK	0x00FF0000
-#define HMB_DATA_VERSION_SHIFT	16
-#define HMB_DATA_FCDATA_MASK	0xFF000000
-#define HMB_DATA_FCDATA_SHIFT	24
 
 /* F2 transfer sizes */
 #define SDPCM_MAX_FRAME_SIZE	2048
@@ -336,7 +310,7 @@ brcmf_sdpcm_hostmail(struct brcmf_softc *sc)
 	    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
 	if (hmb_data != 0)
 		brcmf_sdio_bp_write32(sc, sc->sdiocore.base + SD_REG_TOSBMAILBOX,
-		    I_SMB_INT_ACK);
+		    SMB_INT_ACK);
 
 	if (hmb_data & HMB_DATA_FWHALT)
 		sc->fw_dead = 1;

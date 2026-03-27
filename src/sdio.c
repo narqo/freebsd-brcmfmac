@@ -75,17 +75,8 @@
 /* ChipCommon register offsets */
 #define CC_EROMBASE		0xFC
 
-/* SDIO device core (core ID 0x829) register offsets */
-#define SD_REG_INTSTATUS	0x020
-#define SD_REG_HOSTINTMASK	0x024
-#define SD_REG_TOSBMAILBOX	0x040
-#define SD_REG_TOSBMAILBOXDATA	0x048
-#define SD_REG_TOHOSTMAILBOXDATA 0x044
-#define I_SMB_INT_ACK		0x020000
-
 /* Protocol version for tosbmailboxdata */
 #define SDPCM_PROT_VERSION	4
-#define SMB_DATA_VERSION_SHIFT	16
 
 /* BCMA core IDs */
 #define BCMA_CORE_SDIO_DEV	0x829
@@ -101,11 +92,7 @@
 #define CY_43455_F2_WATERMARK		0x60
 #define CY_43455_MES_WATERMARK		0x50
 
-/* Host interrupt mask bits */
-#define I_HMB_SW_MASK	0x000000F0
-#define I_HMB_FC_CHANGE	0x00000020
-#define I_HMB_FRAME_IND	0x00000040
-#define I_HMB_HOST_INT	0x00000080
+
 
 /*
  * Set backplane address window.
@@ -731,7 +718,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		if (mbox != 0) {
 			brcmf_sdio_bp_write32(sc,
 			    sc->sdiocore.base + SD_REG_TOSBMAILBOX,
-			    I_SMB_INT_ACK);
+			    SMB_INT_ACK);
 		}
 	}
 

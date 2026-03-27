@@ -294,8 +294,8 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 		return 0;
 
 	/* join iovar failed (e.g. BCME_NOTREADY) — fall back to C_SET_SSID.
-	 * Linux includes BSSID + chanspec when known, and adjusts the
-	 * command size: sizeof(ssid_le) + sizeof(assoc_params). */
+	 * Send SSID-only first (no assoc_params) to let firmware pick
+	 * the channel and BSSID from its scan cache. */
 	BRCMF_DBG(sc, "join iovar failed (%d), falling back to SET_SSID "
 	    "bssid=%6D chanspec=0x%04x\n", error, ni->ni_bssid, ":", chanspec);
 	{

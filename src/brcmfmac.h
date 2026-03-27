@@ -28,6 +28,39 @@
 
 struct sdio_func;
 
+/*
+ * SDIO core register offsets (from struct sdpcmd_regs in Linux sdio.h).
+ * Single definition — sdio.c and sdpcm.c both include this header.
+ */
+#define SD_REG_INTSTATUS		0x020
+#define SD_REG_HOSTINTMASK		0x024
+#define SD_REG_TOSBMAILBOX		0x040
+#define SD_REG_TOSBMAILBOXDATA		0x048
+#define SD_REG_TOHOSTMAILBOXDATA	0x04C
+
+/* intstatus bits — to-host mailbox software interrupts (bits 4-7) */
+#define I_HMB_FC_STATE		0x00000010	/* I_HMB_SW0 */
+#define I_HMB_FC_CHANGE		0x00000020	/* I_HMB_SW1 */
+#define I_HMB_FRAME_IND		0x00000040	/* I_HMB_SW2 */
+#define I_HMB_HOST_INT		0x00000080	/* I_HMB_SW3 */
+#define I_HMB_SW_MASK		0x000000F0
+
+/* tosbmailbox register bits (NOT intstatus bit positions) */
+#define SMB_NAK			0x01
+#define SMB_INT_ACK		0x02
+
+/* tosbmailboxdata */
+#define SMB_DATA_VERSION_SHIFT	16
+
+/* tohostmailboxdata */
+#define HMB_DATA_NAKHANDLED	0x0001
+#define HMB_DATA_DEVREADY	0x0002
+#define HMB_DATA_FC		0x0004
+#define HMB_DATA_FWREADY	0x0008
+#define HMB_DATA_FWHALT		0x0010
+#define HMB_DATA_FCDATA_MASK	0xFF000000
+#define HMB_DATA_FCDATA_SHIFT	24
+
 /* Chip enumeration base address — used for F2 frame port window */
 #define SI_ENUM_BASE		0x18000000
 

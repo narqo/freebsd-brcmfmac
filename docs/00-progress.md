@@ -548,10 +548,15 @@ Verified against canonical Linux source in
 `freebsdsrc/sys/contrib/dev/broadcom/brcm80211/brcmfmac/sdio.h`
 (`struct sdpcmd_regs`) and `sdio.c` (bit definitions).
 
-- [ ] Fix SD_REG_TOHOSTMAILBOXDATA to 0x04C
-- [ ] Fix tosbmailbox ACK to use SMB_INT_ACK=0x02
-- [ ] Fix I_HMB_FC_STATE/I_HMB_FC_CHANGE in sdpcm.c
-- [ ] Test association
+- [x] Fix SD_REG_TOHOSTMAILBOXDATA to 0x04C
+- [x] Fix tosbmailbox ACK to use SMB_INT_ACK=0x02
+- [x] Fix I_HMB_FC_STATE/I_HMB_FC_CHANGE in sdpcm.c
+- [x] Consolidate all SDIO core register defs into brcmfmac.h
+- [x] Tested: boot mailbox now reads correct data (FWREADY + version 4)
+- [x] Tested: DPC runtime mailbox ACK sends 0x02 (correct)
+- [ ] AUTH timeout persists — register bugs were real but not the
+  sole cause. Firmware still reports AUTH timeout (code=3 status=2).
+  Additional investigation needed.
 
 ##### Previous AUTH timeout investigation (now explained)
 
