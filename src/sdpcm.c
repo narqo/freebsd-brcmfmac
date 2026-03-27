@@ -72,6 +72,10 @@
  * avoiding DATA_CRC on the Arasan SDHCI + BCM43455 F2 port. */
 #define SDPCM_F2_BLKSZ		64
 
+/* Forward declarations */
+static struct mbuf *brcmf_sdpcm_rx_mbuf(struct brcmf_softc *sc,
+    uint8_t *data, uint16_t len);
+
 /* Event structures (same as msgbuf.c) */
 struct brcmf_event_msg_be {
 	uint16_t version;
@@ -326,6 +330,8 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 	uint8_t *txbuf = sc->sdpcm_ioctl_tx;
 	uint8_t *rxbuf = sc->sdpcm_ioctl_rx;
 	struct bcdc_dcmd *dcmd;
+	struct mbuf *rx_list = NULL;
+	struct mbuf **rx_tail = &rx_list;
 	uint16_t reqid;
 	uint32_t flags;
 	int error, i;
@@ -372,7 +378,7 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 	if (error != 0)
 		goto done;
 
-	/* Poll for response */
+	/* Poll for response — queue data mbufs for delivery after unlock */
 	for (i = 0; i < 300; i++) {
 		uint16_t chan, dlen;
 		uint8_t *payload;
@@ -389,9 +395,13 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 		/* Process any frame we receive */
 		if (chan == SDPCM_EVENT_CHANNEL)
 			brcmf_sdpcm_process_event(sc, payload, dlen);
-		else if (chan == SDPCM_DATA_CHANNEL)
-			brcmf_sdpcm_process_rx(sc, payload, dlen);
-		else if (chan == SDPCM_CONTROL_CHANNEL) {
+		else if (chan == SDPCM_DATA_CHANNEL) {
+			struct mbuf *m = brcmf_sdpcm_rx_mbuf(sc, payload, dlen);
+			if (m != NULL) {
+				*rx_tail = m;
+				rx_tail = &m->m_nextpkt;
+			}
+		} else if (chan == SDPCM_CONTROL_CHANNEL) {
 			/* Check if this is our response */
 			struct bcdc_dcmd *resp = (struct bcdc_dcmd *)payload;
 			uint32_t rflags, rlen;
@@ -439,6 +449,19 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 
 done:
 	sx_xunlock(&sc->sdio_lock);
+
+	/* Deliver queued RX mbufs outside sdio_lock */
+	while (rx_list != NULL) {
+		struct mbuf *m = rx_list;
+		rx_list = m->m_nextpkt;
+		m->m_nextpkt = NULL;
+
+		struct epoch_tracker et;
+		NET_EPOCH_ENTER(et);
+		if_input(m->m_pkthdr.rcvif, m);
+		NET_EPOCH_EXIT(et);
+	}
+
 	return (error);
 }
 
@@ -502,10 +525,11 @@ brcmf_sdpcm_process_event(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 }
 
 /*
- * Process a received data frame. Strip BCDC header and deliver.
+ * Build an mbuf from RX data. Returns mbuf or NULL.
+ * Does NOT call if_input — caller must do that outside sdio_lock.
  */
-void
-brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
+static struct mbuf *
+brcmf_sdpcm_rx_mbuf(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 {
 	struct ieee80211com *ic = &sc->ic;
 	struct ieee80211vap *vap;
@@ -516,101 +540,131 @@ brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 	device_printf(sc->dev, "rx_data: len=%u\n", len);
 
 	if (len < BCDC_HEADER_LEN)
-		return;
+		return (NULL);
 
 	data_offset = data[3];
 	uint16_t hdr_total = BCDC_HEADER_LEN + (uint16_t)data_offset * 4;
 	if (hdr_total > len)
-		return;
+		return (NULL);
 	data += hdr_total;
 	len -= hdr_total;
 
 	if (len < ETHER_HDR_LEN)
-		return;
+		return (NULL);
 
 	vap = TAILQ_FIRST(&ic->ic_vaps);
 	if (vap == NULL)
-		return;
+		return (NULL);
 	ifp = vap->iv_ifp;
 	if (ifp == NULL)
-		return;
+		return (NULL);
 
 	m = m_get2(len, M_NOWAIT, MT_DATA, M_PKTHDR);
 	if (m == NULL)
-		return;
+		return (NULL);
 
 	m_copyback(m, 0, len, data);
 	m->m_pkthdr.len = m->m_len = len;
 	m->m_pkthdr.rcvif = ifp;
 
-	{
-		struct epoch_tracker et;
-		NET_EPOCH_ENTER(et);
-		if_input(ifp, m);
-		NET_EPOCH_EXIT(et);
-	}
+	return (m);
 }
 
 /*
  * TX data frame via SDPCM. Implements bus_ops->tx.
- * Synchronous: send immediately.
+ * Queue mbuf and schedule TX task — cannot sleep in network output path.
  */
 int
 brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 {
-	uint8_t *frame = sc->sdpcm_data_tx;
-	uint16_t pktlen;
-	int error, i;
-
 	if (sc->fw_dead || sc->sdio_func2 == NULL) {
 		m_freem(m);
 		return (ENXIO);
 	}
 
-	pktlen = m->m_pkthdr.len;
-	if (BCDC_HEADER_LEN + pktlen > SDPCM_MAX_FRAME_SIZE - SDPCM_HDRLEN) {
+	if (m->m_pkthdr.len > SDPCM_MAX_FRAME_SIZE - SDPCM_HDRLEN - BCDC_HEADER_LEN) {
 		m_freem(m);
 		return (EMSGSIZE);
 	}
 
-	/* BCDC header */
-	frame[0] = BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT;
-	frame[1] = 0;
-	frame[2] = 0;
-	frame[3] = 0;
+	/* Queue mbuf for TX task */
+	mtx_lock(&sc->tx_queue_mtx);
+	*sc->tx_queue_tail = m;
+	sc->tx_queue_tail = &m->m_nextpkt;
+	m->m_nextpkt = NULL;
+	mtx_unlock(&sc->tx_queue_mtx);
 
-	m_copydata(m, 0, pktlen, frame + BCDC_HEADER_LEN);
+	taskqueue_enqueue(sc->sdpcm_tq, &sc->sdpcm_tx_task);
+	return (0);
+}
 
-	/* Debug: log TX with ethertype */
-	{
-		uint16_t etype = (frame[BCDC_HEADER_LEN + 12] << 8) |
-		    frame[BCDC_HEADER_LEN + 13];
-		device_printf(sc->dev, "tx_data: len=%u etype=0x%04x\n",
-		    pktlen, etype);
-	}
+/*
+ * TX task — send queued mbufs. Runs in taskqueue context where sleeping is OK.
+ */
+static void
+brcmf_sdpcm_tx_task(void *arg, int pending)
+{
+	struct brcmf_softc *sc = arg;
+	struct mbuf *m, *tx_list;
+	uint8_t *frame = sc->sdpcm_data_tx;
+	int error, i;
 
-	m_freem(m);
+	if (sc->fw_dead || sc->detaching)
+		return;
+
+	/* Grab queued mbufs */
+	mtx_lock(&sc->tx_queue_mtx);
+	tx_list = sc->tx_queue_head;
+	sc->tx_queue_head = NULL;
+	sc->tx_queue_tail = &sc->tx_queue_head;
+	mtx_unlock(&sc->tx_queue_mtx);
+
+	if (tx_list == NULL)
+		return;
 
 	sx_xlock(&sc->sdio_lock);
 
-	/* Send — retry if no TX credits */
-	for (i = 0; i < 50; i++) {
-		error = brcmf_sdpcm_send(sc, SDPCM_DATA_CHANNEL,
-		    frame, BCDC_HEADER_LEN + pktlen);
-		if (error != ENOBUFS)
-			break;
-		/* Drain RX to get TX credits */
+	while ((m = tx_list) != NULL) {
+		uint16_t pktlen = m->m_pkthdr.len;
+		tx_list = m->m_nextpkt;
+		m->m_nextpkt = NULL;
+
+		/* BCDC header */
+		frame[0] = BCDC_PROTO_VER << BCDC_FLAG_VER_SHIFT;
+		frame[1] = 0;
+		frame[2] = 0;
+		frame[3] = 0;
+
+		m_copydata(m, 0, pktlen, frame + BCDC_HEADER_LEN);
+
+		/* Debug: log TX with ethertype */
 		{
-			uint16_t chan, dlen;
-			uint8_t *payload;
-			brcmf_sdpcm_recv(sc, sc->sdpcm_poll_rx,
-			    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+			uint16_t etype = (frame[BCDC_HEADER_LEN + 12] << 8) |
+			    frame[BCDC_HEADER_LEN + 13];
+			device_printf(sc->dev, "tx_data: len=%u etype=0x%04x\n",
+			    pktlen, etype);
 		}
-		DELAY(1000);
+
+		m_freem(m);
+
+		/* Send — retry if no TX credits */
+		for (i = 0; i < 50; i++) {
+			error = brcmf_sdpcm_send(sc, SDPCM_DATA_CHANNEL,
+			    frame, BCDC_HEADER_LEN + pktlen);
+			if (error != ENOBUFS)
+				break;
+			/* Drain RX to get TX credits */
+			{
+				uint16_t chan, dlen;
+				uint8_t *payload;
+				brcmf_sdpcm_recv(sc, sc->sdpcm_poll_rx,
+				    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+			}
+			DELAY(1000);
+		}
 	}
 
 	sx_xunlock(&sc->sdio_lock);
-	return (error);
 }
 
 /*
@@ -624,6 +678,8 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	uint8_t *rxbuf = sc->sdpcm_poll_rx;
 	uint16_t chan, dlen;
 	uint8_t *payload;
+	struct mbuf *rx_list = NULL;
+	struct mbuf **rx_tail = &rx_list;
 	int i;
 
 	if (sc->fw_dead || sc->detaching)
@@ -636,7 +692,7 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 	/* Check mailbox for firmware messages */
 	brcmf_sdpcm_hostmail(sc);
 
-	/* Drain RX FIFO */
+	/* Drain RX FIFO — queue mbufs for later delivery */
 	for (i = 0; i < 50; i++) {
 		int error = brcmf_sdpcm_recv(sc, rxbuf,
 		    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
@@ -645,12 +701,33 @@ brcmf_sdpcm_rx_task(void *arg, int pending)
 
 		if (chan == SDPCM_EVENT_CHANNEL)
 			brcmf_sdpcm_process_event(sc, payload, dlen);
-		else if (chan == SDPCM_DATA_CHANNEL)
-			brcmf_sdpcm_process_rx(sc, payload, dlen);
+		else if (chan == SDPCM_DATA_CHANNEL) {
+			struct mbuf *m = brcmf_sdpcm_rx_mbuf(sc, payload, dlen);
+			if (m != NULL) {
+				*rx_tail = m;
+				rx_tail = &m->m_nextpkt;
+			}
+		}
 		/* Control channel responses handled inline in ioctl */
 	}
 
 	sx_xunlock(&sc->sdio_lock);
+
+	/*
+	 * Deliver RX mbufs outside sdio_lock. if_input may trigger
+	 * TCP processing which calls back into our TX path, and TX
+	 * needs sdio_lock.
+	 */
+	while (rx_list != NULL) {
+		struct mbuf *m = rx_list;
+		rx_list = m->m_nextpkt;
+		m->m_nextpkt = NULL;
+
+		struct epoch_tracker et;
+		NET_EPOCH_ENTER(et);
+		if_input(m->m_pkthdr.rcvif, m);
+		NET_EPOCH_EXIT(et);
+	}
 }
 
 /*
@@ -672,7 +749,12 @@ void
 brcmf_sdpcm_init(struct brcmf_softc *sc)
 {
 	sx_init(&sc->sdio_lock, "brcmfmac_sdio");
+	mtx_init(&sc->tx_queue_mtx, "brcmfmac_txq", NULL, MTX_DEF);
+	sc->tx_queue_head = NULL;
+	sc->tx_queue_tail = &sc->tx_queue_head;
+
 	TASK_INIT(&sc->sdpcm_rx_task, 0, brcmf_sdpcm_rx_task, sc);
+	TASK_INIT(&sc->sdpcm_tx_task, 0, brcmf_sdpcm_tx_task, sc);
 	callout_init(&sc->sdpcm_callout, 1);
 
 	sc->sdpcm_tq = taskqueue_create("brcmfmac_sdpcm", M_WAITOK,
@@ -697,8 +779,10 @@ brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 	sc->sdpcm_poll_started = 0;
 	callout_drain(&sc->sdpcm_callout);
 
-	if (sc->sdpcm_tq != NULL)
+	if (sc->sdpcm_tq != NULL) {
 		taskqueue_drain(sc->sdpcm_tq, &sc->sdpcm_rx_task);
+		taskqueue_drain(sc->sdpcm_tq, &sc->sdpcm_tx_task);
+	}
 }
 
 /*
@@ -707,11 +791,23 @@ brcmf_sdpcm_stop_poll(struct brcmf_softc *sc)
 void
 brcmf_sdpcm_cleanup(struct brcmf_softc *sc)
 {
+	struct mbuf *m;
+
 	brcmf_sdpcm_stop_poll(sc);
 	if (sc->sdpcm_tq != NULL) {
 		taskqueue_free(sc->sdpcm_tq);
 		sc->sdpcm_tq = NULL;
 	}
+
+	/* Free any queued TX mbufs */
+	mtx_lock(&sc->tx_queue_mtx);
+	while ((m = sc->tx_queue_head) != NULL) {
+		sc->tx_queue_head = m->m_nextpkt;
+		m_freem(m);
+	}
+	sc->tx_queue_tail = &sc->tx_queue_head;
+	mtx_unlock(&sc->tx_queue_mtx);
+	mtx_destroy(&sc->tx_queue_mtx);
 }
 
 /*

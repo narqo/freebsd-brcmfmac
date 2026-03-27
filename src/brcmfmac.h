@@ -206,8 +206,14 @@ struct brcmf_softc {
 	int sdpcm_poll_started;		/* guard for stop_poll */
 	struct callout sdpcm_callout;	/* RX poll callout (50ms) */
 	struct task sdpcm_rx_task;	/* RX processing task */
-	struct taskqueue *sdpcm_tq;	/* dedicated taskqueue for rx_task */
+	struct task sdpcm_tx_task;	/* TX processing task */
+	struct taskqueue *sdpcm_tq;	/* dedicated taskqueue for rx/tx tasks */
 	struct sx sdio_lock;		/* serializes all F2 SDIO access (sleepable) */
+
+	/* TX queue — network stack cannot sleep, so we queue and send from task */
+	struct mtx tx_queue_mtx;	/* protects tx_queue_head/tail */
+	struct mbuf *tx_queue_head;	/* queued TX mbufs */
+	struct mbuf **tx_queue_tail;	/* pointer to last m_nextpkt */
 
 	/* Ring info from firmware (PCIe-specific) */
 	uint32_t ringmem_addr;	  /* TCM address of ring memory descriptors */

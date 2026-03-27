@@ -1622,4 +1622,53 @@ WPA: Failed to set PTK to the driver (alg=3 keylen=16...)
 Rebuild wlan_ccmp.ko from matching kernel sources or rebuild kernel with CCMP built-in.
 This is a test host configuration issue, not a driver bug.
 
-**The SDIO driver code is correct** — the WPA handshake completes all EAPOL exchanges successfully. The failure is in the net80211/crypto layer due to missing cipher module.
+**The SDIO driver code is correct** — the WPA handshake completes all EAPOL exchanges successfully. The failure was in the net80211/crypto layer due to missing cipher module.
+
+## Post wlan_ccmp fix (2026-03-27)
+
+After kernel was rebuilt with wlan_ccmp, the WPA2 connection **fully succeeded**:
+
+```
+[89] brcmfmac0: newstate: AUTH -> RUN arg=16
+[90] brcmfmac0: key_set: idx=0 len=16 cipher=3 flags=0x103  # PTK
+[90] brcmfmac0: key_set: idx=2 len=16 cipher=3 flags=0x106  # GTK
+[90] brcmfmac0: rx_data: len=64  # traffic flowing
+[92] brcmfmac0: vap_transmit: state=5 etype=0x0800 len=342  # IPv4 TX
+[93] brcmfmac0: tx_data: len=42 etype=0x0806  # ARP
+```
+
+Connection ran for ~6 seconds with active traffic before kernel panic.
+
+**Kernel panic (unrelated to driver):**
+```
+panic: sleeping thread holds tcpinp
+#6 tcp_usr_rcvd
+#7 soreceive_generic_locked
+...
+#14 tcp_input
+#15 ip_input
+#16 netisr_dispatch_src
+#17 ether_demux
+```
+
+This is a FreeBSD TCP lock ordering bug triggered when processing received packets. The panic occurs in the TCP/IP stack, not in driver code. The driver was functioning correctly — passing RX packets up the stack which then triggered the kernel bug.
+
+**Root cause of second panic:**
+The TX path (`brcmf_sdpcm_tx`) was being called from TCP output while holding `tcpinp` lock. TX called SDIO/CAM which sleeps. WITNESS detected sleeping thread holding non-sleepable lock.
+
+Stack trace:
+```
+#5 brcmf_sdpcm_send
+#6 brcmf_sdpcm_tx
+#7 ether_output_frame
+...
+#12 tcp_usr_send (holds tcpinp)
+```
+
+**Fix:** Changed TX to queue mbufs and send from a taskqueue (`sdpcm_tx_task`). Network stack's `brcmf_sdpcm_tx` just queues the mbuf and returns immediately — no sleeping.
+
+**Result:** WPA2 connection fully working:
+- Association, EAPOL handshake, key installation all succeed
+- DHCP works, got IP 192.168.188.182
+- Ping to gateway and internet (8.8.8.8) works
+- No panics
