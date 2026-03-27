@@ -159,8 +159,15 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
 		if (status == BRCMF_E_STATUS_SUCCESS) {
+			/*
+			 * Association succeeded. Transition to RUN immediately
+			 * (inline) so wpa_supplicant sees us as associated
+			 * before EAPOL frames arrive. Deferring to link_task
+			 * causes EAPOL to be delayed/dropped because
+			 * wpa_supplicant thinks we're still in ASSOCIATING.
+			 */
 			sc->link_up = 1;
-			taskqueue_enqueue(taskqueue_thread, &sc->link_task);
+			brcmf_link_task(sc, 0);
 		} else {
 			device_printf(sc->dev, "SET_SSID failed, status=%u\n",
 			    status);
@@ -175,8 +182,20 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 	case BRCMF_E_REASSOC:
 		break;
 
-	case BRCMF_E_LINK:
-		BRCMF_DBG(sc, "LINK event: flags=0x%x\n", flags);
+	case BRCMF_E_LINK: {
+		struct ieee80211vap *vap;
+		vap = TAILQ_FIRST(&sc->ic.ic_vaps);
+		device_printf(sc->dev, "LINK event: flags=0x%x vap_state=%d\n",
+		    flags, vap ? vap->iv_state : -1);
+		/* Ignore spurious link-down during WPA handshake.
+		 * The firmware sends E_LINK(down) before PTK is installed,
+		 * which would abort the handshake prematurely. */
+		if (!(flags & BRCMF_EVENT_MSG_LINK)) {
+			if (vap != NULL && vap->iv_state == IEEE80211_S_RUN) {
+				device_printf(sc->dev, "ignoring E_LINK down in RUN\n");
+				break;
+			}
+		}
 		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
 		if (!sc->link_up) {
 			sc->scan_active = 0;
@@ -184,6 +203,7 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 		}
 		taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 		break;
+	}
 
 	case BRCMF_E_DEAUTH:
 	case BRCMF_E_DEAUTH_IND:
@@ -479,6 +499,12 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 	BRCMF_DBG(sc, "newstate: %s -> %s arg=%d\n",
 	    state_names[vap->iv_state], state_names[nstate], arg);
+
+	/* Debug: track RUN->INIT transitions */
+	if (vap->iv_state == IEEE80211_S_RUN && nstate == IEEE80211_S_INIT) {
+		device_printf(sc->dev, "RUN->INIT: arg=%d link_up=%d\n",
+		    arg, sc->link_up);
+	}
 
 	if (sc->detaching)
 		goto done;
@@ -826,6 +852,15 @@ brcmf_vap_transmit(if_t ifp, struct mbuf *m)
 	struct ieee80211vap *vap = if_getsoftc(ifp);
 	struct ieee80211com *ic = vap->iv_ic;
 	struct brcmf_softc *sc = ic->ic_softc;
+	struct ether_header *eh;
+	uint16_t etype = 0;
+
+	if (m->m_len >= sizeof(*eh)) {
+		eh = mtod(m, struct ether_header *);
+		etype = ntohs(eh->ether_type);
+	}
+	device_printf(sc->dev, "vap_transmit: state=%d etype=0x%04x len=%u\n",
+	    vap->iv_state, etype, m->m_pkthdr.len);
 
 	if (vap->iv_state != IEEE80211_S_RUN) {
 		/*
@@ -966,6 +1001,18 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	/* Bring firmware down for configuration, then back up */
 	error = brcmf_fil_bss_down(sc);
 	BRCMF_DBG(sc, "bss_down: %d\n", error);
+
+	/* Disable BT coexistence BEFORE bss_up — firmware defaults to
+	 * btc_mode=1 which causes FEM misconfiguration on CYW43455
+	 * (FIXME bt_coex in wlc_phy_set_regtbl_on_femctrl). */
+	{
+		int err = brcmf_fil_iovar_int_set(sc, "btc_mode", 0);
+		uint32_t btc = 0xff;
+		brcmf_fil_iovar_int_get(sc, "btc_mode", &btc);
+		device_printf(sc->dev, "btc_mode set err=%d readback=%u\n",
+		    err, btc);
+	}
+
 	{
 		uint32_t val = htole32(1);
 		brcmf_fil_cmd_data_set(sc, BRCMF_C_SET_INFRA, &val,
@@ -1008,13 +1055,36 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 		    le32toh(isup));
 	}
 
+	/* Dump radio/PHY state for debugging */
+	{
+		uint32_t txchain = 0, rxchain = 0, qtxpower = 0;
+		uint32_t chanspec = 0, band = 0;
+		int32_t interference = 0;
+		uint32_t btc_mode = 0;
+
+		brcmf_fil_iovar_int_get(sc, "txchain", &txchain);
+		brcmf_fil_iovar_int_get(sc, "rxchain", &rxchain);
+		brcmf_fil_iovar_int_get(sc, "qtxpower", &qtxpower);
+		brcmf_fil_iovar_int_get(sc, "chanspec", &chanspec);
+		brcmf_fil_cmd_data_get(sc, 0x13c /* C_GET_BAND */, &band,
+		    sizeof(band));
+		brcmf_fil_iovar_int_get(sc, "interference", &interference);
+		brcmf_fil_iovar_int_get(sc, "btc_mode", &btc_mode);
+		device_printf(sc->dev,
+		    "radio: txchain=0x%x rxchain=0x%x qtxpower=%u "
+		    "chanspec=0x%x band=%u interference=%d btc_mode=%u\n",
+		    txchain, rxchain, qtxpower, chanspec, band, interference,
+		    btc_mode);
+	}
+
 	/* CYW firmware needs time after C_UP before join works */
 	pause_sbt("brcmup", mstosbt(200), 0, 0);
 
 	/* Enable firmware events early so none are missed */
 	brcmf_setup_events(sc);
 
-	/* Init commands matching spec dongle init sequence */
+	/* Init commands matching Linux brcmf_c_preinit_dcmds */
+	brcmf_fil_iovar_int_set(sc, "mpc", 1);
 	brcmf_fil_cmd_data_set(sc, 86 /* C_SET_PM */,
 	    &(uint32_t) { htole32(0) }, sizeof(uint32_t));
 	brcmf_fil_cmd_data_set(sc, 185 /* C_SET_SCAN_CHANNEL_TIME */,
@@ -1028,6 +1098,8 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	/* Frameburst for throughput; firmware ignores if unsupported */
 	brcmf_fil_cmd_data_set(sc, 219 /* C_SET_FAKEFRAG */,
 	    &(uint32_t) { htole32(1) }, sizeof(uint32_t));
+	/* TX beamforming; firmware ignores if unsupported */
+	brcmf_fil_iovar_int_set(sc, "txbf", 1);
 	/* RSSI-based join preference */
 	{
 		struct {

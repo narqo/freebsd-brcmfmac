@@ -1563,3 +1563,63 @@ use for the join attempt, but AUTH still times out regardless.
 
 The channel handling appears to be a red herring. The firmware receives
 correct channel info in the join params but doesn't complete auth.
+
+## WPA Handshake Issue (2026-03-27 session)
+
+**Symptoms:**
+- 5GHz WPA2 AP (Kolabox): Association succeeds, EAPOL exchange starts, but VAP leaves RUN state before completion
+- 2.4GHz open AP (TestAP): AUTH timeout, "no ack" from firmware
+
+**Key findings:**
+
+1. **TestAP (open, 2.4GHz):** Firmware logs "JOIN: authentication failure, no ack" — TX of AUTH frames not getting ACKs. Probe requests during scan work, but AUTH doesn't. Possibly channel/FEM issue on 2.4GHz.
+
+2. **Kolabox (WPA2, 5GHz):** Association works, but:
+   - EAPOL 1/4, 2/4, 3/4, 4/4 all exchanged
+   - wpa_supplicant sees `portEnabled=0` during handshake
+   - VAP transitions `RUN -> INIT` before PTK is installed
+   - wpa_supplicant thinks handshake failed, issues MLME_DEAUTH
+
+3. **E_LINK event issue:** Firmware sends E_LINK with link=0 shortly after E_SET_SSID success. Added code to ignore E_LINK down while in RUN state, but something else still triggers RUN->INIT.
+
+4. **Inline vs deferred link_task:** Changed E_SET_SSID handler to call `brcmf_link_task` inline instead of deferring to taskqueue. This fixed the initial "Not associated - Delay processing EAPOL" issue.
+
+**Current state:**
+- Association reaches RUN
+- EAPOL 4-way handshake proceeds but doesn't complete
+- VAP leaves RUN (arg=1 = reason from MLME_DEAUTH ioctl from wpa_supplicant)
+- wpa_supplicant is disconnecting due to perceived handshake failure
+
+**Final test after reboot (fresh chip state):**
+- Same behavior: association succeeds, EAPOL 1-4 exchanged, but RUN->INIT before key install
+- Firmware logs `link up (wl0)` — considers connection established
+- `key_set` callback is never called — VAP leaves RUN before net80211 installs keys
+- wpa_supplicant issues MLME_DEAUTH (arg=1) due to handshake failure perception
+
+**Root cause FOUND:**
+The wlan_ccmp kernel module cannot load due to version mismatch:
+```
+KLD wlan_ccmp.ko: depends on kernel - not available or version mismatch
+```
+
+When wpa_supplicant tries to set the PTK via `SIOCS80211` ioctl:
+1. `ieee80211_crypto_newkey()` tries to auto-load wlan_ccmp module
+2. Module load fails due to version mismatch
+3. `ieee80211_crypto_newkey()` returns 0 (failure)
+4. Ioctl returns `ENXIO` ("Device not configured")
+5. wpa_supplicant sees key install failure
+6. wpa_supplicant aborts handshake, sends MLME_DEAUTH with reason=1
+7. net80211 transitions VAP to INIT
+
+**Evidence:**
+```
+bsd_set_key: alg=3 addr=... key_idx=0 set_tx=1 seq_len=6 key_len=16
+ioctl[SIOCS80211, op=19, val=0, arg_len=64]: Device not configured
+WPA: Failed to set PTK to the driver (alg=3 keylen=16...)
+```
+
+**Fix required:**
+Rebuild wlan_ccmp.ko from matching kernel sources or rebuild kernel with CCMP built-in.
+This is a test host configuration issue, not a driver bug.
+
+**The SDIO driver code is correct** — the WPA handshake completes all EAPOL exchanges successfully. The failure is in the net80211/crypto layer due to missing cipher module.

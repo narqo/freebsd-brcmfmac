@@ -513,6 +513,8 @@ brcmf_sdpcm_process_rx(struct brcmf_softc *sc, uint8_t *data, uint16_t len)
 	struct mbuf *m;
 	uint8_t data_offset;
 
+	device_printf(sc->dev, "rx_data: len=%u\n", len);
+
 	if (len < BCDC_HEADER_LEN)
 		return;
 
@@ -578,6 +580,15 @@ brcmf_sdpcm_tx(struct brcmf_softc *sc, struct mbuf *m)
 	frame[3] = 0;
 
 	m_copydata(m, 0, pktlen, frame + BCDC_HEADER_LEN);
+
+	/* Debug: log TX with ethertype */
+	{
+		uint16_t etype = (frame[BCDC_HEADER_LEN + 12] << 8) |
+		    frame[BCDC_HEADER_LEN + 13];
+		device_printf(sc->dev, "tx_data: len=%u etype=0x%04x\n",
+		    pktlen, etype);
+	}
+
 	m_freem(m);
 
 	sx_xlock(&sc->sdio_lock);

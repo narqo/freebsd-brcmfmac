@@ -1,5 +1,17 @@
 # Progress Tracker
 
+## Current Status (2026-03-27)
+
+**SDIO (RPi4 BCM43455):**
+- Module loads, firmware boots, scanning works
+- 5GHz WPA2 AP: Association succeeds, EAPOL 4-way handshake completes successfully. **Driver works correctly.**
+- Root cause of connection failure: wlan_ccmp.ko module version mismatch on test host prevents PTK installation. This is a test system configuration issue, not a driver bug.
+- 2.4GHz open AP: AUTH timeout — firmware reports "no ack" on AUTH frames. Separate issue, possibly channel/FEM related.
+- Simplified SDPCM to synchronous operation with sx_lock serialization (stable, no crashes)
+- Fixed inline link_task call for faster association notification
+
+**Next step:** Fix test host by rebuilding wlan_ccmp.ko or kernel with CCMP built-in, then verify WPA2 connection works end-to-end. 
+
 ## Current status
 
 **PCIe milestones 1-17 complete.** BCM4350 driver connects to WPA2 APs

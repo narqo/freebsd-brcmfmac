@@ -235,6 +235,11 @@ brcmf_sdio_bus_start(struct brcmf_softc *sc)
 	char caps[256];
 	int error;
 
+	/* Disable BT coexistence ASAP — before any ioctl that might
+	 * trigger wl_open. CYW43455 firmware has a bug where btc_mode=1
+	 * causes FEM misconfiguration (FIXME bt_coex). */
+	brcmf_fil_iovar_int_set(sc, "btc_mode", 0);
+
 	memset(ver, 0, sizeof(ver));
 	error = brcmf_fil_iovar_data_get(sc, "ver", ver, sizeof(ver) - 1);
 	if (error != 0) {
