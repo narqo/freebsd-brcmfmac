@@ -48,11 +48,16 @@ of the next command or data phase.
 git apply patches/04-sdhci-mask-pio-intr-after-xfer.patch
 ```
 
-### 2. Create kernel config with MMCCAM
+### 2. Create the SDIO kernel profile
 
 MMCCAM replaces the legacy MMC bus driver with a CAM-based stack that
 supports SDIO device enumeration (CMD5). Without it, the kernel only
 probes for SD/MMC cards.
+
+This project keeps a single custom kernel profile, `SDIO`, in the
+source tree. Reuse `KERNCONF=SDIO` for rebuilds instead of creating new
+config names; changing the config file name creates a new objdir and
+turns incremental rebuilds into near-full builds.
 
 ```sh
 cat > sys/arm64/conf/SDIO <<EOF
@@ -60,6 +65,7 @@ include GENERIC
 ident SDIO
 options MMCCAM
 device wlan
+device wlan_ccmp
 EOF
 ```
 
@@ -68,14 +74,19 @@ EOF
 loading a separately-built `wlan.ko` requires an exact kernel version
 match — any kernel rebuild breaks it.
 
+`device wlan_ccmp` compiles the WPA2 CCMP cipher into the kernel. This
+avoids a separate `wlan_ccmp.ko` version match requirement on the test
+host; without it, WPA2 key installation can fail even when association
+and the EAPOL exchange succeed.
+
 ### 3. Build kernel
 
 ```sh
 make -j$(sysctl -n hw.ncpu) buildkernel KERNCONF=SDIO TARGET=arm64 TARGET_ARCH=aarch64
 ```
 
-See `docs/20-rpi4-kernel-cross-compile.md` for the full workflow used
-in this project.
+The canonical patched source tree in this repo is `freebsdsrc/`.
+See `docs/20-rpi4-kernel-cross-compile.md` for the full cross-build workflow.
 
 ### 4. Build and install DT overlay
 
