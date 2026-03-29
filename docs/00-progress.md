@@ -75,11 +75,11 @@ References:
 - Linux `brcmfmac/cfg80211.c` — `brcmf_cfg80211_connect` for init sequence
 - Firmware console (`dev.brcmfmac.0.fwcon`) for runtime diagnostics
 
-### Milestone M-S8: Country code configuration (TODO)
+### Milestone M-S8: Country code configuration (DONE)
 
-- [ ] Add sysctl `dev.brcmfmac.X.country` (read/write)
-- [ ] Add loader tunable `hw.brcmfmac.country`
-- [ ] Remove hardcoded "DE" from `brcmf_cfg_attach`
+- [x] Add sysctl `dev.brcmfmac.X.country` (read/write)
+- [x] Add loader tunable `hw.brcmfmac.country`
+- [x] Remove hardcoded "DE" from `brcmf_cfg_attach`
 
 ### Milestone M-S9: Debug cleanup (DONE)
 
@@ -87,12 +87,12 @@ References:
 - [x] Convert to `BRCMF_DBG` macro with sysctl-controlled verbosity
 - [x] Keep error paths with `device_printf`
 
-### Milestone M-S10: Clean kldunload (TODO)
+### Milestone M-S10: Clean kldunload (DONE)
 
-- [ ] Verify kldunload while associated (5GHz WPA2)
-- [ ] Verify kldunload after disassociation
-- [ ] Check for resource leaks (memory, tasks, callouts)
-- [ ] Ensure no panics or hangs
+- [x] Verify kldunload while associated (5GHz WPA2)
+- [x] Verify kldunload after disassociation
+- [x] Check for resource leaks (memory, tasks, callouts)
+- [x] Ensure no panics or hangs
 
 ### Milestone M-S11: Stability testing (TODO)
 

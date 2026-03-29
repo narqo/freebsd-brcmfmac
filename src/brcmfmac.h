@@ -343,6 +343,7 @@ struct brcmf_softc {
 
 	/* Tuning (sysctl) */
 	int debug;
+	char country[4];	/* regulatory country code (e.g. "US", "DE") */
 
 	/* Scan result cache */
 #define BRCMF_SCAN_RESULTS_MAX	64

@@ -203,6 +203,28 @@ brcmf_sysctl_psk(SYSCTL_HANDLER_ARGS)
 }
 
 static int
+brcmf_sysctl_country(SYSCTL_HANDLER_ARGS)
+{
+	struct brcmf_softc *sc = arg1;
+	char buf[4];
+	int error;
+
+	strlcpy(buf, sc->country, sizeof(buf));
+
+	error = sysctl_handle_string(oidp, buf, sizeof(buf), req);
+	if (error != 0 || req->newptr == NULL)
+		return (error);
+
+	if (strlen(buf) != 2)
+		return (EINVAL);
+
+	/* Update sc->country; firmware is set on next ifconfig up */
+	strlcpy(sc->country, buf, sizeof(sc->country));
+
+	return (0);
+}
+
+static int
 brcmf_sysctl_pm(SYSCTL_HANDLER_ARGS)
 {
 	struct brcmf_softc *sc = arg1;
@@ -240,6 +262,10 @@ brcmf_security_sysctl_init(struct brcmf_softc *sc)
 	SYSCTL_ADD_PROC(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "pm", CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
 	    brcmf_sysctl_pm, "I", "Power management (0=off, 1=PM1, 2=PM2)");
+
+	SYSCTL_ADD_PROC(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "country", CTLTYPE_STRING | CTLFLAG_RW | CTLFLAG_MPSAFE, sc, 0,
+	    brcmf_sysctl_country, "A", "Regulatory country code (2 chars)");
 
 	SYSCTL_ADD_INT(&sc->sysctl_ctx, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "debug", CTLFLAG_RW, &sc->debug, 0,
