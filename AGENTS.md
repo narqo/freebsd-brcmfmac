@@ -30,6 +30,7 @@ The rest of the docs/ has context-dependent details.
 - Never assume — verify before interpreting results
 - Always use timeout on remote commands and tool calls
 - Do not make git commits unless asked explicitely
+- Do not run git commands — this project requires jj
 
 ## Driver specification
 
