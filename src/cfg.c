@@ -1025,6 +1025,15 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	brcmf_fil_cmd_data_set(sc, 57 /* C_SET_ROAM_DELTA */,
 	    &(uint32_t) { htole32(20) }, sizeof(uint32_t));
 
+	/* Initialize country code from loader tunable */
+	if (sc->country[0] == '\0') {
+		char country[4] = "";
+		TUNABLE_STR_FETCH("hw.brcmfmac.country", country,
+		    sizeof(country));
+		if (country[0] != '\0' && strlen(country) == 2)
+			strlcpy(sc->country, country, sizeof(sc->country));
+	}
+
 	/* Set regulatory domain so firmware enables 5GHz channels */
 	if (sc->country[0] != '\0') {
 		struct {
@@ -1115,15 +1124,6 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 	TASK_INIT(&sc->scan_task, 0, brcmf_scan_complete_task, sc);
 	TASK_INIT(&sc->link_task, 0, brcmf_link_task, sc);
 	TASK_INIT(&sc->restart_task, 0, brcmf_restart_task, sc);
-
-	/* Initialize country code from loader tunable or default */
-	if (sc->country[0] == '\0') {
-		char country[4] = "";
-		TUNABLE_STR_FETCH("hw.brcmfmac.country", country,
-		    sizeof(country));
-		if (country[0] != '\0' && strlen(country) == 2)
-			strlcpy(sc->country, country, sizeof(sc->country));
-	}
 
 	sysctl_ctx_init(&sc->sysctl_ctx);
 	brcmf_security_sysctl_init(sc);
