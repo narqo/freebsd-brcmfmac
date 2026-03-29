@@ -79,7 +79,7 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 	const uint8_t *macaddr;
 	int error, com_locked, node_locked;
 
-	device_printf(sc->dev, "key_set: idx=%u len=%u cipher=%u flags=0x%x\n",
+	BRCMF_DBG(sc, "key_set: idx=%u len=%u cipher=%u flags=0x%x\n",
 	    k->wk_keyix, k->wk_keylen, k->wk_cipher->ic_cipher, k->wk_flags);
 
 	memset(&key, 0, sizeof(key));

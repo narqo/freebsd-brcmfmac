@@ -81,11 +81,11 @@ References:
 - [ ] Add loader tunable `hw.brcmfmac.country`
 - [ ] Remove hardcoded "DE" from `brcmf_cfg_attach`
 
-### Milestone M-S9: Debug cleanup (TODO)
+### Milestone M-S9: Debug cleanup (DONE)
 
-- [ ] Remove `device_printf` spam (`rx_data`, `tx_data`, `vap_transmit`, `key_set`)
-- [ ] Convert to `BRCMF_DBG` macro with sysctl-controlled verbosity
-- [ ] Keep error paths with `device_printf`
+- [x] Remove `device_printf` spam (`rx_data`, `tx_data`, `key_set`)
+- [x] Convert to `BRCMF_DBG` macro with sysctl-controlled verbosity
+- [x] Keep error paths with `device_printf`
 
 ### Milestone M-S10: Clean kldunload (TODO)
 

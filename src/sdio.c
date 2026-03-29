@@ -421,7 +421,7 @@ brcmf_sdio_get_raminfo(struct brcmf_softc *sc)
 		return (ENODEV);
 	}
 
-	device_printf(sc->dev, "ram_base=0x%x ram_size=0x%x (%uKB)\n",
+	BRCMF_DBG(sc, "ram_base=0x%x ram_size=0x%x (%uKB)\n",
 	    sc->ram_base, sc->ram_size, sc->ram_size / 1024);
 	return (0);
 }
@@ -474,11 +474,10 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	brcmf_sdio_bp_write32(sc, sc->ram_base + sc->ram_size - 4, 0);
 
 	/* Write firmware to RAM */
-	device_printf(sc->dev, "writing firmware (%zu bytes) to 0x%x...\n",
+	BRCMF_DBG(sc, "writing firmware (%zu bytes) to 0x%x...\n",
 	    fw->datasize, sc->ram_base);
 	error = brcmf_sdio_bp_write_block(sc, sc->ram_base,
 	    fw->data, fw->datasize);
-	device_printf(sc->dev, "firmware write done, error=%d\n", error);
 	if (error != 0) {
 		device_printf(sc->dev, "firmware write failed: %d\n", error);
 		return (error);
@@ -507,7 +506,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		}
 	}
 
-	device_printf(sc->dev, "firmware verify passed\n");
+	BRCMF_DBG(sc, "firmware verify passed\n");
 
 	/* Write NVRAM to end of RAM */
 	if (nvram != NULL && nvram_len > 0) {
@@ -536,7 +535,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 				token_val = brcmf_sdio_bp_read32(sc,
 				    token_addr);
 			}
-			device_printf(sc->dev,
+			BRCMF_DBG(sc,
 			    "NVRAM at 0x%x (%u bytes), "
 			    "token @0x%x: got=0x%08x want=0x%08x\n",
 			    nvram_addr, nvram_len, token_addr,
@@ -559,7 +558,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	brcmf_sdio_core_reset(sc, &sc->armcore,
 	    BCMA_IOCTL_CPUHALT, 0, 0);
 
-	device_printf(sc->dev, "ARM released, waiting for F2...\n");
+	BRCMF_DBG(sc, "ARM released, waiting for F2...\n");
 
 	/* Request and wait for HT clock. The SDIO core needs the backplane
 	 * HT clock to complete F2 initialization. */
@@ -576,7 +575,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			if (clkval & SBSDIO_HT_AVAIL)
 				break;
 		}
-		device_printf(sc->dev, "HT clock: clkval=0x%02x iter=%d\n",
+		BRCMF_DBG(sc, "HT clock: clkval=0x%02x iter=%d\n",
 		    clkval, i);
 	}
 
@@ -595,7 +594,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 
 		/* Verify */
 		ioex = sdio_f0_read_1(sc->sdio_func1, 0x02, &error);
-		device_printf(sc->dev, "F2 enable: IOEx=0x%02x err=%d\n",
+		BRCMF_DBG(sc, "F2 enable: IOEx=0x%02x err=%d\n",
 		    ioex, error);
 
 		/* Also enable F2 through the sdiob API if we have the ptr */
@@ -623,7 +622,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	if (sc->sdiocore.base != 0) {
 		uint32_t intst = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + SD_REG_INTSTATUS);
-		device_printf(sc->dev, "sdio core intstatus=0x%08x\n", intst);
+		BRCMF_DBG(sc, "sdio core intstatus=0x%08x\n", intst);
 	}
 
 	/* Wait for firmware boot via sharedram marker (F1 backplane reads). */
@@ -646,8 +645,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			return (ETIMEDOUT);
 		}
 
-		device_printf(sc->dev,
-		    "firmware booted, sharedram=0x%08x\n", shared);
+		BRCMF_DBG(sc, "firmware booted, sharedram=0x%08x\n", shared);
 
 		/* Read the sdpcm_shared structure at the advertised address.
 		 * Linux validates protocol version from flags and uses
@@ -660,7 +658,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 			sh_console = brcmf_sdio_bp_read32(sc, shared + 20);
 			sh_fwid = brcmf_sdio_bp_read32(sc, shared + 28);
 
-			device_printf(sc->dev,
+			BRCMF_DBG(sc,
 			    "sdpcm_shared: flags=0x%08x trap=0x%08x "
 			    "console=0x%08x fwid=0x%08x\n",
 			    sh_flags, sh_trap, sh_console, sh_fwid);
@@ -681,7 +679,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 				break;
 			pause_sbt("brcmf2", mstosbt(10), 0, 0);
 		}
-		device_printf(sc->dev,
+		BRCMF_DBG(sc,
 		    "CCCR IORdy=0x%02x (F2_ready=%d) iter=%d\n",
 		    iordy, (iordy & 0x04) != 0, i);
 		if (!(iordy & 0x04)) {
@@ -715,7 +713,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 	if (sc->sdiocore.base != 0) {
 		uint32_t mbox = brcmf_sdio_bp_read32(sc,
 		    sc->sdiocore.base + SD_REG_TOHOSTMAILBOXDATA);
-		device_printf(sc->dev, "tohostmailbox=0x%08x\n", mbox);
+		BRCMF_DBG(sc, "tohostmailbox=0x%08x\n", mbox);
 		if (mbox != 0) {
 			brcmf_sdio_bp_write32(sc,
 			    sc->sdiocore.base + SD_REG_TOSBMAILBOX,
@@ -746,7 +744,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		int berr;
 		bslo = sdio_f0_read_1(sc->sdio_func1, 0x210, &berr);
 		bshi = sdio_f0_read_1(sc->sdio_func1, 0x211, &berr);
-		device_printf(sc->dev,
+		BRCMF_DBG(sc,
 		    "F2 card blksz=%u sdiob_blksz=%u\n",
 		    bslo | (bshi << 8),
 		    sc->sdio_func2 ? sc->sdio_func2->cur_blksize : 0);
@@ -761,7 +759,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		ien = sdio_f0_read_1(sc->sdio_func1, 0x04, &err);
 		ien |= 0x01 | 0x02 | 0x04;  /* IEN master + F1 + F2 */
 		sdio_f0_write_1(sc->sdio_func1, 0x04, ien, &err);
-		device_printf(sc->dev, "CCCR IENx=0x%02x err=%d\n", ien, err);
+		BRCMF_DBG(sc, "CCCR IENx=0x%02x err=%d\n", ien, err);
 	}
 
 	/* SaveRestore init — required for BCM4345/CYW43455.
@@ -784,7 +782,7 @@ brcmf_sdio_download_fw(struct brcmf_softc *sc, const struct firmware *fw,
 		sdio_write_1(sc->sdio_func1, SBSDIO_FUNC1_CHIPCLKCSR,
 		    SBSDIO_FORCE_HT, &err);
 
-		device_printf(sc->dev, "SR init done\n");
+		BRCMF_DBG(sc, "SR init done\n");
 	}
 
 
@@ -816,24 +814,25 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 
 	sc->sdio_window = ~0U;
 
-	device_printf(sc->dev, "sdio_attach: entry, f1=%p fn=%d\n",
+	BRCMF_DBG(sc, "sdio_attach: entry, f1=%p fn=%d\n",
 	    f1, f1->fn);
 
 	/* Set F1 block size */
 	error = sdio_set_block_size(f1, SDIO_F1_BLOCKSIZE);
-	device_printf(sc->dev, "sdio_attach: F1 blksz err=%d\n", error);
-	if (error != 0)
+	if (error != 0) {
+		device_printf(sc->dev, "F1 block size error: %d\n", error);
 		return (error);
+	}
 
 	/* Enable F1 */
 	error = sdio_enable_func(f1);
-	device_printf(sc->dev, "sdio_attach: F1 enable err=%d\n", error);
-	if (error != 0)
+	if (error != 0) {
+		device_printf(sc->dev, "F1 enable error: %d\n", error);
 		return (error);
+	}
 
 	/* Request ALP clock for initial setup */
 	error = brcmf_sdio_clk_enable(sc, 1);
-	device_printf(sc->dev, "sdio_attach: ALP clk err=%d\n", error);
 	if (error != 0)
 		return (error);
 
@@ -883,7 +882,7 @@ brcmf_sdio_attach(struct brcmf_softc *sc)
 		    SDIO_F2_BLOCKSIZE & 0xFF, &bserr);
 		sdio_f0_write_1(sc->sdio_func1, 0x211,
 		    (SDIO_F2_BLOCKSIZE >> 8) & 0xFF, &bserr);
-		device_printf(sc->dev, "F2 block size set to %d\n",
+		BRCMF_DBG(sc, "F2 block size set to %d\n",
 		    SDIO_F2_BLOCKSIZE);
 
 		/* Skip sdio_set_block_size(func2) — it goes through CAM
