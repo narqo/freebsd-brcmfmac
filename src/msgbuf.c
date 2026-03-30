@@ -667,7 +667,8 @@ brcmf_msgbuf_process_rx_complete(struct brcmf_softc *sc)
 		/* Only deliver 802.3 frames */
 		if ((flags & BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK) ==
 		    BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3) {
-			if (data_len > 0 && data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE) {
+			if (data_len > 0 &&
+			    data_offset + data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE) {
 				brcmf_rx_deliver(sc,
 				    (char *)cb->buf + data_offset, data_len);
 			}

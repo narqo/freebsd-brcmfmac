@@ -142,6 +142,19 @@ the PCI config BAR0 window register is benign. The callers that
 select other cores (`brcmf_bp_read32`/`brcmf_bp_write32`) run
 only during attach (single-threaded).
 
+### P1-6: `brcmf_msgbuf_process_rx_complete` trusts `data_offset` — FIXED
+
+Only `data_len` was bounded; `data_offset` from firmware could
+point past the 2048-byte RX DMA buffer, causing kernel reads of
+arbitrary memory.
+
+**Fix:** Added `data_offset + data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE`
+check before calling `brcmf_rx_deliver`. Invalid completions are
+silently dropped.
+
+**Tested:** Full association + DHCP + ping (5/5 packets, 0% loss).
+No behavioral change with legitimate firmware.
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -446,28 +459,6 @@ it is more defensive than removing it.
 **Severity:** P3 (spec gap, not code bug)
 
 ## Additional review (30 Mar 2026)
-
-### P1-6: `brcmf_msgbuf_process_rx_complete` trusts `data_offset`
-
-```c
-if ((flags & BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK) ==
-    BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3) {
-	if (data_len > 0 && data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE) {
-		brcmf_rx_deliver(sc,
-		    (char *)cb->buf + data_offset, data_len);
-	}
-}
-```
-
-Only `data_len` is bounded. `data_offset` comes from firmware and can
-point past the 2048-byte RX DMA buffer. A bogus completion can make the
-kernel read beyond `cb->buf` and copy unrelated memory into an mbuf.
-Need to reject completions where `data_offset > BRCMF_MSGBUF_MAX_PKT_SIZE`
-or `data_offset + data_len > BRCMF_MSGBUF_MAX_PKT_SIZE`.
-
-**File:** `src/msgbuf.c:brcmf_msgbuf_process_rx_complete`
-
----
 
 ### P1-7: `E_SET_SSID` success path can self-deadlock on SDIO
 
