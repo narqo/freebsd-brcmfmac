@@ -1,25 +1,15 @@
 # Progress Tracker
 
-## Current Status (2026-03-27)
+## Current Status (2026-03-29)
 
 **PCIe (BCM4350, MacBook Pro 2016) — WORKING:**
-- WPA2-PSK association, DHCP, internet connectivity
-- 5GHz and 2.4GHz, HT40/VHT80 rates
-- Flood ping 1000/1000, 0% loss
-- Clean kldload/kldunload, interface cycling
-- DHCP works, internet connectivity verified
-- Ping to gateway and 8.8.8.8 successful
+- Firmware: 7.35.180.133 (Nov 2015)
+- WPA2-PSK association, DHCP, ping to gateway
+- 5GHz channel 116, HT40
 
 **SDIO (BCM43455, Raspberry Pi 4) — WORKING:**
-- WPA2-PSK association on 5GHz
-- EAPOL 4-way handshake completes
-- PTK and GTK keys installed
-- DHCP works, internet connectivity verified
-- Ping to gateway and 8.8.8.8 successful
-
-**Remaining issues:**
-- 2.4GHz open AP: AUTH timeout — firmware reports "no ack". Possibly FEM/BT coex related.
-- Rapid interface cycling with wpa_supplicant can deadlock (known issue, not fixed).
+- Firmware: 7.45.265 (Aug 2023)
+- WPA2-PSK association on 5GHz, DHCP, ping to gateway
 
 ## Milestones
 
