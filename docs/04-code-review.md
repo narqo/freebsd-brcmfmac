@@ -185,6 +185,21 @@ with local copies. Same pattern as P2-4/P2-8 fixes.
 **Tested:** PCIe: WPA2 association + DHCP + ping (5/5, 0% loss).
 SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
 
+### P2-11: SDIO TX-credit recovery discards arbitrary received frames — FIXED
+
+When `brcmf_sdpcm_send` returns `ENOBUFS` (no TX credits), both
+`brcmf_sdpcm_ioctl` and `brcmf_sdpcm_tx_task` call
+`brcmf_sdpcm_recv` to drain RX and recover credits, but ignored
+the returned channel and payload. Events, data frames, and control
+responses received there were silently dropped.
+
+**Fix:** Added channel-based processing in both credit-recovery
+paths. Events → `brcmf_sdpcm_process_event`. Data frames →
+`if_input` (after unlocking `sdio_lock` and entering NET_EPOCH).
+Control responses ignored (not expected during TX).
+
+**Tested:** SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -494,22 +509,7 @@ it is more defensive than removing it.
 
 
 
-### P2-11: SDIO TX-credit recovery discards arbitrary received frames
 
-When `brcmf_sdpcm_send()` returns `ENOBUFS`, both
-`brcmf_sdpcm_ioctl()` and `brcmf_sdpcm_tx_task()` call
-`brcmf_sdpcm_recv()` only to "drain RX to get TX credits" and then
-ignore the returned channel and payload.
-
-Any received event, control reply, or data frame consumed there is
-silently dropped. This is worst in `brcmf_sdpcm_tx_task()`: upload-side
-flow control can eat inbound data and association events. In the ioctl
-path it can also discard unrelated firmware events during long control
-sequences.
-
-**Files:** `src/sdpcm.c:brcmf_sdpcm_ioctl`, `src/sdpcm.c:brcmf_sdpcm_tx_task`
-
----
 
 ### P2-12: SDIO attach failure leaks taskqueue, mutexes, and lock objects
 

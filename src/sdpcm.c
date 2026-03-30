@@ -366,12 +366,24 @@ brcmf_sdpcm_ioctl(struct brcmf_softc *sc, uint32_t cmd, int set,
 		    txbuf, BCDC_DCMD_HDRLEN + len);
 		if (error != ENOBUFS)
 			break;
-		/* Drain RX to get TX credits */
+		/* Drain RX to get TX credits; process any frame received */
 		{
 			uint16_t chan, dlen;
 			uint8_t *payload;
-			brcmf_sdpcm_recv(sc, rxbuf, BRCMF_SDPCM_CTL_BUFSZ,
-			    &chan, &dlen, &payload);
+			int err = brcmf_sdpcm_recv(sc, rxbuf,
+			    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+			if (err == 0) {
+				if (chan == SDPCM_EVENT_CHANNEL)
+					brcmf_sdpcm_process_event(sc, payload, dlen);
+				else if (chan == SDPCM_DATA_CHANNEL) {
+					struct mbuf *m = brcmf_sdpcm_rx_mbuf(sc,
+					    payload, dlen);
+					if (m != NULL) {
+						*rx_tail = m;
+						rx_tail = &m->m_nextpkt;
+					}
+				}
+			}
 		}
 		pause_sbt("ioctx", mstosbt(10), 0, 0);
 	}
@@ -645,12 +657,28 @@ brcmf_sdpcm_tx_task(void *arg, int pending)
 			    frame, BCDC_HEADER_LEN + pktlen);
 			if (error != ENOBUFS)
 				break;
-			/* Drain RX to get TX credits */
+			/* Drain RX to get TX credits; process any frame received */
 			{
 				uint16_t chan, dlen;
 				uint8_t *payload;
-				brcmf_sdpcm_recv(sc, sc->sdpcm_poll_rx,
+				int err = brcmf_sdpcm_recv(sc, sc->sdpcm_poll_rx,
 				    BRCMF_SDPCM_CTL_BUFSZ, &chan, &dlen, &payload);
+				if (err == 0) {
+					if (chan == SDPCM_EVENT_CHANNEL)
+						brcmf_sdpcm_process_event(sc, payload, dlen);
+					else if (chan == SDPCM_DATA_CHANNEL) {
+						struct mbuf *m = brcmf_sdpcm_rx_mbuf(sc,
+						    payload, dlen);
+						if (m != NULL) {
+							struct epoch_tracker et;
+							sx_xunlock(&sc->sdio_lock);
+							NET_EPOCH_ENTER(et);
+							if_input(m->m_pkthdr.rcvif, m);
+							NET_EPOCH_EXIT(et);
+							sx_xlock(&sc->sdio_lock);
+						}
+					}
+				}
 			}
 			DELAY(1000);
 		}
