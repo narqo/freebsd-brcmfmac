@@ -161,12 +161,12 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 		if (status == BRCMF_E_STATUS_SUCCESS) {
 			/*
 			 * E_SET_SSID often arrives after E_LINK. If E_LINK
-			 * already processed link_up, don't run link_task
+			 * already processed link_up, don't enqueue link_task
 			 * again — that would delete+recreate the flowring.
 			 */
 			if (!sc->link_up) {
 				sc->link_up = 1;
-				brcmf_link_task(sc, 0);
+				taskqueue_enqueue(taskqueue_thread, &sc->link_task);
 			}
 		} else {
 			device_printf(sc->dev, "SET_SSID failed, status=%u\n",

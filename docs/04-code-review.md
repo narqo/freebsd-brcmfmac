@@ -155,6 +155,22 @@ silently dropped.
 **Tested:** Full association + DHCP + ping (5/5 packets, 0% loss).
 No behavioral change with legitimate firmware.
 
+### P1-7: `E_SET_SSID` success path can self-deadlock on SDIO — FIXED
+
+`brcmf_link_event()` called `brcmf_link_task(sc, 0)` directly on
+`BRCMF_E_SET_SSID` success. On SDIO, events are processed while
+`sdio_lock` is held. `brcmf_link_task()` sends the `allmulti` iovar,
+re-entering `brcmf_sdpcm_ioctl()` → deadlock.
+
+**Fix:** Changed E_SET_SSID success path to use `taskqueue_enqueue`
+instead of direct call. Matches E_LINK behavior. The duplicate-run
+check (`if (!sc->link_up)`) prevents double flowring create.
+
+**Tested:** PCIe (BCM4350): Full association + DHCP + ping (5/5
+packets, 0% loss). SDIO (RPi4/BCM43455): Full association (WPA2-PSK)
++ DHCP (192.168.188.182) + ping (5/5 packets, 0% loss). E_SET_SSID
+success path executes via taskqueue on both buses, no deadlock.
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -460,20 +476,7 @@ it is more defensive than removing it.
 
 ## Additional review (30 Mar 2026)
 
-### P1-7: `E_SET_SSID` success path can self-deadlock on SDIO
 
-`brcmf_link_event()` calls `brcmf_link_task(sc, 0)` directly on
-`BRCMF_E_SET_SSID` success. On SDIO, events are processed from
-`brcmf_sdpcm_ioctl()` and `brcmf_sdpcm_rx_task()` while `sdio_lock`
-is held. `brcmf_link_task()` then sends the `allmulti` iovar, which
-re-enters `brcmf_sdpcm_ioctl()` and tries to take `sdio_lock` again.
-
-The common event order (`E_LINK` before `E_SET_SSID`) hides this, but
-if firmware reports `E_SET_SSID` first the driver deadlocks itself.
-
-**Files:** `src/cfg.c:brcmf_link_event`, `src/sdpcm.c:brcmf_sdpcm_ioctl`, `src/sdpcm.c:brcmf_sdpcm_rx_task`
-
----
 
 ### P2-10: `brcmf_newstate` AUTH path uses `vap->iv_bss` without lock or ref
 
