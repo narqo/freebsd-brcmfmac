@@ -200,6 +200,24 @@ Control responses ignored (not expected during TX).
 
 **Tested:** SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
 
+### P2-12: SDIO attach failure leaks taskqueue, mutexes, and sx — FIXED
+
+`brcmf_sdio_bus_attach` called `brcmf_sdpcm_init` (creates taskqueue,
+mutexes, sx) before risky attach steps. On failure, it stopped polling
+and detached the chip, but never called `cleanup` or destroyed
+`ioctl_mtx`. This leaked the taskqueue, `tx_queue_mtx`, queued mbufs,
+and `sdio_lock` (sx).
+
+Separately, normal detach called `cleanup` (which destroys taskqueue
+and `tx_queue_mtx`) but never called `sx_destroy(&sc->sdio_lock)`.
+
+**Fix:** Attach failure path now calls `sc->bus_ops->cleanup(sc)` and
+`mtx_destroy(&sc->ioctl_mtx)` before returning error.
+`brcmf_sdpcm_cleanup` now calls `sx_destroy(&sc->sdio_lock)` at end.
+
+**Tested:** SDIO: module load, association, unload, reload cycle. No
+leak warnings, reload successful.
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -511,30 +529,7 @@ it is more defensive than removing it.
 
 
 
-### P2-12: SDIO attach failure leaks taskqueue, mutexes, and lock objects
 
-`brcmf_sdio_bus_attach()` initializes `ioctl_mtx` and
-`brcmf_sdpcm_init()` before the risky attach steps. On failure it only
-stops polling and detaches the chip:
-
-```c
-fail:
-	brcmf_sdpcm_stop_poll(sc);
-	brcmf_sdio_detach(sc);
-	return (error);
-```
-
-It does not call `sc->bus_ops->cleanup(sc)` and does not destroy
-`ioctl_mtx`. That leaks the SDPCM taskqueue, queued TX state, and
-mutexes on attach failure.
-
-Separately, normal detach never calls `sx_destroy(&sc->sdio_lock)`.
-The sx is initialized in `brcmf_sdpcm_init()` and survives every
-unload.
-
-**Files:** `src/main.c:brcmf_sdio_bus_attach`, `src/sdpcm.c:brcmf_sdpcm_init`, `src/sdpcm.c:brcmf_sdpcm_cleanup`
-
----
 
 ### P2-13: AUTH-time `wsec` derivation still misconfigures non-WPA2 ciphers
 

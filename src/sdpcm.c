@@ -828,6 +828,7 @@ brcmf_sdpcm_cleanup(struct brcmf_softc *sc)
 	sc->tx_queue_tail = &sc->tx_queue_head;
 	mtx_unlock(&sc->tx_queue_mtx);
 	mtx_destroy(&sc->tx_queue_mtx);
+	sx_destroy(&sc->sdio_lock);
 }
 
 /*

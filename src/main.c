@@ -351,7 +351,10 @@ brcmf_sdio_bus_attach(device_t dev)
 
 fail:
 	brcmf_sdpcm_stop_poll(sc);
+	if (sc->bus_ops != NULL && sc->bus_ops->cleanup != NULL)
+		sc->bus_ops->cleanup(sc);
 	brcmf_sdio_detach(sc);
+	mtx_destroy(&sc->ioctl_mtx);
 	return (error);
 }
 
