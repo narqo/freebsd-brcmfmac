@@ -444,3 +444,123 @@ If firmware never sends it, the handler is a no-op. Keeping
 it is more defensive than removing it.
 
 **Severity:** P3 (spec gap, not code bug)
+
+## Additional review (30 Mar 2026)
+
+### P1-6: `brcmf_msgbuf_process_rx_complete` trusts `data_offset`
+
+```c
+if ((flags & BRCMF_MSGBUF_PKT_FLAGS_FRAME_MASK) ==
+    BRCMF_MSGBUF_PKT_FLAGS_FRAME_802_3) {
+	if (data_len > 0 && data_len <= BRCMF_MSGBUF_MAX_PKT_SIZE) {
+		brcmf_rx_deliver(sc,
+		    (char *)cb->buf + data_offset, data_len);
+	}
+}
+```
+
+Only `data_len` is bounded. `data_offset` comes from firmware and can
+point past the 2048-byte RX DMA buffer. A bogus completion can make the
+kernel read beyond `cb->buf` and copy unrelated memory into an mbuf.
+Need to reject completions where `data_offset > BRCMF_MSGBUF_MAX_PKT_SIZE`
+or `data_offset + data_len > BRCMF_MSGBUF_MAX_PKT_SIZE`.
+
+**File:** `src/msgbuf.c:brcmf_msgbuf_process_rx_complete`
+
+---
+
+### P1-7: `E_SET_SSID` success path can self-deadlock on SDIO
+
+`brcmf_link_event()` calls `brcmf_link_task(sc, 0)` directly on
+`BRCMF_E_SET_SSID` success. On SDIO, events are processed from
+`brcmf_sdpcm_ioctl()` and `brcmf_sdpcm_rx_task()` while `sdio_lock`
+is held. `brcmf_link_task()` then sends the `allmulti` iovar, which
+re-enters `brcmf_sdpcm_ioctl()` and tries to take `sdio_lock` again.
+
+The common event order (`E_LINK` before `E_SET_SSID`) hides this, but
+if firmware reports `E_SET_SSID` first the driver deadlocks itself.
+
+**Files:** `src/cfg.c:brcmf_link_event`, `src/sdpcm.c:brcmf_sdpcm_ioctl`, `src/sdpcm.c:brcmf_sdpcm_rx_task`
+
+---
+
+### P2-10: `brcmf_newstate` AUTH path uses `vap->iv_bss` without lock or ref
+
+`brcmf_newstate()` drops `IEEE80211_LOCK()` at entry, then in the AUTH
+case does:
+
+```c
+struct ieee80211_node *ni = vap->iv_bss;
+...
+brcmf_join_bss(sc, ni);
+```
+
+`brcmf_join_bss()` reads `ni->ni_chan`, `ni->ni_bssid`, and
+`ni->ni_essid`, and sleeps. net80211 may replace or free `iv_bss`
+concurrently. This is the same lifetime class that was fixed earlier in
+`brcmf_link_task`; the AUTH path still has it.
+
+**File:** `src/cfg.c:brcmf_newstate`
+
+---
+
+### P2-11: SDIO TX-credit recovery discards arbitrary received frames
+
+When `brcmf_sdpcm_send()` returns `ENOBUFS`, both
+`brcmf_sdpcm_ioctl()` and `brcmf_sdpcm_tx_task()` call
+`brcmf_sdpcm_recv()` only to "drain RX to get TX credits" and then
+ignore the returned channel and payload.
+
+Any received event, control reply, or data frame consumed there is
+silently dropped. This is worst in `brcmf_sdpcm_tx_task()`: upload-side
+flow control can eat inbound data and association events. In the ioctl
+path it can also discard unrelated firmware events during long control
+sequences.
+
+**Files:** `src/sdpcm.c:brcmf_sdpcm_ioctl`, `src/sdpcm.c:brcmf_sdpcm_tx_task`
+
+---
+
+### P2-12: SDIO attach failure leaks taskqueue, mutexes, and lock objects
+
+`brcmf_sdio_bus_attach()` initializes `ioctl_mtx` and
+`brcmf_sdpcm_init()` before the risky attach steps. On failure it only
+stops polling and detaches the chip:
+
+```c
+fail:
+	brcmf_sdpcm_stop_poll(sc);
+	brcmf_sdio_detach(sc);
+	return (error);
+```
+
+It does not call `sc->bus_ops->cleanup(sc)` and does not destroy
+`ioctl_mtx`. That leaks the SDPCM taskqueue, queued TX state, and
+mutexes on attach failure.
+
+Separately, normal detach never calls `sx_destroy(&sc->sdio_lock)`.
+The sx is initialized in `brcmf_sdpcm_init()` and survives every
+unload.
+
+**Files:** `src/main.c:brcmf_sdio_bus_attach`, `src/sdpcm.c:brcmf_sdpcm_init`, `src/sdpcm.c:brcmf_sdpcm_cleanup`
+
+---
+
+### P2-13: AUTH-time `wsec` derivation still misconfigures non-WPA2 ciphers
+
+The AUTH path derives `wsec` from `vap->iv_flags` like this:
+
+- WPA2 -> `AES_ENABLED`
+- WPA1 -> `TKIP_ENABLED`
+- any `IEEE80211_F_PRIVACY` -> `|= AES_ENABLED`
+
+`IEEE80211_F_PRIVACY` is set for WEP and WPA1 as well, so:
+
+- WEP becomes `AES_ENABLED`
+- WPA1/TKIP becomes `TKIP_ENABLED | AES_ENABLED`
+
+The earlier fix in `brcmf_detect_security()` only corrected scan-side
+classification. The association path still advertises the wrong cipher
+suite to firmware for anything except WPA2-CCMP.
+
+**File:** `src/cfg.c:brcmf_newstate`
