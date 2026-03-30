@@ -383,6 +383,10 @@ brcmf_msgbuf_process_event(struct brcmf_softc *sc, struct msgbuf_common_hdr *msg
 	event_code = be32toh(event->msg.event_type);
 	datalen = be32toh(event->msg.datalen);
 
+	BRCMF_DBG(sc, "event: code=%u status=%u flags=0x%x\n",
+	    event_code, be32toh(event->msg.status),
+	    be16toh(event->msg.flags));
+
 	switch (event_code) {
 	case BRCMF_E_SET_SSID:
 	case BRCMF_E_LINK:

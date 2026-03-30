@@ -160,14 +160,14 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 	case BRCMF_E_SET_SSID:
 		if (status == BRCMF_E_STATUS_SUCCESS) {
 			/*
-			 * Association succeeded. Transition to RUN immediately
-			 * (inline) so wpa_supplicant sees us as associated
-			 * before EAPOL frames arrive. Deferring to link_task
-			 * causes EAPOL to be delayed/dropped because
-			 * wpa_supplicant thinks we're still in ASSOCIATING.
+			 * E_SET_SSID often arrives after E_LINK. If E_LINK
+			 * already processed link_up, don't run link_task
+			 * again — that would delete+recreate the flowring.
 			 */
-			sc->link_up = 1;
-			brcmf_link_task(sc, 0);
+			if (!sc->link_up) {
+				sc->link_up = 1;
+				brcmf_link_task(sc, 0);
+			}
 		} else {
 			device_printf(sc->dev, "SET_SSID failed, status=%u\n",
 			    status);
@@ -184,19 +184,32 @@ brcmf_link_event(struct brcmf_softc *sc, uint32_t event_code, uint32_t status,
 
 	case BRCMF_E_LINK: {
 		struct ieee80211vap *vap;
+		int link = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
+
 		vap = TAILQ_FIRST(&sc->ic.ic_vaps);
 		device_printf(sc->dev, "LINK event: flags=0x%x vap_state=%d\n",
 		    flags, vap ? vap->iv_state : -1);
+
+		/*
+		 * Ignore duplicate link-up if already processed via
+		 * E_SET_SSID. E_SET_SSID calls link_task directly;
+		 * running it again from E_LINK causes flowring
+		 * delete+create which times out.
+		 */
+		if (link && sc->link_up) {
+			BRCMF_DBG(sc, "ignoring duplicate E_LINK up\n");
+			break;
+		}
+
 		/* Ignore spurious link-down during WPA handshake.
 		 * The firmware sends E_LINK(down) before PTK is installed,
 		 * which would abort the handshake prematurely. */
-		if (!(flags & BRCMF_EVENT_MSG_LINK)) {
-			if (vap != NULL && vap->iv_state == IEEE80211_S_RUN) {
-				device_printf(sc->dev, "ignoring E_LINK down in RUN\n");
-				break;
-			}
+		if (!link && vap != NULL && vap->iv_state == IEEE80211_S_RUN) {
+			device_printf(sc->dev, "ignoring E_LINK down in RUN\n");
+			break;
 		}
-		sc->link_up = (flags & BRCMF_EVENT_MSG_LINK) ? 1 : 0;
+
+		sc->link_up = link;
 		if (!sc->link_up) {
 			sc->scan_active = 0;
 			sc->scan_complete = 0;
