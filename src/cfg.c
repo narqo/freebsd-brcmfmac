@@ -290,19 +290,20 @@ brcmf_join_bss_direct(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
  * ensures we still attempt connection.
  */
 static int
-brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
+brcmf_join_bss(struct brcmf_softc *sc, const uint8_t *bssid,
+    struct ieee80211_channel *chan, const uint8_t *essid, uint8_t esslen)
 {
 	struct brcmf_ext_join_params ejoin;
-	int chan, error;
+	int channum, error;
 	uint16_t chanspec;
 
-	memcpy(sc->join_bssid, ni->ni_bssid, 6);
+	memcpy(sc->join_bssid, bssid, 6);
 
 	brcmf_abort_escan(sc);
 
-	chan = ieee80211_chan2ieee(&sc->ic, ni->ni_chan);
-	sc->join_chan = chan;
-	chanspec = brcmf_channel_to_chanspec(sc, chan);
+	channum = ieee80211_chan2ieee(&sc->ic, chan);
+	sc->join_chan = channum;
+	chanspec = brcmf_channel_to_chanspec(sc, channum);
 
 	/* Pre-join diagnostics */
 	{
@@ -327,8 +328,8 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	}
 
 	memset(&ejoin, 0, sizeof(ejoin));
-	ejoin.ssid_le.SSID_len = htole32(ni->ni_esslen);
-	memcpy(ejoin.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
+	ejoin.ssid_le.SSID_len = htole32(esslen);
+	memcpy(ejoin.ssid_le.SSID, essid, esslen);
 	ejoin.scan.scan_type = -1;
 	ejoin.scan.nprobes = htole32(BRCMF_SCAN_JOIN_ACTIVE_DWELL_TIME_MS /
 	    BRCMF_SCAN_JOIN_PROBE_INTERVAL_MS);
@@ -336,13 +337,13 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	ejoin.scan.passive_time = htole32(
 	    BRCMF_SCAN_JOIN_PASSIVE_DWELL_TIME_MS);
 	ejoin.scan.home_time = htole32(-1);
-	memcpy(ejoin.assoc.bssid, ni->ni_bssid, 6);
+	memcpy(ejoin.assoc.bssid, bssid, 6);
 	ejoin.assoc.chanspec_num = htole32(1);
 	ejoin.assoc.chanspec_list[0] = htole16(chanspec);
 
 
 	BRCMF_DBG(sc, "join: bssid=%6D ssid=%.*s chan=%d chanspec=0x%04x\n",
-	    ni->ni_bssid, ":", ni->ni_esslen, ni->ni_essid, chan, chanspec);
+	    bssid, ":", esslen, essid, channum, chanspec);
 
 	{
 		/* Match Linux's size calculation: base struct up to
@@ -404,15 +405,15 @@ brcmf_join_bss(struct brcmf_softc *sc, struct ieee80211_node *ni)
 	 * Send SSID-only first (no assoc_params) to let firmware pick
 	 * the channel and BSSID from its scan cache. */
 	BRCMF_DBG(sc, "join iovar failed (%d), falling back to SET_SSID "
-	    "bssid=%6D chanspec=0x%04x\n", error, ni->ni_bssid, ":", chanspec);
+	    "bssid=%6D chanspec=0x%04x\n", error, bssid, ":", chanspec);
 	{
 		struct brcmf_join_params join;
 		uint32_t join_size;
 
 		memset(&join, 0, sizeof(join));
-		join.ssid_le.SSID_len = htole32(ni->ni_esslen);
-		memcpy(join.ssid_le.SSID, ni->ni_essid, ni->ni_esslen);
-		memcpy(join.params_le.bssid, ni->ni_bssid, 6);
+		join.ssid_le.SSID_len = htole32(esslen);
+		memcpy(join.ssid_le.SSID, essid, esslen);
+		memcpy(join.params_le.bssid, bssid, 6);
 		join.params_le.chanspec_num = htole32(1);
 		join.params_le.chanspec_list[0] = htole16(chanspec);
 
@@ -549,10 +550,23 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 	case IEEE80211_S_SCAN:
 		break;
 	case IEEE80211_S_AUTH: {
-		struct ieee80211_node *ni = vap->iv_bss;
+		struct ieee80211_node *ni;
+		uint8_t bssid[6], essid[IEEE80211_NWID_LEN];
+		uint8_t esslen;
+		struct ieee80211_channel *chan;
 
 		brcmf_abort_escan(sc);
 		pause_sbt("brcmab", mstosbt(100), 0, 0);
+
+		IEEE80211_LOCK(ic);
+		ni = vap->iv_bss;
+		if (ni != NULL) {
+			IEEE80211_ADDR_COPY(bssid, ni->ni_bssid);
+			chan = ni->ni_chan;
+			esslen = ni->ni_esslen;
+			memcpy(essid, ni->ni_essid, esslen);
+		}
+		IEEE80211_UNLOCK(ic);
 
 		if (ni != NULL) {
 			uint32_t wsec = WSEC_NONE;
@@ -602,7 +616,7 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 
 			if (sc->feat_sup_wpa)
 				brcmf_fil_iovar_int_set(sc, "sup_wpa", 0);
-			brcmf_join_bss(sc, ni);
+			brcmf_join_bss(sc, bssid, chan, essid, esslen);
 		}
 		break;
 	}

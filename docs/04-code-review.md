@@ -171,6 +171,20 @@ packets, 0% loss). SDIO (RPi4/BCM43455): Full association (WPA2-PSK)
 + DHCP (192.168.188.182) + ping (5/5 packets, 0% loss). E_SET_SSID
 success path executes via taskqueue on both buses, no deadlock.
 
+### P2-10: `brcmf_newstate` AUTH path uses `vap->iv_bss` without lock — FIXED
+
+`brcmf_newstate` AUTH case read `ni = vap->iv_bss` without lock,
+then passed `ni` to `brcmf_join_bss`, which sleeps. net80211 could
+swap or free `iv_bss` concurrently.
+
+**Fix:** Refactored `brcmf_join_bss` to take explicit fields (bssid,
+chan, essid, esslen) instead of `ni` pointer. AUTH case snapshots
+these fields under `IEEE80211_LOCK`, then calls `brcmf_join_bss`
+with local copies. Same pattern as P2-4/P2-8 fixes.
+
+**Tested:** PCIe: WPA2 association + DHCP + ping (5/5, 0% loss).
+SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -478,25 +492,7 @@ it is more defensive than removing it.
 
 
 
-### P2-10: `brcmf_newstate` AUTH path uses `vap->iv_bss` without lock or ref
 
-`brcmf_newstate()` drops `IEEE80211_LOCK()` at entry, then in the AUTH
-case does:
-
-```c
-struct ieee80211_node *ni = vap->iv_bss;
-...
-brcmf_join_bss(sc, ni);
-```
-
-`brcmf_join_bss()` reads `ni->ni_chan`, `ni->ni_bssid`, and
-`ni->ni_essid`, and sleeps. net80211 may replace or free `iv_bss`
-concurrently. This is the same lifetime class that was fixed earlier in
-`brcmf_link_task`; the AUTH path still has it.
-
-**File:** `src/cfg.c:brcmf_newstate`
-
----
 
 ### P2-11: SDIO TX-credit recovery discards arbitrary received frames
 
