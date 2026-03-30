@@ -10,18 +10,7 @@ Review date: 28 Feb 2026. Focus: correctness and security.
 
 ---
 
-## P3-2: Duplicate macro definitions
 
-`BRCMF_RING_MEM_BASE_ADDR_OFFSET`, `BRCMF_RING_MAX_ITEM_OFFSET`,
-`BRCMF_RING_LEN_ITEMS_OFFSET`, and `BRCMF_RING_MEM_SZ` are defined
-in both `pcie.c` and `msgbuf.c`.
-
-Event codes `BRCMF_E_SET_SSID`, `BRCMF_E_DEAUTH`, etc., are defined
-in both `cfg.h` and `msgbuf.c`.
-
-**Fix:** Move shared definitions to a single header.
-
----
 
 ## P3-4: `brcmf_sysctl_psk` stack buffer NUL termination
 
@@ -240,6 +229,22 @@ the scan-side logic in `brcmf_detect_security`.
 
 **Tested:** PCIe and SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
 WEP and WPA1/TKIP untested (no test APs available).
+
+### P3-2: Duplicate macro definitions — FIXED
+
+Ring descriptor offsets (`BRCMF_RING_MEM_BASE_ADDR_OFFSET`,
+`BRCMF_RING_MAX_ITEM_OFFSET`, `BRCMF_RING_LEN_ITEMS_OFFSET`,
+`BRCMF_RING_MEM_SZ`) were defined in both `pcie.c` and `msgbuf.c`.
+
+Event codes (`BRCMF_E_SET_SSID`, `BRCMF_E_DEAUTH`, etc.) were
+defined in both `cfg.h` and `msgbuf.c`.
+
+**Fix:** Moved ring descriptor offsets to `brcmfmac.h` (shared by both
+files). Consolidated all event codes in `cfg.h` and added `#include
+"cfg.h"` to `msgbuf.c` and `sdpcm.c`. Removed duplicates from `pcie.c`
+and `msgbuf.c`.
+
+**Tested:** PCIe and SDIO: WPA2 association + ping (3/3, 0% loss).
 
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 

@@ -473,4 +473,10 @@ typedef uint32_t (*brcmf_erom_read_fn)(void *ctx, uint32_t offset);
 struct brcmf_coreinfo brcmf_find_core(uint32_t erom_base,
     brcmf_erom_read_fn read_fn, void *ctx, uint32_t target_coreid);
 
+/* Ring descriptor offsets (shared by pcie.c and msgbuf.c) */
+#define BRCMF_RING_MEM_BASE_ADDR_OFFSET	8
+#define BRCMF_RING_MAX_ITEM_OFFSET	4
+#define BRCMF_RING_LEN_ITEMS_OFFSET	6
+#define BRCMF_RING_MEM_SZ		16
+
 #endif /* _BRCMFMAC_H_ */

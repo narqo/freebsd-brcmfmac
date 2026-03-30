@@ -33,6 +33,7 @@
 
 #include "sdio_if.h"
 #include "brcmfmac.h"
+#include "cfg.h"
 
 /* SDPCM header size */
 #define SDPCM_HDRLEN		12
@@ -58,8 +59,6 @@
 /* BCDC data header flags */
 #define BCDC_PROTO_VER		2
 #define BCDC_FLAG_VER_SHIFT	4
-
-/* Max control buffer — defined in brcmfmac.h, allocated in softc */
 
 /* IOCTL timeout */
 #define BRCMF_SDPCM_IOCTL_TIMEOUT_MS	3000

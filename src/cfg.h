@@ -36,9 +36,9 @@ struct brcmf_vap {
 #define BRCMF_E_DISASSOC     11
 #define BRCMF_E_DISASSOC_IND 12
 #define BRCMF_E_LINK	     16
-#define BRCMF_E_PSK_SUP	     46
 #define BRCMF_E_ASSOC_IND    18
 #define BRCMF_E_REASSOC_IND  19
+#define BRCMF_E_PSK_SUP	     46
 #define BRCMF_E_IF	     54
 #define BRCMF_E_ESCAN_RESULT 69
 

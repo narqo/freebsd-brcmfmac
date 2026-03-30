@@ -91,12 +91,6 @@ static const struct brcmf_bus_ops brcmf_pcie_bus_ops = {
 #define BRCMF_RING_MAX_SUBMISSION_OFFSET 54
 #define BRCMF_RING_MAX_COMPLETION_OFFSET 56
 
-/* Ring memory descriptor offsets */
-#define BRCMF_RING_MEM_BASE_ADDR_OFFSET	8
-#define BRCMF_RING_MAX_ITEM_OFFSET	4
-#define BRCMF_RING_LEN_ITEMS_OFFSET	6
-#define BRCMF_RING_MEM_SZ		16
-
 /* Ring sizes */
 #define BRCMF_H2D_MSGRING_CONTROL_SUBMIT_MAX_ITEM   64
 #define BRCMF_H2D_MSGRING_RXPOST_SUBMIT_MAX_ITEM    1024

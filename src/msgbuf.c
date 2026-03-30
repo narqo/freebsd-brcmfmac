@@ -25,6 +25,7 @@
 #include <net80211/ieee80211_var.h>
 
 #include "brcmfmac.h"
+#include "cfg.h"
 
 /* PCIe register offsets */
 #define BRCMF_PCIE_PCIE2REG_H2D_MAILBOX_0 0x140
@@ -55,14 +56,7 @@
 #define MSGBUF_TYPE_RXBUF_POST		 0x11
 #define MSGBUF_TYPE_RX_CMPLT		 0x12
 
-/* Event codes (for brcmf_link_event) */
-#define BRCMF_E_SET_SSID	0
-#define BRCMF_E_DEAUTH		5
-#define BRCMF_E_DEAUTH_IND	6
-#define BRCMF_E_DISASSOC	11
-#define BRCMF_E_DISASSOC_IND	12
-#define BRCMF_E_LINK		16
-#define BRCMF_E_IF		54
+
 
 /*
  * msgbuf structures
@@ -1141,10 +1135,7 @@ brcmf_pcie_free_ioctlbuf(struct brcmf_softc *sc)
 }
 
 /* Ring descriptor offsets in TCM */
-#define BRCMF_RING_MEM_BASE_ADDR_OFFSET	8
-#define BRCMF_RING_MAX_ITEM_OFFSET	4
-#define BRCMF_RING_LEN_ITEMS_OFFSET	6
-#define BRCMF_RING_MEM_SZ		16
+
 
 /*
  * Delete existing flow ring, notifying firmware and freeing DMA resources.
