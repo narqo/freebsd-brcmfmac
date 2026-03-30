@@ -218,6 +218,29 @@ and `tx_queue_mtx`) but never called `sx_destroy(&sc->sdio_lock)`.
 **Tested:** SDIO: module load, association, unload, reload cycle. No
 leak warnings, reload successful.
 
+### P2-13: AUTH-time `wsec` derivation misconfigures non-WPA2 ciphers — FIXED
+
+AUTH path derived `wsec` from `vap->iv_flags` with:
+```c
+if (vap->iv_flags & IEEE80211_F_WPA2)
+    wsec = AES_ENABLED;
+else if (vap->iv_flags & IEEE80211_F_WPA1)
+    wsec = TKIP_ENABLED;
+if (vap->iv_flags & IEEE80211_F_PRIVACY)
+    wsec |= AES_ENABLED;
+```
+
+`IEEE80211_F_PRIVACY` is set for WEP and WPA1, so:
+- WEP → `AES_ENABLED` (wrong, should be `WEP_ENABLED`)
+- WPA1/TKIP → `TKIP_ENABLED | AES_ENABLED` (wrong, should be `TKIP_ENABLED`)
+
+**Fix:** Changed the `PRIVACY` check from `|=` to an `else if` that
+sets `wsec = WEP_ENABLED` and `wpa_auth = WPA_AUTH_DISABLED`. Matches
+the scan-side logic in `brcmf_detect_security`.
+
+**Tested:** PCIe and SDIO: WPA2 association + DHCP + ping (5/5, 0% loss).
+WEP and WPA1/TKIP untested (no test APs available).
+
 ### P2-2: `brcmf_vap_delete` drains scan tasks after `vap_detach` — FIXED
 
 Scan tasks dereference `ss->ss_vap`, which is freed by
@@ -531,21 +554,4 @@ it is more defensive than removing it.
 
 
 
-### P2-13: AUTH-time `wsec` derivation still misconfigures non-WPA2 ciphers
 
-The AUTH path derives `wsec` from `vap->iv_flags` like this:
-
-- WPA2 -> `AES_ENABLED`
-- WPA1 -> `TKIP_ENABLED`
-- any `IEEE80211_F_PRIVACY` -> `|= AES_ENABLED`
-
-`IEEE80211_F_PRIVACY` is set for WEP and WPA1 as well, so:
-
-- WEP becomes `AES_ENABLED`
-- WPA1/TKIP becomes `TKIP_ENABLED | AES_ENABLED`
-
-The earlier fix in `brcmf_detect_security()` only corrected scan-side
-classification. The association path still advertises the wrong cipher
-suite to firmware for anything except WPA2-CCMP.
-
-**File:** `src/cfg.c:brcmf_newstate`

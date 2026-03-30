@@ -579,9 +579,10 @@ brcmf_newstate(struct ieee80211vap *vap, enum ieee80211_state nstate, int arg)
 			} else if (vap->iv_flags & IEEE80211_F_WPA1) {
 				wsec = TKIP_ENABLED;
 				wpa_auth = WPA_AUTH_PSK;
+			} else if (vap->iv_flags & IEEE80211_F_PRIVACY) {
+				wsec = WEP_ENABLED;
+				wpa_auth = WPA_AUTH_DISABLED;
 			}
-			if (vap->iv_flags & IEEE80211_F_PRIVACY)
-				wsec |= AES_ENABLED;
 
 			BRCMF_DBG(sc, "AUTH: iv_flags=0x%x wsec=%u wpa_auth=%u\n",
 			    vap->iv_flags, wsec, wpa_auth);
