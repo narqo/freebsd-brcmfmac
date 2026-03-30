@@ -987,15 +987,11 @@ brcmf_cfg_attach(struct brcmf_softc *sc)
 			sc->feat_mfp = 1;
 
 		/*
-		 * wpaie iovar: BCM4350 (7.35.x) accepts it but CYW43455
-		 * (7.45.x) returns BCME_UNSUPPORTED. On BCM4350, sending
-		 * a raw RSN IE via wpaie causes SET_SSID status=1 anyway
-		 * (see decisions.md), but it's harmless when the IE
-		 * matches what wpa_supplicant expects. On CYW, sending it
-		 * may poison firmware WPA state and cause DISASSOC_IND.
+		 * wpaie iovar: BCM4350 (7.35.x) accepts it but sending
+		 * the RSN IE corrupts firmware WPA state, causing AUTH
+		 * frames to fail with NO_ACK. CYW43455 (7.45.x) returns
+		 * BCME_UNSUPPORTED. Do not enable on any chip.
 		 */
-		if (sc->chip == 0x4350)
-			sc->feat_wpaie = 1;
 	}
 
 	/* Bring firmware down for configuration, then back up */
