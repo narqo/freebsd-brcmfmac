@@ -22,11 +22,9 @@
 
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
-
-#include <dev/sdio/sdiob.h>
 #include <dev/sdio/sdio_subr.h>
+#include <dev/sdio/sdiob.h>
 
-#include "sdio_if.h"
 #include "brcmfmac.h"
 
 /* ----------------------------------------------------------------
@@ -42,18 +40,13 @@ static const struct brcmf_pci_id brcmf_devid_table[] = {
 	{ 0, 0, NULL }
 };
 
-static device_method_t brcmf_pci_methods[] = {
-	DEVMETHOD(device_probe, brcmf_pci_probe),
+static device_method_t brcmf_pci_methods[] = { DEVMETHOD(device_probe,
+						   brcmf_pci_probe),
 	DEVMETHOD(device_attach, brcmf_pci_attach),
-	DEVMETHOD(device_detach, brcmf_pci_detach),
-	DEVMETHOD_END
-};
+	DEVMETHOD(device_detach, brcmf_pci_detach), DEVMETHOD_END };
 
-static driver_t brcmf_pci_driver = {
-	"brcmfmac",
-	brcmf_pci_methods,
-	sizeof(struct brcmf_softc)
-};
+static driver_t brcmf_pci_driver = { "brcmfmac", brcmf_pci_methods,
+	sizeof(struct brcmf_softc) };
 
 DRIVER_MODULE(if_brcmfmac, pci, brcmf_pci_driver, NULL, NULL);
 MODULE_VERSION(if_brcmfmac, 1);
@@ -98,11 +91,11 @@ brcmf_pci_detach(device_t dev)
  * SDIO bus attachment
  * ---------------------------------------------------------------- */
 
-#define SDIO_VENDOR_BROADCOM	0x02D0
-#define SDIO_DEVICE_BCM43455	0xA9A6
+#define SDIO_VENDOR_BROADCOM 0x02D0
+#define SDIO_DEVICE_BCM43455 0xA9A6
 
-#define BRCMF_CLM_FW_NAME	"brcmfmac43455-sdio.clm_blob"
-#define BRCMF_CLM_MAX_CHUNK	1400
+#define BRCMF_CLM_FW_NAME    "brcmfmac43455-sdio.clm_blob"
+#define BRCMF_CLM_MAX_CHUNK  1400
 
 /* CLM download header (matches Linux brcmf_dload_data_le) */
 struct brcmf_dload_data_le {
@@ -113,10 +106,10 @@ struct brcmf_dload_data_le {
 	uint8_t data[];
 } __packed;
 
-#define DL_BEGIN	0x0002
-#define DL_END		0x0004
-#define DL_TYPE_CLM	2
-#define DLOAD_HANDLER_VER 1
+#define DL_BEGIN	     0x0002
+#define DL_END		     0x0004
+#define DL_TYPE_CLM	     2
+#define DLOAD_HANDLER_VER    1
 #define DLOAD_FLAG_VER_SHIFT 12
 
 static void
@@ -136,11 +129,10 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 		return;
 	}
 
-	device_printf(sc->dev, "loading CLM blob (%zu bytes)\n",
-	    fw->datasize);
+	device_printf(sc->dev, "loading CLM blob (%zu bytes)\n", fw->datasize);
 
-	chunk = malloc(sizeof(*chunk) + BRCMF_CLM_MAX_CHUNK,
-	    M_BRCMFMAC, M_WAITOK | M_ZERO);
+	chunk = malloc(sizeof(*chunk) + BRCMF_CLM_MAX_CHUNK, M_BRCMFMAC,
+	    M_WAITOK | M_ZERO);
 
 	datalen = fw->datasize;
 	cumulative = 0;
@@ -154,13 +146,13 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 			dl_flag |= DL_END;
 		}
 
-		chunk->flag = htole16(dl_flag |
-		    (DLOAD_HANDLER_VER << DLOAD_FLAG_VER_SHIFT));
+		chunk->flag = htole16(
+		    dl_flag | (DLOAD_HANDLER_VER << DLOAD_FLAG_VER_SHIFT));
 		chunk->dload_type = htole16(DL_TYPE_CLM);
 		chunk->len = htole32(chunk_len);
 		chunk->crc = 0;
-		memcpy(chunk->data,
-		    (const uint8_t *)fw->data + cumulative, chunk_len);
+		memcpy(chunk->data, (const uint8_t *)fw->data + cumulative,
+		    chunk_len);
 
 		/*
 		 * Can't use brcmf_fil_iovar_data_set — its 512-byte
@@ -172,12 +164,11 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 			uint32_t namelen = sizeof(clmload);
 			uint32_t paylen = sizeof(*chunk) + chunk_len;
 			uint32_t total = namelen + paylen;
-			uint8_t *iobuf = malloc(total, M_BRCMFMAC,
-			    M_WAITOK);
+			uint8_t *iobuf = malloc(total, M_BRCMFMAC, M_WAITOK);
 			memcpy(iobuf, clmload, namelen);
 			memcpy(iobuf + namelen, chunk, paylen);
-			error = sc->bus_ops->ioctl(sc,
-			    263 /* C_SET_VAR */, 1, iobuf, total, NULL);
+			error = sc->bus_ops->ioctl(sc, 263 /* C_SET_VAR */, 1,
+			    iobuf, total, NULL);
 			free(iobuf, M_BRCMFMAC);
 		}
 		if (error != 0) {
@@ -196,11 +187,9 @@ brcmf_sdio_load_clm(struct brcmf_softc *sc)
 	firmware_put(fw, FIRMWARE_UNLOAD);
 
 	if (error == 0) {
-		error = brcmf_fil_iovar_int_get(sc, "clmload_status",
-		    &status);
+		error = brcmf_fil_iovar_int_get(sc, "clmload_status", &status);
 		if (error == 0 && status != 0) {
-			device_printf(sc->dev,
-			    "CLM load status: %u\n", status);
+			device_printf(sc->dev, "CLM load status: %u\n", status);
 		} else if (error == 0) {
 			device_printf(sc->dev, "CLM blob loaded\n");
 		}
@@ -212,18 +201,13 @@ static int brcmf_sdio_bus_attach(device_t dev);
 static int brcmf_sdio_bus_detach(device_t dev);
 static int brcmf_sdio_bus_start(struct brcmf_softc *sc);
 
-static device_method_t brcmf_sdio_methods[] = {
-	DEVMETHOD(device_probe, brcmf_sdio_probe),
+static device_method_t brcmf_sdio_methods[] = { DEVMETHOD(device_probe,
+						    brcmf_sdio_probe),
 	DEVMETHOD(device_attach, brcmf_sdio_bus_attach),
-	DEVMETHOD(device_detach, brcmf_sdio_bus_detach),
-	DEVMETHOD_END
-};
+	DEVMETHOD(device_detach, brcmf_sdio_bus_detach), DEVMETHOD_END };
 
-static driver_t brcmf_sdio_driver = {
-	"brcmfmac",
-	brcmf_sdio_methods,
-	sizeof(struct brcmf_softc)
-};
+static driver_t brcmf_sdio_driver = { "brcmfmac", brcmf_sdio_methods,
+	sizeof(struct brcmf_softc) };
 
 DRIVER_MODULE(if_brcmfmac, sdiob, brcmf_sdio_driver, NULL, NULL);
 MODULE_DEPEND(if_brcmfmac, sdiob, 1, 1, 1);
@@ -243,7 +227,8 @@ brcmf_sdio_bus_start(struct brcmf_softc *sc)
 	memset(ver, 0, sizeof(ver));
 	error = brcmf_fil_iovar_data_get(sc, "ver", ver, sizeof(ver) - 1);
 	if (error != 0) {
-		device_printf(sc->dev, "firmware ver ioctl failed: %d\n", error);
+		device_printf(sc->dev, "firmware ver ioctl failed: %d\n",
+		    error);
 		return (error);
 	}
 	{
@@ -263,7 +248,7 @@ brcmf_sdio_bus_start(struct brcmf_softc *sc)
 	/* Linux disables glom on SDIO during preinit. We do not support
 	 * glom descriptors yet; leaving it enabled can desynchronize F2 RX. */
 	brcmf_fil_cmd_data_set(sc, 89 /* C_SET_GLOM */,
-	    &(uint32_t){ htole32(0) }, sizeof(uint32_t));
+	    &(uint32_t) { htole32(0) }, sizeof(uint32_t));
 
 	brcmf_sdio_load_clm(sc);
 	return (0);
@@ -318,15 +303,20 @@ brcmf_sdio_bus_attach(device_t dev)
 				if (children[i] == dev)
 					continue;
 				if (sdio_get_vendor(children[i]) ==
-				    SDIO_VENDOR_BROADCOM &&
+					SDIO_VENDOR_BROADCOM &&
 				    sdio_get_funcnum(children[i]) == 2) {
-					sc->sdio_func2 =
-					    sdio_get_function(children[i]);
+					sc->sdio_func2 = sdio_get_function(
+					    children[i]);
 					break;
 				}
 			}
 			free(children, M_TEMP);
 		}
+	}
+
+	if (sc->sdio_func2 == NULL) {
+		device_printf(dev, "SDIO function 2 not found\n");
+		return (ENODEV);
 	}
 
 	sc->bus_ops = &brcmf_sdio_bus_ops;

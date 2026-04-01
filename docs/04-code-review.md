@@ -351,6 +351,56 @@ Already provided by `<net/ethernet.h>`.
 
 Added comment: `/* +8: 1 trailing NUL + 3 pad-to-4 + 4 length footer */`
 
+### P1-8: msgbuf ioctl completions are not matched to the active request — FIXED
+
+`brcmf_msgbuf_tx_ioctl()` incremented `sc->ioctl_trans_id` and wrote it into
+`msgbuf_ioctl_req_hdr.trans_id`, but `brcmf_msgbuf_process_ctrl_complete()`
+ignored `msgbuf_ioctl_resp_hdr.trans_id` entirely. A late completion after a
+timeout would corrupt the next ioctl's response buffer and wake the wrong waiter.
+
+**Fix:** Added `ioctl_pending_trans_id` to softc. `brcmf_msgbuf_tx_ioctl` records
+the trans_id sent. The completion handler compares against it: stale completions
+still re-post the IOCTL response buffer (to avoid buffer starvation) but skip the
+state update and wakeup. Stale completion is logged unconditionally.
+
+**Tested:** WPA2 association + DHCP + ping (5/5, 0% loss).
+
+### P1-9: escan result parsing trusts firmware `buflen` over the transport length — FIXED
+
+`brcmf_escan_result()` used `result->buflen` (firmware-provided) as the outer
+parse bound with no check against the transport-validated `datalen`. A corrupt
+event with an oversized `buflen` would walk past the end of the receive buffer.
+
+**Fix:** Clamp `buflen` to `datalen` immediately after reading it. Both the loop
+condition and the `bi_len > buflen` secondary check then operate within the
+transport-validated bound.
+
+**Tested:** WPA2 association + DHCP + ping (5/5, 0% loss).
+
+### P2-16: key installation reports success even when firmware rejected the key — FIXED
+
+`brcmf_key_set()` unconditionally returned `1` regardless of the firmware ioctl
+result, leaving host and device crypto state out of sync on rejection.
+
+**Fix:** Changed `return 1` to `return (error == 0)`. `brcmf_key_delete` left
+unchanged — net80211 ignores its return value (`/* XXX recovery? */`).
+
+**Tested:** PCIe: WPA2 association + DHCP + ping (5/5, 0% loss).
+SDIO: could not test — AP in stale PMKSA state from prior session.
+
+### P2-14: SDIO attach does not require function 2, but ioctl path dereferences it unconditionally — FIXED
+
+`brcmf_sdio_bus_attach()` silently continued when F2 was not found. All F2
+I/O paths (`brcmf_sdpcm_send`, `brcmf_sdpcm_recv`) then deref `sc->sdio_func2`
+unconditionally — NULL dereference instead of clean `ENODEV`.
+
+**Fix:** Fail attach with `ENODEV` immediately after the F2 search if
+`sc->sdio_func2 == NULL`. No resources are allocated at that point so
+no cleanup is needed. Normal path (F2 found) is unchanged.
+
+**Tested:** PCIe: WPA2 association + DHCP + ping (5/5, 0% loss).
+SDIO: module loads (F2 found), SDIO test blocked by AP state issue (see P2-16 note).
+
 ---
 
 ## Spec review (13 Mar 2026, updated 14 Mar 2026)
@@ -549,14 +599,41 @@ it is more defensive than removing it.
 
 **Severity:** P3 (spec gap, not code bug)
 
-## Additional review (30 Mar 2026)
+## Additional review (31 Mar 2026)
 
+### P2-15: SDIO backplane access ignores window-programming errors and can poison all later accesses
 
+`brcmf_sdio_set_window()` ignores the return status from all three `sdio_write_1`
+operations and still updates `sc->sdio_window`.
 
+If any of those writes fails, software believes the new 32KB window is active
+when the hardware is still pointing somewhere else. Subsequent callers skip
+reprogramming because the cached window already matches, so all later backplane
+reads and writes can hit the wrong address range.
 
+`brcmf_sdio_bp_read32()` and `brcmf_sdio_bp_write32()` also ignore their I/O
+errors, which makes the desynchronization hard to detect and recover from.
 
+**Files:** `src/sdio.c:100-117`, `src/sdio.c:123-147`
 
+---
 
+### P2-17: PCIe TX allocation can lose forward progress after one leaked slot
 
+`brcmf_msgbuf_tx()` uses `sc->tx_pktid_next` as a single probe point:
 
+```c
+pktid = sc->tx_pktid_next;
+if (sc->txbuf[pktid % BRCMF_TX_RING_SIZE].m != NULL)
+    return (ENOBUFS);
+```
+
+On `ENOBUFS`, `tx_pktid_next` is not advanced and the allocator does not scan
+for another free slot. If one completion is lost and a single slot stays busy,
+every later transmit attempt can hit that same slot forever, even if the other
+255 entries are free.
+
+This converts one leaked TX completion into a permanent transmit stall.
+
+**File:** `src/msgbuf.c:1323-1402`
 

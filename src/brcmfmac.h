@@ -285,6 +285,7 @@ struct brcmf_softc {
 	/* IOCTL state */
 	struct mtx ioctl_mtx;
 	uint16_t ioctl_trans_id;
+	uint16_t ioctl_pending_trans_id;
 	int ioctl_status;
 	uint32_t ioctl_resp_len;
 	int ioctl_completed;

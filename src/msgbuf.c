@@ -437,24 +437,41 @@ brcmf_msgbuf_process_ctrl_complete(struct brcmf_softc *sc)
 		switch (msg->msgtype) {
 		case MSGBUF_TYPE_IOCTL_CMPLT:
 			ioctl_resp = (struct msgbuf_ioctl_resp_hdr *)msg;
-			sc->ioctl_status = le16toh(ioctl_resp->compl_hdr.status);
 			resp_len = le16toh(ioctl_resp->resp_len);
-			sc->ioctl_resp_len = resp_len;
 
 			pktid = le32toh(msg->request_id);
 			if (pktid >= 0x10000 &&
 			    pktid < 0x10000 + BRCMF_MSGBUF_MAX_IOCTLRESPBUF_POST) {
 				int idx = pktid - 0x10000;
-				if (resp_len > 0 &&
+				/*
+				 * Always re-post the buffer. Copy data only if
+				 * this completion matches the active request;
+				 * a late completion after a timeout must not
+				 * overwrite the next ioctl's response.
+				 */
+				if (le16toh(ioctl_resp->trans_id) ==
+				    sc->ioctl_pending_trans_id &&
+				    resp_len > 0 &&
 				    resp_len <= BRCMF_MSGBUF_MAX_CTL_PKT_SIZE)
 					memcpy(sc->ioctl_respbuf,
 					    sc->ioctlresp_buf[idx].buf, resp_len);
-				/* Re-post the IOCTL response buffer */
 				brcmf_msgbuf_post_ctrlbuf(sc,
 				    MSGBUF_TYPE_IOCTLRESP_BUF_POST,
 				    &sc->ioctlresp_buf[idx]);
 			}
 
+			if (le16toh(ioctl_resp->trans_id) !=
+			    sc->ioctl_pending_trans_id) {
+				device_printf(sc->dev,
+				    "stale ioctl completion "
+				    "trans_id=%u pending=%u, dropped\n",
+				    le16toh(ioctl_resp->trans_id),
+				    sc->ioctl_pending_trans_id);
+				break;
+			}
+
+			sc->ioctl_status = le16toh(ioctl_resp->compl_hdr.status);
+			sc->ioctl_resp_len = resp_len;
 			sc->ioctl_completed = 1;
 			wakeup(&sc->ioctl_completed);
 			break;
@@ -943,6 +960,7 @@ brcmf_msgbuf_tx_ioctl(struct brcmf_softc *sc, uint32_t cmd,
 	req->msg.ifidx = 0;
 	req->msg.request_id = htole32(BRCMF_IOCTL_REQ_PKTID);
 	req->cmd = htole32(cmd);
+	sc->ioctl_pending_trans_id = sc->ioctl_trans_id;
 	req->trans_id = htole16(sc->ioctl_trans_id++);
 	req->input_buf_len = htole16(buflen);
 	req->output_buf_len = htole16(BRCMF_MSGBUF_MAX_CTL_PKT_SIZE);

@@ -132,7 +132,7 @@ brcmf_key_set(struct ieee80211vap *vap, const struct ieee80211_key *k)
 	if (error != 0)
 		device_printf(sc->dev, "wsec_key set failed: %d\n", error);
 
-	return 1;
+	return (error == 0);
 }
 
 int

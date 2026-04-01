@@ -16,11 +16,10 @@
 #include <sys/socket.h>
 #include <sys/taskqueue.h>
 
-#include <net/if.h>
-#include <net/if_var.h>
-#include <net/if_media.h>
 #include <net/ethernet.h>
-
+#include <net/if.h>
+#include <net/if_media.h>
+#include <net/if_var.h>
 #include <net80211/ieee80211_var.h>
 
 #include "cfg.h"
@@ -33,8 +32,10 @@ static int
 brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 {
 	int ch = chanspec & BRCMF_CHSPEC_CHAN_MASK;
-	int bw = (chanspec & BRCMF_CHSPEC_D11AC_BW_MASK) >> BRCMF_CHSPEC_D11AC_BW_SHIFT;
-	int sb = (chanspec & BRCMF_CHSPEC_D11AC_SB_MASK) >> BRCMF_CHSPEC_D11AC_SB_SHIFT;
+	int bw = (chanspec & BRCMF_CHSPEC_D11AC_BW_MASK) >>
+	    BRCMF_CHSPEC_D11AC_BW_SHIFT;
+	int sb = (chanspec & BRCMF_CHSPEC_D11AC_SB_MASK) >>
+	    BRCMF_CHSPEC_D11AC_SB_SHIFT;
 
 	switch (bw) {
 	case BRCMF_BW_20:
@@ -43,10 +44,14 @@ brcmf_chanspec_to_channel_d11ac(uint16_t chanspec)
 		return (sb == 0) ? ch - 2 : ch + 2;
 	case BRCMF_BW_80:
 		switch (sb) {
-		case 0: return ch - 6;
-		case 1: return ch - 2;
-		case 2: return ch + 2;
-		case 3: return ch + 6;
+		case 0:
+			return ch - 6;
+		case 1:
+			return ch - 2;
+		case 2:
+			return ch + 2;
+		case 3:
+			return ch + 6;
 		}
 		break;
 	case BRCMF_BW_160:
@@ -59,8 +64,10 @@ static int
 brcmf_chanspec_to_channel_d11n(uint16_t chanspec)
 {
 	int ch = chanspec & BRCMF_CHSPEC_CHAN_MASK;
-	int bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >> BRCMF_CHSPEC_D11N_BW_SHIFT;
-	int sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >> BRCMF_CHSPEC_D11N_SB_SHIFT;
+	int bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >>
+	    BRCMF_CHSPEC_D11N_BW_SHIFT;
+	int sb = (chanspec & BRCMF_CHSPEC_D11N_SB_MASK) >>
+	    BRCMF_CHSPEC_D11N_SB_SHIFT;
 
 	if (bw == BRCMF_BW_40) {
 		if (sb == 1) /* lower */
@@ -80,8 +87,8 @@ brcmf_chanspec_to_channel(struct brcmf_softc *sc, uint16_t chanspec)
 }
 
 void
-brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec,
-    int *bw, int *sb)
+brcmf_chanspec_get_bw_sb(struct brcmf_softc *sc, uint16_t chanspec, int *bw,
+    int *sb)
 {
 	if (sc->io_type == BRCMF_IO_TYPE_D11N) {
 		int n_bw = (chanspec & BRCMF_CHSPEC_D11N_BW_MASK) >>
@@ -194,8 +201,8 @@ brcmf_abort_escan(struct brcmf_softc *sc)
  * chains that also contain an RSN/WPA IE.
  */
 static int
-brcmf_score_ie_chain(const struct brcmf_bss_info_le *bi,
-    const uint8_t *raw, uint32_t bi_len, uint32_t j)
+brcmf_score_ie_chain(const struct brcmf_bss_info_le *bi, const uint8_t *raw,
+    uint32_t bi_len, uint32_t j)
 {
 	const uint8_t *sec_ie;
 	uint32_t next, sec_ie_len;
@@ -219,8 +226,7 @@ brcmf_score_ie_chain(const struct brcmf_bss_info_le *bi,
 
 	score = 1;
 	if (ssid_len == bi->SSID_len &&
-	    (ssid_len == 0 ||
-	    memcmp(raw + j + 2, bi->SSID, ssid_len) == 0))
+	    (ssid_len == 0 || memcmp(raw + j + 2, bi->SSID, ssid_len) == 0))
 		score += 2;
 	if (brcmf_find_security_ie(raw, next, bi_len, &sec_ie, &sec_ie_len))
 		score += 4;
@@ -318,7 +324,7 @@ brcmf_store_bss(struct brcmf_softc *sc, const struct brcmf_bss_info_le *bi,
 	}
 
 	sr = (dup >= 0) ? &sc->scan_results[dup] :
-	    &sc->scan_results[sc->scan_nresults++];
+			  &sc->scan_results[sc->scan_nresults++];
 
 	memcpy(sr->bssid, bi->BSSID, 6);
 	sr->ssid_len = bi->SSID_len > 32 ? 32 : bi->SSID_len;
@@ -358,6 +364,8 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 
 	result = data;
 	buflen = le32toh(result->buflen);
+	if (buflen > datalen)
+		buflen = datalen;
 	bss_count = le16toh(result->bss_count);
 
 	if (bss_count == 0) {
@@ -391,27 +399,29 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 		ie_data = (ie_off > 0 && ie_off < bi_len) ? raw + ie_off : NULL;
 		ie_len = (ie_data != NULL) ? bi_len - ie_off : 0;
 
-		protected = (le16toh(bi->capability) & IEEE80211_CAPINFO_PRIVACY) != 0;
+		protected = (le16toh(bi->capability) &
+				IEEE80211_CAPINFO_PRIVACY) != 0;
 		publish = ie_quality > 0 &&
 		    (!protected || brcmf_ie_has_rsn_wpa(ie_data, ie_len));
 		if (protected && !publish &&
 		    brcmf_find_security_ie(raw,
-		    ie_off > 0 ? ie_off : bi_len / 2, bi_len, &sec_ie, &ie_len)) {
+			ie_off > 0 ? ie_off : bi_len / 2, bi_len, &sec_ie,
+			&ie_len)) {
 			ie_data = sec_ie;
 			ie_quality = 1;
 			publish = 1;
 		}
 
-		BRCMF_DBG(sc, "bss: len=%u ie@%u+%u q=%u protected=%d publish=%d chanspec=0x%04x first=%02x%02x\n",
+		BRCMF_DBG(sc,
+		    "bss: len=%u ie@%u+%u q=%u protected=%d publish=%d chanspec=0x%04x first=%02x%02x\n",
 		    bi_len, ie_off, ie_len, ie_quality, protected, publish,
 		    le16toh(bi->chanspec),
 		    ie_data != NULL && ie_len > 1 ? ie_data[0] : 0xff,
 		    ie_data != NULL && ie_len > 1 ? ie_data[1] : 0xff);
 
 		sr = brcmf_store_bss(sc, bi,
-		    brcmf_chanspec_to_channel(sc, le16toh(bi->chanspec)),
-		    rssi, noise, le16toh(bi->chanspec),
-		    ie_data, ie_len, ie_quality);
+		    brcmf_chanspec_to_channel(sc, le16toh(bi->chanspec)), rssi,
+		    noise, le16toh(bi->chanspec), ie_data, ie_len, ie_quality);
 		if (sr != NULL && publish)
 			brcmf_add_scan_result(sc, sr);
 
@@ -421,16 +431,12 @@ brcmf_escan_result(struct brcmf_softc *sc, void *data, uint32_t datalen)
 }
 
 /* Default rates IE for 2.4GHz (11b/g rates) */
-static const uint8_t default_rates_2g[] = {
-	IEEE80211_ELEMID_RATES, 8,
-	0x82, 0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24
-};
+static const uint8_t default_rates_2g[] = { IEEE80211_ELEMID_RATES, 8, 0x82,
+	0x84, 0x8b, 0x96, 0x0c, 0x12, 0x18, 0x24 };
 
 /* Default rates IE for 5GHz (11a rates) */
-static const uint8_t default_rates_5g[] = {
-	IEEE80211_ELEMID_RATES, 8,
-	0x8c, 0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c
-};
+static const uint8_t default_rates_5g[] = { IEEE80211_ELEMID_RATES, 8, 0x8c,
+	0x12, 0x98, 0x24, 0xb0, 0x48, 0x60, 0x6c };
 
 /*
  * Synthetic WMM IE — injected when BSS has RSN but no WMM.
@@ -439,9 +445,15 @@ static const uint8_t default_rates_5g[] = {
  * request.
  */
 static const uint8_t default_wmm_ie[] = {
-	IEEE80211_ELEMID_VENDOR, 0x07,
-	0x00, 0x50, 0xf2, 0x02,
-	0x00, 0x01, 0x00,
+	IEEE80211_ELEMID_VENDOR,
+	0x07,
+	0x00,
+	0x50,
+	0xf2,
+	0x02,
+	0x00,
+	0x01,
+	0x00,
 };
 
 static int
@@ -458,9 +470,8 @@ brcmf_ie_has_rsn_wpa(const uint8_t *ie, uint16_t ie_len)
 			break;
 		if (id == IEEE80211_ELEMID_RSN)
 			return (1);
-		if (id == IEEE80211_ELEMID_VENDOR && len >= 4 &&
-		    p[2] == 0x00 && p[3] == 0x50 &&
-		    p[4] == 0xf2 && p[5] == 0x01)
+		if (id == IEEE80211_ELEMID_VENDOR && len >= 4 && p[2] == 0x00 &&
+		    p[3] == 0x50 && p[4] == 0xf2 && p[5] == 0x01)
 			return (1);
 		p += 2 + len;
 	}
@@ -510,8 +521,7 @@ brcmf_clear_scan_discard(struct ieee80211com *ic)
 
 	if (ss == NULL)
 		return;
-	flagsp = (u_int *)((uint8_t *)ss +
-	    sizeof(struct ieee80211_scan_state));
+	flagsp = (u_int *)((uint8_t *)ss + sizeof(struct ieee80211_scan_state));
 	*flagsp &= ~0x02; /* ISCAN_DISCARD */
 }
 
@@ -532,8 +542,7 @@ brcmf_find_scan_channel(struct ieee80211com *ic, int chan)
 }
 
 static void
-brcmf_parse_ies(struct ieee80211_scanparams *sp,
-    uint8_t *ie, uint16_t ie_len)
+brcmf_parse_ies(struct ieee80211_scanparams *sp, uint8_t *ie, uint16_t ie_len)
 {
 	uint8_t *p = ie;
 	uint8_t *end = ie + ie_len;
@@ -566,12 +575,10 @@ brcmf_parse_ies(struct ieee80211_scanparams *sp,
 			sp->htinfo = p;
 			break;
 		case IEEE80211_ELEMID_VENDOR:
-			if (len >= 4 &&
-			    p[2] == 0x00 && p[3] == 0x50 &&
+			if (len >= 4 && p[2] == 0x00 && p[3] == 0x50 &&
 			    p[4] == 0xf2 && p[5] == 0x01)
 				sp->wpa = p;
-			if (len >= 4 &&
-			    p[2] == 0x00 && p[3] == 0x50 &&
+			if (len >= 4 && p[2] == 0x00 && p[3] == 0x50 &&
 			    p[4] == 0xf2 && p[5] == 0x02)
 				sp->wme = p;
 			break;
@@ -582,10 +589,9 @@ brcmf_parse_ies(struct ieee80211_scanparams *sp,
 
 	/* Inject synthetic WMM IE when BSS has RSN but no WMM */
 	if (sp->rsn != NULL && sp->wme == NULL &&
-	    validated_end - ie + (int)sizeof(default_wmm_ie)
-	    <= BRCMF_SCAN_IE_MAX) {
-		memcpy(validated_end, default_wmm_ie,
-		    sizeof(default_wmm_ie));
+	    validated_end - ie + (int)sizeof(default_wmm_ie) <=
+		BRCMF_SCAN_IE_MAX) {
+		memcpy(validated_end, default_wmm_ie, sizeof(default_wmm_ie));
 		sp->wme = validated_end;
 		validated_end += sizeof(default_wmm_ie);
 	}
@@ -636,10 +642,8 @@ brcmf_add_scan_result(struct brcmf_softc *sc, struct brcmf_scan_result *sr)
 	if (sp.rates == NULL)
 		return;
 
-	ieee80211_add_scan(vap,
-	    brcmf_find_scan_channel(ic, sr->chan),
-	    &sp, &wh, IEEE80211_FC0_SUBTYPE_BEACON,
-	    sr->rssi - sr->noise, sr->noise);
+	ieee80211_add_scan(vap, brcmf_find_scan_channel(ic, sr->chan), &sp, &wh,
+	    IEEE80211_FC0_SUBTYPE_BEACON, sr->rssi - sr->noise, sr->noise);
 }
 
 void
@@ -688,9 +692,8 @@ brcmf_scan_complete_task(void *arg, int pending)
 
 		if (do_join) {
 			static const uint8_t zerobssid[6];
-			int bssid_any =
-			    IEEE80211_ADDR_EQ(des_bssid,
-				ieee80211broadcastaddr) ||
+			int bssid_any = IEEE80211_ADDR_EQ(des_bssid,
+					    ieee80211broadcastaddr) ||
 			    IEEE80211_ADDR_EQ(des_bssid, zerobssid);
 			for (i = 0; i < n; i++) {
 				struct brcmf_scan_result *sr =
@@ -699,8 +702,8 @@ brcmf_scan_complete_task(void *arg, int pending)
 				    memcmp(sr->ssid, des_ssid.ssid,
 					sr->ssid_len) == 0 &&
 				    (bssid_any ||
-				     IEEE80211_ADDR_EQ(sr->bssid,
-					 des_bssid))) {
+					IEEE80211_ADDR_EQ(sr->bssid,
+					    des_bssid))) {
 					brcmf_join_bss_direct(sc, sr);
 					return;
 				}
