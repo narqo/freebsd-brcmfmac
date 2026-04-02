@@ -176,6 +176,7 @@ brcmf_sdio_clk_enable(struct brcmf_softc *sc, int alp_only)
 	if (err != 0)
 		return (err);
 
+	/* clock sequencer needs time to stabilize; poll up to 500ms */
 	for (i = 0; i < 500; i++) {
 		clkval = sdio_read_1(f1, SBSDIO_FUNC1_CHIPCLKCSR, &err);
 		if (err != 0)
@@ -278,8 +279,9 @@ brcmf_sdio_core_disable(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 
 	brcmf_sdio_bp_write32(sc, core->wrapbase + BCMA_RESET_CTL,
 	    BCMA_RESET_CTL_RESET);
-	DELAY(20);
+	DELAY(20); /* reset crosses backplane clock domains */
 
+	/* reset status bit updates asynchronously */
 	for (i = 0; i < 300; i++) {
 		val = brcmf_sdio_bp_read32(sc,
 		    core->wrapbase + BCMA_RESET_CTL);
@@ -306,6 +308,7 @@ brcmf_sdio_core_reset(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 
 	brcmf_sdio_core_disable(sc, core, prereset, reset);
 
+	/* reset deassert may require multiple attempts */
 	for (i = 0; i < 50; i++) {
 		brcmf_sdio_bp_write32(sc,
 		    core->wrapbase + BCMA_RESET_CTL, 0);
@@ -1076,7 +1079,7 @@ brcmf_sdio_detach(struct brcmf_softc *sc)
 			    0xFFFFFFFF);
 		}
 
-		DELAY(20000);
+		DELAY(20000); /* let SDIO core drain pending F2 writes */
 		brcmf_sdio_chip_set_passive(sc);
 	}
 

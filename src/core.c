@@ -382,8 +382,9 @@ brcmf_core_disable(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 
 	brcmf_bp_write32(sc, core->wrapbase + BCMA_RESET_CTL,
 	    BCMA_RESET_CTL_RESET);
-	DELAY(20);
+	DELAY(20); /* reset crosses backplane clock domains */
 
+	/* reset status bit updates asynchronously */
 	for (i = 0; i < 300; i++) {
 		val = brcmf_bp_read32(sc, core->wrapbase + BCMA_RESET_CTL);
 		if (val == BCMA_RESET_CTL_RESET)
@@ -409,6 +410,7 @@ brcmf_core_reset(struct brcmf_softc *sc, struct brcmf_coreinfo *core,
 
 	brcmf_core_disable(sc, core, prereset, reset);
 
+	/* reset deassert may require multiple attempts */
 	for (i = 0; i < 50; i++) {
 		brcmf_bp_write32(sc, core->wrapbase + BCMA_RESET_CTL, 0);
 		val = brcmf_bp_read32(sc, core->wrapbase + BCMA_RESET_CTL);
@@ -460,7 +462,7 @@ brcmf_chip_reset(struct brcmf_softc *sc)
 	pci_write_config(sc->dev, BRCMF_PCIE_BAR0_WINDOW, SI_ENUM_BASE, 4);
 	brcmf_reg_read(sc, 0);
 	brcmf_reg_write(sc, CC_WATCHDOG, 4);
-	pause_sbt("brcmrst", mstosbt(100), 0, 0);
+	pause_sbt("brcmrst", mstosbt(100), 0, 0); /* watchdog fires in ~4 ticks */
 
 	/* Restore ASPM */
 	brcmf_pcie_select_core(sc, &sc->pciecore);
