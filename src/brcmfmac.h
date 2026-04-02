@@ -69,7 +69,7 @@ struct sdio_func;
 #define PCI_DEVICE_BCM4350  0x43a3
 
 /* Device ID table entry */
-struct brcmf_pci_id {
+struct brcmf_dev_id {
 	uint16_t vendor;
 	uint16_t device;
 	const char *desc;

@@ -35,7 +35,7 @@ static int brcmf_pci_probe(device_t dev);
 static int brcmf_pci_attach(device_t dev);
 static int brcmf_pci_detach(device_t dev);
 
-static const struct brcmf_pci_id brcmf_devid_table[] = {
+static const struct brcmf_dev_id brcmf_devid_table[] = {
 	{ PCI_VENDOR_BROADCOM, PCI_DEVICE_BCM4350, "Broadcom BCM4350 WiFi" },
 	{ 0, 0, NULL }
 };
@@ -59,7 +59,7 @@ MODULE_PNP_INFO("U16:vendor;U16:device", pci, if_brcmfmac, brcmf_devid_table,
 static int
 brcmf_pci_probe(device_t dev)
 {
-	const struct brcmf_pci_id *id;
+	const struct brcmf_dev_id *id;
 	uint16_t vendor, device;
 
 	vendor = pci_get_vendor(dev);
@@ -93,6 +93,11 @@ brcmf_pci_detach(device_t dev)
 
 #define SDIO_VENDOR_BROADCOM 0x02D0
 #define SDIO_DEVICE_BCM43455 0xA9A6
+
+static const struct brcmf_dev_id brcmf_sdio_devid_table[] = {
+	{ SDIO_VENDOR_BROADCOM, SDIO_DEVICE_BCM43455, "Broadcom BCM43455 WiFi (SDIO)" },
+	{ 0, 0, NULL }
+};
 
 #define BRCMF_CLM_FW_NAME    "brcmfmac43455-sdio.clm_blob"
 #define BRCMF_CLM_MAX_CHUNK  1400
@@ -257,22 +262,22 @@ brcmf_sdio_bus_start(struct brcmf_softc *sc)
 static int
 brcmf_sdio_probe(device_t dev)
 {
+	const struct brcmf_dev_id *id;
 	uint16_t vendor, device;
 
 	vendor = sdio_get_vendor(dev);
 	device = sdio_get_device(dev);
 
-	if (vendor != SDIO_VENDOR_BROADCOM)
-		return (ENXIO);
-	if (device != SDIO_DEVICE_BCM43455)
-		return (ENXIO);
-
-	/* Only attach to F1 (backplane access) */
-	if (sdio_get_funcnum(dev) != 1)
-		return (ENXIO);
-
-	device_set_desc(dev, "Broadcom BCM43455 WiFi (SDIO)");
-	return (BUS_PROBE_DEFAULT);
+	for (id = brcmf_sdio_devid_table; id->vendor != 0; id++) {
+		if (id->vendor == vendor && id->device == device) {
+			/* Only attach to F1 (backplane access) */
+			if (sdio_get_funcnum(dev) != 1)
+				return (ENXIO);
+			device_set_desc(dev, id->desc);
+			return (BUS_PROBE_DEFAULT);
+		}
+	}
+	return (ENXIO);
 }
 
 static int
